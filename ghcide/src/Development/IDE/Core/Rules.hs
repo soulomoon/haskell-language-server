@@ -168,6 +168,7 @@ import GHC (mgModSummaries)
 
 #if MIN_VERSION_ghc(9,3,0)
 import qualified Data.IntMap as IM
+import Debug.Trace (traceShowId, traceShow)
 #endif
 
 
@@ -179,11 +180,16 @@ data Log
   | LogLoadingHieFileFail !FilePath !SomeException
   | LogLoadingHieFileSuccess !FilePath
   | LogTypecheckedFOI !NormalizedFilePath
+  | LogGhcSessionDepsResultFail !NormalizedFilePath
+  | LogWriteCoreFileIfNeededResult !NormalizedFilePath Bool
+--   | LogGenerateCoreResult !NormalizedFilePath (Maybe )
   deriving Show
 
 instance Pretty Log where
   pretty = \case
     LogShake msg -> pretty msg
+    LogWriteCoreFileIfNeededResult path b -> "writeCoreFileIfNeeded" <+> pretty (fromNormalizedFilePath path) <+> ":" <+> pretty b
+    LogGhcSessionDepsResultFail path -> "Failed to get GhcSessionDeps result for" <+> pretty (fromNormalizedFilePath path)
     LogReindexingHieFile path ->
       "Re-indexing hie file for" <+> pretty (fromNormalizedFilePath path)
     LogLoadingHieFile path ->
@@ -985,7 +991,9 @@ getModIfaceRule recorder = defineEarlyCutoff (cmapWithPrio LogShake recorder) $ 
       let compile = fmap ([],) $ use GenerateCore f
       se <- getShakeExtras
       (diags, !mbHiFile) <- writeCoreFileIfNeeded se hsc linkableType compile tmr
-      let fp = hiFileFingerPrint <$> mbHiFile
+    --   logWith recorder Logger.Info $ LogWriteCoreFileIfNeededResult f (isJust mbHiFile)
+
+      let fp = traceShow (LogWriteCoreFileIfNeededResult f (isJust mbHiFile)) (hiFileFingerPrint <$> mbHiFile)
       hiDiags <- case mbHiFile of
         Just hiFile
           | OnDisk <- status
