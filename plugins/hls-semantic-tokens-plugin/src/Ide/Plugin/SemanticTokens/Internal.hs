@@ -20,7 +20,11 @@ import           Control.Monad.Except                     (ExceptT, liftEither,
 import           Control.Monad.IO.Class                   (MonadIO (..))
 import           Control.Monad.Trans                      (lift)
 import           Control.Monad.Trans.Except               (runExceptT)
+import           Data.Function                            (on)
+import           Data.List                                (sort, sortBy)
 import qualified Data.Map.Strict                          as M
+import           Data.Ord                                 (comparing)
+import qualified Data.Set                                 as S
 import           Data.Text                                (Text)
 import qualified Data.Text                                as T
 import           Development.IDE                          (Action,
@@ -37,7 +41,8 @@ import           Development.IDE                          (Action,
 import           Development.IDE.Core.PluginUtils         (runActionE,
                                                            useWithStaleE)
 import           Development.IDE.Core.Rules               (toIdeResult)
-import           Development.IDE.Core.RuleTypes           (DocAndTyThingMap (..))
+import           Development.IDE.Core.RuleTypes           (DocAndTyThingMap (..),
+                                                           GetParsedModule (..))
 import           Development.IDE.Core.Shake               (ShakeExtras (..),
                                                            getShakeExtras,
                                                            getVirtualFile,
@@ -125,11 +130,14 @@ getSemanticTokensRule :: Recorder (WithPriority SemanticLog) -> Rules ()
 getSemanticTokensRule recorder =
   define (cmapWithPrio LogShake recorder) $ \GetSemanticTokens nfp -> handleError recorder $ do
     (HAR {..}) <- lift $ use_ GetHieAst nfp
+    (ParsedModule {..}) <- lift $ use_ GetParsedModule nfp
     (DKMap {getTyThingMap}, _) <- lift $ useWithStale_ GetDocMap nfp
+    -- liftIO $ putStrLn $ unlines $ fmap (showSDocUnsafe . ppr) tks
     ast <- handleMaybe (LogNoAST $ show nfp) $ getAsts hieAst M.!? (HiePath . mkFastString . fromNormalizedFilePath) nfp
     virtualFile <- handleMaybeM LogNoVF $ getVirtualFile nfp
     let hsFinder = idSemantic getTyThingMap (hieKindFunMasksKind hieKind) refMap
-    return $ computeRangeHsSemanticTokenTypeList hsFinder virtualFile ast
+    let !tks = S.toList $ nameGetterPs pm_parsed_source
+    return $ computeRangeHsSemanticTokenTypeList tks hsFinder virtualFile ast
 
 
 -- taken from /haskell-language-server/plugins/hls-code-range-plugin/src/Ide/Plugin/CodeRange/Rules.hs

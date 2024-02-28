@@ -18,6 +18,7 @@ import           Development.IDE.Graph.Classes (Hashable)
 import           GHC.Generics                  (Generic)
 import           Language.LSP.Protocol.Types
 -- import template haskell
+import qualified Data.Set                      as S
 import           Data.Text                     (Text)
 import           Language.Haskell.TH.Syntax    (Lift)
 
@@ -80,6 +81,17 @@ data SemanticTokensConfig = STC
   , stOperator        :: !SemanticTokenTypes
   } deriving (Generic, Show)
 
+
+type HsLTokenSet = S.Set HsLToken
+type HsLTokens = [HsLToken]
+type HsLToken = (SpanAndNameAdornment, Either RdrName ModuleName)
+type SpanAndNameAdornment = (Span, Maybe NameAdornment)
+
+getLocStart :: HsLToken -> RealSrcLoc
+getLocStart = realSrcSpanStart  . getSpan
+
+getSpan :: HsLToken -> RealSrcSpan
+getSpan ((sp, _), _) = sp
 
 instance Semigroup HsSemanticTokenType where
   -- one in higher enum is more specific

@@ -500,7 +500,7 @@ import           Data.Foldable (toList)
 import           GHC.Data.Bag
 import           GHC.Core.Multiplicity        (scaledThing)
 import           GHC.Driver.Env
-import           GHC.Hs                       (HsModule (..), SrcSpanAnn')
+import           GHC.Hs                       (HsModule (..), SrcSpanAnn'(..), SrcSpanAnnA, SrcSpanAnnN, EpAnn(..), NameAnn(..), NameAdornment(..))
 import           GHC.Hs.Decls                 hiding (FunDep)
 import           GHC.Hs.Doc
 import           GHC.Hs.Expr

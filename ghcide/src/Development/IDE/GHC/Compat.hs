@@ -34,6 +34,7 @@ module Development.IDE.GHC.Compat(
     liftZonkM,
 
     FastStringCompat,
+    lengthFS,
     bytesFS,
     mkFastStringByteString,
     nodeInfo',
