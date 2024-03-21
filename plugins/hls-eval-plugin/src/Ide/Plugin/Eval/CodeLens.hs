@@ -280,7 +280,7 @@ initialiseSessionForEval needs_quickcheck st nfp = do
                    $ (ms_hspp_opts ms) {
                         useColor = Never
                       , canUseColor = False }
-            modifyDynFlags (const df)
+            modifyDynFlags (const $ setInterpreterLinkerOptions df)
             when needs_quickcheck $ void $ addPackages ["QuickCheck"]
             getSession
   return env2
