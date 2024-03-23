@@ -11,7 +11,7 @@ module Development.IDE.LSP.HoverDefinition
     , gotoTypeDefinition
     , documentHighlight
     , references
-    , wsSymbols
+    -- , wsSymbols
     ) where
 
 import           Control.Monad.Except           (ExceptT)
@@ -47,10 +47,6 @@ references ide _ (ReferenceParams (TextDocumentIdentifier uri) pos _ _ _) = do
         " in file: " <> T.pack (show nfp)
   InL <$> (liftIO $ runAction "references" ide $ refsAtPoint nfp pos)
 
-wsSymbols :: PluginMethodHandler IdeState Method_WorkspaceSymbol
-wsSymbols ide _ (WorkspaceSymbolParams _ _ query) = liftIO $ do
-  logDebug (ideLogger ide) $ "Workspace symbols request: " <> query
-  runIdeAction "WorkspaceSymbols" (shakeExtras ide) $ InL . fromMaybe [] <$> workspaceSymbols query
 
 foundHover :: (Maybe Range, [T.Text]) -> Hover |? Null
 foundHover (mbRange, contents) =

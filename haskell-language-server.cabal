@@ -1706,6 +1706,84 @@ test-suite hls-refactor-plugin-tests
     , tasty
 
 -----------------------------
+-- core plugin
+-----------------------------
+
+-- flag semanticTokens
+--   description: Enable semantic tokens plugin
+--   default:     True
+--   manual:      True
+
+common core
+  build-depends: haskell-language-server:hls-core-plugin
+
+library hls-core-plugin
+  import: defaults, pedantic, warnings
+  buildable: True
+  exposed-modules:
+    Ide.Plugin.Core
+
+  hs-source-dirs:     plugins/hls-core-plugin/src
+  build-depends:
+    , base                  >=4.12 && <5
+    , containers
+    , extra
+    , text-rope
+    , mtl                   >= 2.2
+    , ghcide                == 2.7.0.0
+    , hls-plugin-api        == 2.7.0.0
+    , lens
+    , lsp                    >=2.4
+    , text
+    , transformers
+    , bytestring
+    , syb
+    , array
+    , deepseq
+    , dlist
+    , hls-graph == 2.7.0.0
+    , template-haskell
+    , data-default
+    , stm
+    , stm-containers
+
+  default-extensions: DataKinds
+
+test-suite hls-core-plugin-tests
+  import:           defaults, pedantic, test-defaults, warnings
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   plugins/hls-core-plugin/test
+                    ,  plugins/hls-core-plugin/test/exe
+  main-is:          CoreTest.hs
+  other-modules:
+    InitializeResponseTests
+
+  build-depends:
+    , aeson
+    , base
+    , containers
+    , filepath
+    , haskell-language-server:hls-core-plugin
+    , hls-test-utils              == 2.7.0.0
+    , ghcide:ghcide-test-utils
+    , hls-plugin-api
+    , lens
+    , lsp
+    , text-rope
+    , lsp-test
+    , text
+    , tasty
+    , tasty-hunit
+    , data-default
+    , ghcide                == 2.7.0.0
+    , hls-plugin-api        == 2.7.0.0
+    , data-default
+    , row-types
+    , extra
+    , hls-test-utils
+
+
+-----------------------------
 -- semantic tokens plugin
 -----------------------------
 
@@ -1886,6 +1964,7 @@ library
                   , overloadedRecordDot
                   , semanticTokens
                   , notes
+                  , core
 
   exposed-modules:
     Ide.Arguments

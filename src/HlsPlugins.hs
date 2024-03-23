@@ -130,6 +130,7 @@ import qualified Development.IDE.Plugin.CodeAction as Refactor
 #if hls_semanticTokens
 import qualified Ide.Plugin.SemanticTokens         as SemanticTokens
 #endif
+import qualified Ide.Plugin.Core                   as Core
 
 
 data Log = forall a. (Pretty a) => Log PluginId a
@@ -150,6 +151,7 @@ idePlugins recorder = pluginDescToIdePlugins allPlugins
     pluginRecorder :: forall log. (Pretty log) => PluginId -> Recorder (WithPriority log)
     pluginRecorder pluginId = cmapWithPrio (Log pluginId) recorder
     allPlugins =
+      let pId = "core" in Core.descriptor (pluginRecorder pId) pId:
 #if hls_cabal
       let pId = "cabal" in Cabal.descriptor (pluginRecorder pId) pId :
 #endif

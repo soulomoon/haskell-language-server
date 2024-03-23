@@ -1,6 +1,7 @@
 
-{-# LANGUAGE DataKinds        #-}
-{-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE OverloadedLabels  #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module InitializeResponseTests (tests) where
 
@@ -11,18 +12,47 @@ import qualified Data.Text                         as T
 import           Development.IDE.Plugin.TypeLenses (typeLensCommandId)
 import qualified Language.LSP.Protocol.Lens        as L
 import           Language.LSP.Protocol.Message
-import           Language.LSP.Protocol.Types       hiding
-                                                   (SemanticTokenAbsolute (..),
-                                                    SemanticTokenRelative (..),
-                                                    SemanticTokensEdit (..),
-                                                    mkRange)
+-- import qualified Language.LSP.Protocol.Types       hiding
+--                                                    (SemanticTokenAbsolute (..),
+--                                                     SemanticTokenRelative (..),
+--                                                     SemanticTokensEdit (..),
+--                                                     mkRange)
 import           Language.LSP.Test
 
 import           Control.Lens                      ((^.))
+import           Data.Default                      (def)
+import           Data.Text                         (Text)
+import qualified Data.Text                         as Text
 import           Development.IDE.Plugin.Test       (blockCommandId)
+import qualified Ide.Plugin.Core                   as Core
+import           Language.LSP.Protocol.Types       (CodeLensOptions (..),
+                                                    CompletionOptions (..),
+                                                    DefinitionOptions (DefinitionOptions),
+                                                    DocumentHighlightOptions (..),
+                                                    DocumentSymbolOptions (..),
+                                                    ExecuteCommandOptions (..),
+                                                    HoverOptions (..),
+                                                    InitializeResult (..),
+                                                    ReferenceOptions (..),
+                                                    SaveOptions (..),
+                                                    ServerCapabilities (..),
+                                                    TextDocumentSyncKind (..),
+                                                    TextDocumentSyncOptions (..),
+                                                    TypeDefinitionOptions (..),
+                                                    WorkspaceFoldersServerCapabilities (..),
+                                                    WorkspaceSymbolOptions (..),
+                                                    type (|?) (..))
+import           System.FilePath                   ((</>))
+import           Test.Hls                          (PluginTestDescriptor,
+                                                    mkPluginTestDescriptor,
+                                                    runSessionWithServerInTmpDir)
+import qualified Test.Hls.FileSystem               as FS
+import           Test.Hls.FileSystem               (file, text)
 import           Test.Tasty
 import           Test.Tasty.HUnit
-import           TestUtils
+
+corePlugin :: PluginTestDescriptor Core.CoreLog
+corePlugin = mkPluginTestDescriptor Core.descriptor "core"
 
 tests :: TestTree
 tests = withResource acquire release tests where
@@ -35,7 +65,8 @@ tests = withResource acquire release tests where
   tests :: IO (TResponseMessage Method_Initialize) -> TestTree
   tests getInitializeResponse =
     testGroup "initialize response capabilities"
-    [ chk "   text doc sync"             _textDocumentSync  tds
+    [
+    chk "   text doc sync"             _textDocumentSync  tds
     , chk "   hover"                         _hoverProvider (Just $ InR (HoverOptions (Just False)))
     , chk "   completion"               _completionProvider (Just $ CompletionOptions (Just False) (Just ["."]) Nothing (Just True) Nothing)
     , chk "NO signature help"        _signatureHelpProvider Nothing
@@ -47,7 +78,7 @@ tests = withResource acquire release tests where
     , chk "   find references"          _referencesProvider (Just $ InR (ReferenceOptions (Just False)))
     , chk "   doc highlight"     _documentHighlightProvider (Just $ InR (DocumentHighlightOptions (Just False)))
     , chk "   doc symbol"           _documentSymbolProvider (Just $ InR (DocumentSymbolOptions (Just False) Nothing))
-    -- , chk "   workspace symbol"    _workspaceSymbolProvider (Just $ InR (WorkspaceSymbolOptions (Just False) (Just False)))
+    , chk "   workspace symbol"    _workspaceSymbolProvider (Just $ InR (WorkspaceSymbolOptions (Just False) (Just False)))
     , chk "NO code action"             _codeActionProvider  Nothing
     , chk "   code lens"                 _codeLensProvider  (Just $ CodeLensOptions (Just False) (Just True))
     , chk "NO doc formatting"   _documentFormattingProvider Nothing
@@ -90,8 +121,24 @@ tests = withResource acquire release tests where
   innerCaps (TResponseMessage _ _ (Left _)) = error "Initialization error"
 
   acquire :: IO (TResponseMessage Method_Initialize)
-  acquire = run initializeResponse
+  acquire = do
+    let content = Text.unlines ["module Hello where", "go _ = 1"]
+    let fs = mkFs $ directFile "Hello.hs" content
+    runSessionWithServerInTmpDir def corePlugin fs initializeResponse
+
 
   release :: TResponseMessage Method_Initialize -> IO ()
   release = mempty
+
+directFile :: FilePath -> Text -> [FS.FileTree]
+directFile fp content =
+  [ FS.directCradle [Text.pack fp]
+  , file fp (text content)
+  ]
+
+mkFs :: [FS.FileTree] -> FS.VirtualFileTree
+mkFs = FS.mkVirtualFileTree testDataDir
+
+testDataDir :: FilePath
+testDataDir = "plugins" </> "core-plugin" </> "test" </> "testdata"
 
