@@ -1765,7 +1765,6 @@ test-suite hls-core-plugin-tests
     , filepath
     , haskell-language-server:hls-core-plugin
     , hls-test-utils              == 2.7.0.0
-    , ghcide:ghcide-test-utils
     , hls-plugin-api
     , lens
     , lsp

@@ -33,7 +33,6 @@ descriptor recorder plId =
     }
 
 
-
 wsSymbols :: Recorder (WithPriority CoreLog) -> PluginMethodHandler IdeState Method_WorkspaceSymbol
 wsSymbols logger ide _ (WorkspaceSymbolParams _ _ query) = liftIO $ do
   logWith logger Debug $ CoreLogMsg $ "Workspace symbols request: " <> query

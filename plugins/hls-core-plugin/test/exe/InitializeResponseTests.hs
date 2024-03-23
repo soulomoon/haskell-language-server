@@ -12,11 +12,6 @@ import qualified Data.Text                         as T
 import           Development.IDE.Plugin.TypeLenses (typeLensCommandId)
 import qualified Language.LSP.Protocol.Lens        as L
 import           Language.LSP.Protocol.Message
--- import qualified Language.LSP.Protocol.Types       hiding
---                                                    (SemanticTokenAbsolute (..),
---                                                     SemanticTokenRelative (..),
---                                                     SemanticTokensEdit (..),
---                                                     mkRange)
 import           Language.LSP.Test
 
 import           Control.Lens                      ((^.))
