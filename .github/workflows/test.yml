@@ -116,7 +116,7 @@ jobs:
 
       - if: matrix.test
         name: Test hls-core-plugin test suite
-        run: cabal test hls-core-plugin-test
+        run: cabal test hls-core-plugin-tests
 
       - if: needs.pre_job.outputs.should_skip_ghcide != 'true' && matrix.test
         name: Test ghcide
