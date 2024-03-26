@@ -125,15 +125,18 @@ runLanguageServer recorder options inH outH defaultConfig parseConfig onConfigCh
 setupLSP ::
      forall config err.
      Recorder (WithPriority Log)
+  -> MVar IdeState
   -> (FilePath -> IO FilePath) -- ^ Map root paths to the location of the hiedb for the project
   -> LSP.Handlers (ServerM config)
   -> (LSP.LanguageContextEnv config -> Maybe FilePath -> WithHieDb -> IndexQueue -> IO IdeState)
-  -> Chan ReactorMessage
   -> MVar ()
   -> IO (LSP.LanguageContextEnv config -> TRequestMessage Method_Initialize -> IO (Either err (LSP.LanguageContextEnv config, IdeState)),
          LSP.Handlers (ServerM config),
          (LanguageContextEnv config, IdeState) -> ServerM config <~> IO)
-setupLSP  recorder getHieDbLoc userHandlers getIdeState clientMsgChan clientMsgVar  = do
+setupLSP recorder ideStateVar getHieDbLoc userHandlers getIdeState clientMsgVar = do
+  -- Send everything over a channel, since you need to wait until after initialise before
+  -- LspFuncs is available
+  clientMsgChan :: Chan ReactorMessage <- newChan
 
   -- An MVar to control the lifetime of the reactor loop.
   -- The loop will be stopped and resources freed when it's full
@@ -168,7 +171,7 @@ setupLSP  recorder getHieDbLoc userHandlers getIdeState clientMsgChan clientMsgV
         [ userHandlers
         , cancelHandler cancelRequest
         , exitHandler exit
-        , shutdownHandler stopReactorLoop
+        , shutdownHandler stopReactorLoop ideStateVar
         ]
         -- Cancel requests are special since they need to be handled
         -- out of order to be useful. Existing handlers are run afterwards.
@@ -259,14 +262,15 @@ cancelHandler cancelRequest = LSP.notificationHandler SMethod_CancelRequest $ \T
         toLspId (InL x) = IdInt x
         toLspId (InR y) = IdString y
 
-shutdownHandler :: IO () -> LSP.Handlers (ServerM c)
-shutdownHandler stopReactor = LSP.requestHandler SMethod_Shutdown $ \_ resp -> do
-    (_, ide) <- ask
+shutdownHandler :: IO () -> MVar IdeState -> LSP.Handlers (ServerM c)
+shutdownHandler stopReactor ideStateVar = LSP.requestHandler SMethod_Shutdown $ \_ resp -> do
+    ide <- liftIO $ takeMVar ideStateVar
     liftIO $ logDebug (ideLogger ide) "Received shutdown message"
     -- stop the reactor to free up the hiedb connection
     liftIO stopReactor
     -- flush out the Shake session to record a Shake profile if applicable
     liftIO $ shakeShut ide
+    -- liftIO $ tryReadMVar
     resp $ Right Null
 
 exitHandler :: IO () -> LSP.Handlers (ServerM c)
