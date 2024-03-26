@@ -247,7 +247,7 @@ typecheckParentsAction recorder nfp = do
 --   independently tracks which files are modified.
 setSomethingModified :: VFSModified -> IdeState -> [Key] -> String -> IO ()
 setSomethingModified vfs state keys reason = do
-    L.logDebug (Shake.ideLogger state) "begin restartShakeSession"
+    L.logDebug (Shake.ideLogger state) "begin setSomethingModified"
     -- Update database to remove any files that might have been renamed/deleted
     atomically $ do
         unsafeIOToSTM $ L.logDebug (Shake.ideLogger state) "begin writing indexQueue"
