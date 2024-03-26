@@ -169,7 +169,7 @@ setupLSP  recorder getHieDbLoc userHandlers getIdeState clientMsgVar = do
   let asyncHandlers = mconcat
         [ userHandlers
         , cancelHandler cancelRequest
-        , exitHandler exit
+        , exitHandler stopReactorLoop >> exit
         , shutdownHandler stopReactorLoop
         ]
         -- Cancel requests are special since they need to be handled
@@ -266,7 +266,7 @@ shutdownHandler stopReactor = LSP.requestHandler SMethod_Shutdown $ \_ resp -> d
     (_, ide) <- ask
     liftIO $ logDebug (ideLogger ide) "Received shutdown message"
     -- stop the reactor to free up the hiedb connection
-    liftIO stopReactor
+    -- liftIO stopReactor
     -- flush out the Shake session to record a Shake profile if applicable
     liftIO $ shakeShut ide
     resp $ Right Null
