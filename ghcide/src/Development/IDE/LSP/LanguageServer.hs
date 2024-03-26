@@ -128,24 +128,17 @@ setupLSP ::
   -> (FilePath -> IO FilePath) -- ^ Map root paths to the location of the hiedb for the project
   -> LSP.Handlers (ServerM config)
   -> (LSP.LanguageContextEnv config -> Maybe FilePath -> WithHieDb -> IndexQueue -> IO IdeState)
+  -> Chan ReactorMessage
   -> MVar ()
   -> IO (LSP.LanguageContextEnv config -> TRequestMessage Method_Initialize -> IO (Either err (LSP.LanguageContextEnv config, IdeState)),
          LSP.Handlers (ServerM config),
          (LanguageContextEnv config, IdeState) -> ServerM config <~> IO)
-setupLSP  recorder getHieDbLoc userHandlers getIdeState clientMsgVar = do
-  -- Send everything over a channel, since you need to wait until after initialise before
-  -- LspFuncs is available
-  clientMsgChan :: Chan ReactorMessage <- newChan
+setupLSP  recorder getHieDbLoc userHandlers getIdeState clientMsgChan clientMsgVar  = do
 
   -- An MVar to control the lifetime of the reactor loop.
   -- The loop will be stopped and resources freed when it's full
   reactorLifetime <- newEmptyMVar
   let stopReactorLoop = void $ tryPutMVar reactorLifetime ()
-
-  -- An MVar to control the lifetime of the reactor loop.
-  -- The loop will be stopped and resources freed when it's full
-  waitForReactor <- newEmptyMVar
-  let finishEndReactor = void $ tryPutMVar waitForReactor ()
 
   -- Forcefully exit
   let exit = void $ tryPutMVar clientMsgVar ()
@@ -171,17 +164,16 @@ setupLSP  recorder getHieDbLoc userHandlers getIdeState clientMsgVar = do
           cancelled <- readTVar cancelledRequests
           unless (reqId `Set.member` cancelled) retry
 
-
-  let doInitialize = handleInit recorder getHieDbLoc getIdeState reactorLifetime exit clearReqId waitForCancel clientMsgChan finishEndReactor
-
   let asyncHandlers = mconcat
         [ userHandlers
         , cancelHandler cancelRequest
-        , exitHandler $ stopReactorLoop >> takeMVar waitForReactor >> exit
+        , exitHandler exit
         , shutdownHandler stopReactorLoop
         ]
         -- Cancel requests are special since they need to be handled
         -- out of order to be useful. Existing handlers are run afterwards.
+
+  let doInitialize = handleInit recorder getHieDbLoc getIdeState reactorLifetime exit clearReqId waitForCancel clientMsgChan
 
   let interpretHandler (env,  st) = LSP.Iso (LSP.runLspT env . flip (runReaderT . unServerM) (clientMsgChan,st)) liftIO
 
@@ -197,10 +189,8 @@ handleInit
     -> (SomeLspId -> IO ())
     -> (SomeLspId -> IO ())
     -> Chan ReactorMessage
-    -> IO ()
-    -> LSP.LanguageContextEnv config -> TRequestMessage Method_Initialize
-    -> IO (Either err (LSP.LanguageContextEnv config, IdeState))
-handleInit recorder getHieDbLoc getIdeState lifetime exitClientMsg clearReqId waitForCancel clientMsgChan finishEndReactor env (TRequestMessage _ _ m params) = otTracedHandler "Initialize" (show m) $ \sp -> do
+    -> LSP.LanguageContextEnv config -> TRequestMessage Method_Initialize -> IO (Either err (LSP.LanguageContextEnv config, IdeState))
+handleInit recorder getHieDbLoc getIdeState lifetime exitClientMsg clearReqId waitForCancel clientMsgChan env (TRequestMessage _ _ m params) = otTracedHandler "Initialize" (show m) $ \sp -> do
     traceWithSpan sp params
     let root = LSP.resRootPath env
     dir <- maybe getCurrentDirectory return root
@@ -253,7 +243,6 @@ handleInit recorder getHieDbLoc getIdeState lifetime exitClientMsg clearReqId wa
                     ReactorNotification act -> handle exceptionInHandler act
                     ReactorRequest _id act k -> void $ async $ checkCancelled _id act k
         logWith recorder Info LogReactorThreadStopped
-        finishEndReactor
     pure $ Right (env,ide)
 
 
@@ -275,7 +264,7 @@ shutdownHandler stopReactor = LSP.requestHandler SMethod_Shutdown $ \_ resp -> d
     (_, ide) <- ask
     liftIO $ logDebug (ideLogger ide) "Received shutdown message"
     -- stop the reactor to free up the hiedb connection
-    -- liftIO stopReactor
+    liftIO stopReactor
     -- flush out the Shake session to record a Shake profile if applicable
     liftIO $ shakeShut ide
     resp $ Right Null
