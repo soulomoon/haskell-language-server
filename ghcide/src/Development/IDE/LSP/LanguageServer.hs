@@ -142,6 +142,11 @@ setupLSP  recorder getHieDbLoc userHandlers getIdeState clientMsgVar = do
   reactorLifetime <- newEmptyMVar
   let stopReactorLoop = void $ tryPutMVar reactorLifetime ()
 
+  -- An MVar to control the lifetime of the reactor loop.
+  -- The loop will be stopped and resources freed when it's full
+  waitForReactor <- newEmptyMVar
+  let finishEndReactor = void $ tryPutMVar waitForReactor ()
+
   -- Forcefully exit
   let exit = void $ tryPutMVar clientMsgVar ()
 
@@ -166,16 +171,17 @@ setupLSP  recorder getHieDbLoc userHandlers getIdeState clientMsgVar = do
           cancelled <- readTVar cancelledRequests
           unless (reqId `Set.member` cancelled) retry
 
+
+  let doInitialize = handleInit recorder getHieDbLoc getIdeState reactorLifetime exit clearReqId waitForCancel clientMsgChan finishEndReactor
+
   let asyncHandlers = mconcat
         [ userHandlers
         , cancelHandler cancelRequest
-        , exitHandler $ stopReactorLoop >> exit
+        , exitHandler $ stopReactorLoop >> takeMVar waitForReactor >> exit
         , shutdownHandler stopReactorLoop
         ]
         -- Cancel requests are special since they need to be handled
         -- out of order to be useful. Existing handlers are run afterwards.
-
-  let doInitialize = handleInit recorder getHieDbLoc getIdeState reactorLifetime exit clearReqId waitForCancel clientMsgChan
 
   let interpretHandler (env,  st) = LSP.Iso (LSP.runLspT env . flip (runReaderT . unServerM) (clientMsgChan,st)) liftIO
 
@@ -191,8 +197,10 @@ handleInit
     -> (SomeLspId -> IO ())
     -> (SomeLspId -> IO ())
     -> Chan ReactorMessage
-    -> LSP.LanguageContextEnv config -> TRequestMessage Method_Initialize -> IO (Either err (LSP.LanguageContextEnv config, IdeState))
-handleInit recorder getHieDbLoc getIdeState lifetime exitClientMsg clearReqId waitForCancel clientMsgChan env (TRequestMessage _ _ m params) = otTracedHandler "Initialize" (show m) $ \sp -> do
+    -> IO ()
+    -> LSP.LanguageContextEnv config -> TRequestMessage Method_Initialize
+    -> IO (Either err (LSP.LanguageContextEnv config, IdeState))
+handleInit recorder getHieDbLoc getIdeState lifetime exitClientMsg clearReqId waitForCancel clientMsgChan finishEndReactor env (TRequestMessage _ _ m params) = otTracedHandler "Initialize" (show m) $ \sp -> do
     traceWithSpan sp params
     let root = LSP.resRootPath env
     dir <- maybe getCurrentDirectory return root
@@ -245,6 +253,7 @@ handleInit recorder getHieDbLoc getIdeState lifetime exitClientMsg clearReqId wa
                     ReactorNotification act -> handle exceptionInHandler act
                     ReactorRequest _id act k -> void $ async $ checkCancelled _id act k
         logWith recorder Info LogReactorThreadStopped
+        finishEndReactor
     pure $ Right (env,ide)
 
 
