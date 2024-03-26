@@ -169,7 +169,7 @@ setupLSP  recorder getHieDbLoc userHandlers getIdeState clientMsgVar = do
   let asyncHandlers = mconcat
         [ userHandlers
         , cancelHandler cancelRequest
-        , exitHandler stopReactorLoop >> exit
+        , exitHandler $ stopReactorLoop >> exit
         , shutdownHandler stopReactorLoop
         ]
         -- Cancel requests are special since they need to be handled
