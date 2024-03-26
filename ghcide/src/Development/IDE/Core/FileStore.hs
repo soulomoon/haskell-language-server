@@ -247,16 +247,11 @@ typecheckParentsAction recorder nfp = do
 --   independently tracks which files are modified.
 setSomethingModified :: VFSModified -> IdeState -> [Key] -> String -> IO ()
 setSomethingModified vfs state keys reason = do
-    L.logDebug (Shake.ideLogger state) "begin setSomethingModified"
     -- Update database to remove any files that might have been renamed/deleted
     atomically $ do
-        unsafeIOToSTM $ L.logDebug (Shake.ideLogger state) "begin writing indexQueue"
         writeTQueue (indexQueue $ hiedbWriter $ shakeExtras state) (\withHieDb -> withHieDb deleteMissingRealFiles)
-        unsafeIOToSTM $ L.logDebug (Shake.ideLogger state) "begin writing dirtyKeys"
         modifyTVar' (dirtyKeys $ shakeExtras state) $ \x ->
             foldl' (flip insertKeySet) x keys
-
-    L.logDebug (Shake.ideLogger state) "setSomethingModified before restartShakeSession"
     void $ restartShakeSession (shakeExtras state) vfs reason []
 
 registerFileWatches :: [String] -> LSP.LspT Config IO Bool
