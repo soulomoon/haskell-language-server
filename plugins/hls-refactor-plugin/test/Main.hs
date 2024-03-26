@@ -71,9 +71,9 @@ tests :: TestTree
 tests =
   testGroup "refactor"
   [ initializeTests
---   , codeActionTests
---   , codeActionHelperFunctionTests
---   , completionTests
+  , codeActionTests
+  , codeActionHelperFunctionTests
+  , completionTests
   ]
 
 initializeTests :: TestTree
@@ -99,9 +99,7 @@ initializeTests = withResource acquire release tests
           mapM_ (\e -> any (\o -> T.isSuffixOf e o) commands @? show (expected, show commands)) expected
 
     acquire :: IO (TResponseMessage Method_Initialize)
-    acquire = do
-        -- liftIO $ sleep 0.01
-        run initializeResponse
+    acquire = run initializeResponse
 
     release :: TResponseMessage Method_Initialize -> IO ()
     release = mempty
