@@ -264,13 +264,13 @@ cancelHandler cancelRequest = LSP.notificationHandler SMethod_CancelRequest $ \T
 
 shutdownHandler :: IO () -> MVar IdeState -> LSP.Handlers (ServerM c)
 shutdownHandler stopReactor ideStateVar = LSP.requestHandler SMethod_Shutdown $ \_ resp -> do
+    -- take away the ideStateVar to prevent onConfigChange from running and hangs.
     ide <- liftIO $ takeMVar ideStateVar
     liftIO $ logDebug (ideLogger ide) "Received shutdown message"
     -- stop the reactor to free up the hiedb connection
     liftIO stopReactor
     -- flush out the Shake session to record a Shake profile if applicable
     liftIO $ shakeShut ide
-    -- liftIO $ tryReadMVar
     resp $ Right Null
 
 exitHandler :: IO () -> LSP.Handlers (ServerM c)
