@@ -365,7 +365,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
                 onConfigChange cfg = do
                   -- TODO: this is nuts, we're converting back to JSON just to get a fingerprint
                   let cfgObj = J.toJSON cfg
-                  -- tryReadMVar is essential here, as the MVar might be empty if the server is still starting up
+                  -- tryTakeMVar is essential here, as the MVar might be empty if the server is still starting up
                   -- and it might be gone if the server is shutting down.
                   liftIO $ bracket (liftIO $ tryTakeMVar ideStateVar) (`whenJust` putMVar ideStateVar) $ \case
                       Nothing -> pure ()
