@@ -314,6 +314,10 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
             ioT <- offsetTime
             logWith recorder Info $ LogLspStart (pluginId <$> ipMap argsHlsPlugins)
 
+            -- Notice why we are using `ideStateVar`:
+            -- 1. to pass the ide state to config update callback after the initialization
+            -- 2. guard against the case when the server is still starting up and
+            --    and after shutdown handler has been called(empty in this case).
             ideStateVar <- newEmptyMVar
             let getIdeState :: LSP.LanguageContextEnv Config -> Maybe FilePath -> WithHieDb -> IndexQueue -> IO IdeState
                 getIdeState env rootPath withHieDb hieChan = do
