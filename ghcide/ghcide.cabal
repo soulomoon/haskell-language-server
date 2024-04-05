@@ -356,7 +356,6 @@ test-suite ghcide-tests
     BootTests
     ClientSettingsTests
     CodeLensTests
-    CompletionTests
     CPPTests
     CradleTests
     DependentFileTest

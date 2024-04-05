@@ -1762,9 +1762,10 @@ test-suite hls-core-plugin-tests
                     ,  plugins/hls-core-plugin/test/exe
   main-is:          CoreTest.hs
   other-modules:
+    Util
     InitializeResponseTests
     OutlineTests
-    Util
+    CompletionTests
 
 
   build-depends:
