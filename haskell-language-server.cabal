@@ -1723,6 +1723,8 @@ library hls-core-plugin
   exposed-modules:
     Ide.Plugin.Core
     Ide.Plugin.Core.Actions
+    Ide.Plugin.Core.HoverDefinition
+    Ide.Plugin.Core.Outline
 
   hs-source-dirs:     plugins/hls-core-plugin/src
   build-depends:
@@ -1730,6 +1732,7 @@ library hls-core-plugin
     , containers
     , unordered-containers
     , extra
+    , ghc
     , text-rope
     , mtl                   >= 2.2
     , ghcide                == 2.7.0.0

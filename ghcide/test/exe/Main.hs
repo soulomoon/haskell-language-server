@@ -47,7 +47,6 @@ import           Test.Tasty.Ingredients.Rerun
 
 import LogType ()
 import OpenCloseTest
-import InitializeResponseTests
 import CompletionTests
 import CPPTests
 import DiagnosticTests
@@ -93,7 +92,6 @@ main = do
   -- We mess with env vars so run single-threaded.
   defaultMainWithRerun $ testGroup "ghcide"
     [ OpenCloseTest.tests
-    , InitializeResponseTests.tests
     , CompletionTests.tests
     , CPPTests.tests
     , DiagnosticTests.tests

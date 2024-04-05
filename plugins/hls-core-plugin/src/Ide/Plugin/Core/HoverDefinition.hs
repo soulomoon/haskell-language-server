@@ -1,9 +1,8 @@
--- Copyright (c) 2019 The DAML Authors. All rights reserved.
--- SPDX-License-Identifier: Apache-2.0
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GADTs             #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- | Display information on hover.
-module Development.IDE.LSP.HoverDefinition
+module Ide.Plugin.Core.HoverDefinition
     (
     -- * For haskell-language-server
     hover

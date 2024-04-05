@@ -1,9 +1,12 @@
 {-# LANGUAGE CPP                   #-}
-
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE GADTs                 #-}
+{-# LANGUAGE RecordWildCards                 #-}
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE OverloadedStrings #-}
 
-module Development.IDE.LSP.Outline
+module Ide.Plugin.Core.Outline
   ( moduleOutline
   )
 where

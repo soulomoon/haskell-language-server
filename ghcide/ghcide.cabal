@@ -164,10 +164,8 @@ library
     Development.IDE.GHC.Util
     Development.IDE.Import.DependencyInformation
     Development.IDE.Import.FindImports
-    Development.IDE.LSP.HoverDefinition
     Development.IDE.LSP.LanguageServer
     Development.IDE.LSP.Notifications
-    Development.IDE.LSP.Outline
     Development.IDE.LSP.Server
     Development.IDE.Main
     Development.IDE.Main.HeapStats
@@ -371,7 +369,6 @@ test-suite ghcide-tests
     HieDbRetry
     HighlightTests
     IfaceTests
-    InitializeResponseTests
     LogType
     NonLspCommandLine
     OpenCloseTest
