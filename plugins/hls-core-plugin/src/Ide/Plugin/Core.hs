@@ -8,8 +8,8 @@ import           Data.Maybe                    (fromMaybe)
 import           Data.Text                     (Text)
 import qualified Data.Text                     as T
 import           Development.IDE
-import           Development.IDE.Core.Actions  (refsAtPoint, workspaceSymbols)
 import qualified Development.IDE.Core.Shake    as Shake
+import           Ide.Plugin.Core.Actions       (refsAtPoint, workspaceSymbols)
 import           Ide.Plugin.Error              (getNormalizedFilePathE)
 import           Ide.Types
 import           Language.LSP.Protocol.Message

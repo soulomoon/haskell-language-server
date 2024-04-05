@@ -1722,6 +1722,7 @@ library hls-core-plugin
   buildable: True
   exposed-modules:
     Ide.Plugin.Core
+    Ide.Plugin.Core.Actions
 
   hs-source-dirs:     plugins/hls-core-plugin/src
   build-depends:
