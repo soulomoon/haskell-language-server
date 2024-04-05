@@ -1728,6 +1728,7 @@ library hls-core-plugin
   build-depends:
     , base                  >=4.12 && <5
     , containers
+    , unordered-containers
     , extra
     , text-rope
     , mtl                   >= 2.2
@@ -1735,6 +1736,7 @@ library hls-core-plugin
     , hls-plugin-api        == 2.7.0.0
     , lens
     , lsp                    >=2.4
+    , hiedb                 ^>= 0.6.0.0
     , text
     , transformers
     , bytestring

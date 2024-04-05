@@ -22,6 +22,9 @@ import           Language.LSP.Protocol.Types          (DocumentHighlight (..),
                                                        normalizedFilePathToUri,
                                                        uriToNormalizedFilePath)
 
+import qualified Data.HashMap.Strict                  as HM
+import qualified HieDb
+
 
 -- Refs are not an IDE action, so it is OK to be slow and (more) accurate
 refsAtPoint :: NormalizedFilePath -> Position -> Action [Location]
