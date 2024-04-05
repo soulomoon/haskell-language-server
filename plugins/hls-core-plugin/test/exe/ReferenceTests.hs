@@ -17,16 +17,10 @@ import           Language.LSP.Protocol.Types     hiding
                                                   mkRange)
 import           Language.LSP.Test
 import           System.Directory
-import           System.FilePath
 -- import Test.QuickCheck.Instances ()
-import           Control.Concurrent              (threadDelay)
 import           Control.Lens                    ((^.))
 import           Data.Tuple.Extra
-import           Test.Hls                        (waitForAllProgressDone,
-                                                  waitForBuildQueue,
-                                                  waitForProgressDone)
-import           Test.Hls.FileSystem             (copy, copyDir,
-                                                  directProjectMulti, toAbsFp)
+import           Test.Hls.FileSystem             (copyDir, toAbsFp)
 import           Test.Tasty
 import           Test.Tasty.ExpectedFailure
 import           Test.Tasty.HUnit
