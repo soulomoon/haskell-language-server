@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import qualified InitializeResponseTests
+import qualified OutlineTests
 import           Test.Hls                (defaultTestRunner, testGroup)
 
 
@@ -11,4 +12,6 @@ main =
   defaultTestRunner $
     testGroup
       "core"
-      [ InitializeResponseTests.tests ]
+      [ InitializeResponseTests.tests
+      , OutlineTests.tests
+      ]

@@ -1763,6 +1763,9 @@ test-suite hls-core-plugin-tests
   main-is:          CoreTest.hs
   other-modules:
     InitializeResponseTests
+    OutlineTests
+    Util
+
 
   build-depends:
     , aeson

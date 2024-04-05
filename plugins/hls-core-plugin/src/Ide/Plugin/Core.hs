@@ -49,9 +49,9 @@ descriptor recorder plId =
                       gotoTypeDefinition ide TextDocumentPositionParams{..})
                   <> mkPluginHandler SMethod_TextDocumentDocumentHighlight (\ide _ DocumentHighlightParams{..} ->
                       documentHighlight ide TextDocumentPositionParams{..})
-            <> mkPluginHandler SMethod_TextDocumentHover hover'
-            <> mkPluginHandler SMethod_WorkspaceSymbol (wsSymbols recorder)
-            <> mkPluginHandler SMethod_TextDocumentReferences references
+                  <> mkPluginHandler SMethod_TextDocumentHover hover'
+                  <> mkPluginHandler SMethod_WorkspaceSymbol (wsSymbols recorder)
+                  <> mkPluginHandler SMethod_TextDocumentReferences references
     }
 
 

@@ -13,6 +13,7 @@ import           Development.IDE.Plugin.TypeLenses (typeLensCommandId)
 import qualified Language.LSP.Protocol.Lens        as L
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Test
+import           Util
 
 import           Control.Lens                      ((^.))
 import           Data.Default                      (def)
@@ -45,9 +46,6 @@ import qualified Test.Hls.FileSystem               as FS
 import           Test.Hls.FileSystem               (file, text)
 import           Test.Tasty
 import           Test.Tasty.HUnit
-
-corePlugin :: PluginTestDescriptor Core.CoreLog
-corePlugin = mkPluginTestDescriptor Core.descriptor "core"
 
 tests :: TestTree
 tests = withResource acquire release tests where
@@ -125,15 +123,4 @@ tests = withResource acquire release tests where
   release :: TResponseMessage Method_Initialize -> IO ()
   release = mempty
 
-directFile :: FilePath -> Text -> [FS.FileTree]
-directFile fp content =
-  [ FS.directCradle [Text.pack fp]
-  , file fp (text content)
-  ]
-
-mkFs :: [FS.FileTree] -> FS.VirtualFileTree
-mkFs = FS.mkVirtualFileTree testDataDir
-
-testDataDir :: FilePath
-testDataDir = "plugins" </> "core-plugin" </> "test" </> "testdata"
 

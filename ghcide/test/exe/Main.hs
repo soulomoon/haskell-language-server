@@ -96,7 +96,6 @@ main = do
     , CPPTests.tests
     , DiagnosticTests.tests
     , CodeLensTests.tests
-    , OutlineTests.tests
     , HighlightTests.tests
     , FindDefinitionAndHoverTests.tests
     , PluginSimpleTests.tests

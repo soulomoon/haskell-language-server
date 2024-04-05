@@ -372,7 +372,6 @@ test-suite ghcide-tests
     LogType
     NonLspCommandLine
     OpenCloseTest
-    OutlineTests
     PluginSimpleTests
     PositionMappingTests
     PreprocessorTests
