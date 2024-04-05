@@ -4,7 +4,6 @@ module Development.IDE.Core.Actions
 , getDefinition
 , getTypeDefinition
 , highlightAtPoint
-, workspaceSymbols
 , lookupMod
 ) where
 
