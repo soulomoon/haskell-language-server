@@ -51,7 +51,6 @@ import CompletionTests
 import CPPTests
 import DiagnosticTests
 import CodeLensTests
-import OutlineTests
 import HighlightTests
 import FindDefinitionAndHoverTests
 import PluginSimpleTests

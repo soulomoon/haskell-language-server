@@ -17,10 +17,8 @@ import           Util
 
 import           Control.Lens                      ((^.))
 import           Data.Default                      (def)
-import           Data.Text                         (Text)
 import qualified Data.Text                         as Text
 import           Development.IDE.Plugin.Test       (blockCommandId)
-import qualified Ide.Plugin.Core                   as Core
 import           Language.LSP.Protocol.Types       (CodeLensOptions (..),
                                                     CompletionOptions (..),
                                                     DefinitionOptions (DefinitionOptions),
@@ -38,12 +36,7 @@ import           Language.LSP.Protocol.Types       (CodeLensOptions (..),
                                                     WorkspaceFoldersServerCapabilities (..),
                                                     WorkspaceSymbolOptions (..),
                                                     type (|?) (..))
-import           System.FilePath                   ((</>))
-import           Test.Hls                          (PluginTestDescriptor,
-                                                    mkPluginTestDescriptor,
-                                                    runSessionWithServerInTmpDir)
-import qualified Test.Hls.FileSystem               as FS
-import           Test.Hls.FileSystem               (file, text)
+import           Test.Hls                          (runSessionWithServerInTmpDir)
 import           Test.Tasty
 import           Test.Tasty.HUnit
 

@@ -8,8 +8,8 @@ import qualified Data.Text           as Text
 import qualified Ide.Plugin.Core     as Core
 import           Language.LSP.Test   (Session)
 import           System.FilePath     ((</>))
-import           Test.Hls            (Assertion, PluginTestDescriptor, TestName,
-                                      TestTree, mkPluginTestDescriptor,
+import           Test.Hls            (PluginTestDescriptor, TestName, TestTree,
+                                      mkPluginTestDescriptor,
                                       runSessionWithServerInTmpDir, testCase)
 import qualified Test.Hls.FileSystem as FS
 import           Test.Hls.FileSystem (file, text)

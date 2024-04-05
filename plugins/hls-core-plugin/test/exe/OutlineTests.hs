@@ -1,9 +1,6 @@
 
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms   #-}
-{-# LANGUAGE QuasiQuotes       #-}
-{-# LANGUAGE TemplateHaskell   #-}
-{-# LANGUAGE TypeApplications  #-}
 {-# LANGUAGE TypeFamilies      #-}
 
 module OutlineTests (tests) where
@@ -11,17 +8,10 @@ module OutlineTests (tests) where
 import           Control.Monad.IO.Class      (liftIO)
 import           Data.Text                   (Text)
 import qualified Data.Text                   as T
-import qualified Data.Text                   as Text
 import           Language.LSP.Protocol.Types hiding (SemanticTokenAbsolute (..),
                                               SemanticTokenRelative (..),
                                               SemanticTokensEdit (..), mkRange)
 import           Language.LSP.Test
-import           System.FilePath             ((</>))
-import           Test.Hls                    (PluginTestDescriptor,
-                                              mkPluginTestDescriptor,
-                                              runSessionWithServerInTmpDir)
-import qualified Test.Hls.FileSystem         as FS
-import           Test.Hls.FileSystem         (file, text)
 import           Test.Tasty
 import           Test.Tasty.HUnit
 import           Util
