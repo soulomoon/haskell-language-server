@@ -361,12 +361,10 @@ test-suite ghcide-tests
     DependentFileTest
     DiagnosticTests
     ExceptionTests
-    FindDefinitionAndHoverTests
     FuzzySearch
     GarbageCollectionTests
     HaddockTests
     HieDbRetry
-    HighlightTests
     IfaceTests
     LogType
     NonLspCommandLine

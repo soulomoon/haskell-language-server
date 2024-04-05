@@ -3,9 +3,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import qualified CompletionTests
+import qualified FindDefinitionAndHoverTests
+import qualified HighlightTests
 import qualified InitializeResponseTests
 import qualified OutlineTests
-import           Test.Hls                (defaultTestRunner, testGroup)
+import           Test.Hls                    (defaultTestRunner, testGroup)
 
 
 main :: IO ()
@@ -13,7 +15,10 @@ main =
   defaultTestRunner $
     testGroup
       "core"
-      [ InitializeResponseTests.tests
+      [
+        InitializeResponseTests.tests
       , OutlineTests.tests
       , CompletionTests.tests
+      , HighlightTests.tests
+      , FindDefinitionAndHoverTests.tests
       ]

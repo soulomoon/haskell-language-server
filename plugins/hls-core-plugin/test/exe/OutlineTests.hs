@@ -17,8 +17,6 @@ import           Test.Tasty.HUnit
 import           Util
 -- import           TestUtils
 
-pattern R :: UInt -> UInt -> UInt -> UInt -> Range
-pattern R x y x' y' = Range (Position x y) (Position x' y')
 
 testSymbols :: (HasCallStack) => TestName -> FilePath -> [Text]  -> [DocumentSymbol] -> TestTree
 testSymbols testName path content expectedSymbols =

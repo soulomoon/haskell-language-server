@@ -28,9 +28,13 @@ import           Language.LSP.Protocol.Types    hiding
                                                  mkRange)
 import           Language.LSP.Test
 import           System.FilePath
-import           Test.Hls                       (waitForTypecheck)
+import           Test.Hls                       (knownBrokenForGhcVersions,
+                                                 knownBrokenInEnv,
+                                                 waitForTypecheck)
 import qualified Test.Hls.FileSystem            as FS
 import           Test.Hls.FileSystem            (file, text)
+import           Test.Hls.Util                  (EnvSpec (..), OS (..),
+                                                 knownBrokenOnWindows)
 import           Test.Tasty
 import           Test.Tasty.HUnit
 import           Util
@@ -272,7 +276,7 @@ nonLocalCompletionTests =
       []
   ]
   where
-    brokenForWinGhc = knownBrokenFor (BrokenSpecific Windows [GHC92, GHC94, GHC96, GHC98]) "Windows has strange things in scope for some reason"
+    brokenForWinGhc = knownBrokenOnWindows "Windows has strange things in scope for some reason"
 
 otherCompletionTests :: [TestTree]
 otherCompletionTests = [
@@ -554,7 +558,7 @@ completionDocTests =
   ]
   where
     -- https://gitlab.haskell.org/ghc/ghc/-/issues/20903
-    brokenForMacGhc9 = knownBrokenFor (BrokenSpecific MacOS [GHC92, GHC94, GHC96]) "Extern doc doesn't support MacOS for ghc9"
+    brokenForMacGhc9 = knownBrokenInEnv [] "Extern doc doesn't support MacOS for ghc9"
     test doc pos label mn expected = do
       _ <- waitForDiagnostics
       compls <- getCompletions doc pos

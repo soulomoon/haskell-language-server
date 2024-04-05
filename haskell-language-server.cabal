@@ -1763,9 +1763,11 @@ test-suite hls-core-plugin-tests
   main-is:          CoreTest.hs
   other-modules:
     Util
+    FindDefinitionAndHoverTests
     InitializeResponseTests
     OutlineTests
     CompletionTests
+    HighlightTests
 
 
   build-depends:
@@ -1790,6 +1792,7 @@ test-suite hls-core-plugin-tests
     , row-types
     , extra
     , hls-test-utils
+    , regex-tdfa
 
 
 -----------------------------

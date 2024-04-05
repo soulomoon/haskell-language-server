@@ -50,8 +50,6 @@ import OpenCloseTest
 import CPPTests
 import DiagnosticTests
 import CodeLensTests
-import HighlightTests
-import FindDefinitionAndHoverTests
 import PluginSimpleTests
 import PreprocessorTests
 import THTests
@@ -93,8 +91,6 @@ main = do
     , CPPTests.tests
     , DiagnosticTests.tests
     , CodeLensTests.tests
-    , HighlightTests.tests
-    , FindDefinitionAndHoverTests.tests
     , PluginSimpleTests.tests
     , PreprocessorTests.tests
     , THTests.tests

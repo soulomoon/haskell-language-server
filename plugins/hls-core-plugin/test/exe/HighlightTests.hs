@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 
 module HighlightTests (tests) where
 
@@ -11,14 +12,17 @@ import           Language.LSP.Protocol.Types    hiding
                                                  SemanticTokensEdit (..),
                                                  mkRange)
 import           Language.LSP.Test
+import           Test.Hls                       (knownBrokenForGhcVersions)
 import           Test.Tasty
 import           Test.Tasty.HUnit
-import           TestUtils
+import           Util
+
+
 
 tests :: TestTree
 tests = testGroup "highlight"
-  [ testSessionWait "value" $ do
-    doc <- createDoc "A.hs" "haskell" source
+  [ testSessionWait "value" source $ do
+    doc <- openDoc "A.hs" "haskell"
     _ <- waitForDiagnostics
     highlights <- getHighlights doc (Position 3 2)
     liftIO $ highlights @?=
@@ -27,16 +31,16 @@ tests = testGroup "highlight"
             , DocumentHighlight (R 4 6 4 9) (Just DocumentHighlightKind_Read)
             , DocumentHighlight (R 5 22 5 25) (Just DocumentHighlightKind_Read)
             ]
-  , testSessionWait "type" $ do
-    doc <- createDoc "A.hs" "haskell" source
+  , testSessionWait "type" source $ do
+    doc <- openDoc "A.hs" "haskell"
     _ <- waitForDiagnostics
     highlights <- getHighlights doc (Position 2 8)
     liftIO $ highlights @?=
             [ DocumentHighlight (R 2 7 2 10) (Just DocumentHighlightKind_Read)
             , DocumentHighlight (R 3 11 3 14) (Just DocumentHighlightKind_Read)
             ]
-  , testSessionWait "local" $ do
-    doc <- createDoc "A.hs" "haskell" source
+  , testSessionWait "local" source $ do
+    doc <- openDoc "A.hs" "haskell"
     _ <- waitForDiagnostics
     highlights <- getHighlights doc (Position 6 5)
     liftIO $ highlights @?=
@@ -45,8 +49,8 @@ tests = testGroup "highlight"
             , DocumentHighlight (R 7 12 7 15) (Just DocumentHighlightKind_Read)
             ]
   , knownBrokenForGhcVersions [GHC92, GHC94, GHC96, GHC98] "Ghc9 highlights the constructor and not just this field" $
-        testSessionWait "record" $ do
-        doc <- createDoc "A.hs" "haskell" recsource
+        testSessionWait "record" recsource $ do
+        doc <- openDoc "A.hs" "haskell"
         _ <- waitForDiagnostics
         highlights <- getHighlights doc (Position 4 15)
         liftIO $ highlights @?=
@@ -77,3 +81,4 @@ tests = testGroup "highlight"
       ,"data Rec = Rec { field1 :: Int, field2 :: Char }"
       ,"foo Rec{..} = field2 + field1"
       ]
+    testSessionWait name ct = testSessionWithCorePluginSingleFile name "A.hs" ct
