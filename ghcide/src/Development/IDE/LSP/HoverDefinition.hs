@@ -10,7 +10,7 @@ module Development.IDE.LSP.HoverDefinition
     , gotoDefinition
     , gotoTypeDefinition
     , documentHighlight
-    , references
+    -- , references
     -- , wsSymbols
     ) where
 
@@ -38,14 +38,6 @@ gotoDefinition = request "Definition" getDefinition (InR $ InR Null) (InL . Defi
 gotoTypeDefinition = request "TypeDefinition" getTypeDefinition (InR $ InR Null) (InL . Definition. InR)
 hover          = request "Hover"      getAtPoint     (InR Null)     foundHover
 documentHighlight = request "DocumentHighlight" highlightAtPoint (InR Null) InL
-
-references :: PluginMethodHandler IdeState Method_TextDocumentReferences
-references ide _ (ReferenceParams (TextDocumentIdentifier uri) pos _ _ _) = do
-  nfp <- getNormalizedFilePathE uri
-  liftIO $ logDebug (ideLogger ide) $
-        "References request at position " <> T.pack (showPosition pos) <>
-        " in file: " <> T.pack (show nfp)
-  InL <$> (liftIO $ runAction "references" ide $ refsAtPoint nfp pos)
 
 
 foundHover :: (Maybe Range, [T.Text]) -> Hover |? Null
