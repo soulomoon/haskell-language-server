@@ -9,7 +9,6 @@ import           Data.Foldable
 import           Data.Maybe
 import qualified Data.Text                   as T
 import           Development.IDE.GHC.Compat  (GhcVersion (..), ghcVersion)
-import           Development.IDE.GHC.Util
 -- import           Development.IDE.Test           (expectDiagnostics,
 --                                                  standardizeQuotes)
 import qualified Language.LSP.Protocol.Lens  as L
@@ -19,45 +18,34 @@ import qualified Language.LSP.Protocol.Lens  as L
 --                                                  SemanticTokensEdit (..),
 --                                                  mkRange)
 
-import           Language.LSP.Protocol.Types (DiagnosticSeverity (..),
-                                              Hover (..), MarkupContent (..),
+import           Language.LSP.Protocol.Types (Hover (..), MarkupContent (..),
                                               Position (..), Range,
                                               TextDocumentIdentifier, mkRange,
                                               type (|?) (..))
 
 import           Language.LSP.Test
-import           System.FilePath
 import           System.Info.Extra           (isWindows)
 
 import           Control.Lens                ((^.))
 import           Test.Tasty
 import           Test.Tasty.HUnit
 -- import           TestUtils
-import           Test.Hls                    (knownBrokenForGhcVersions,
-                                              waitForProgressDone,
+import           Test.Hls                    (waitForProgressDone,
                                               waitForTypecheck)
-import           Test.Hls.FileSystem         (copy, directProjectMulti)
+import           Test.Hls.FileSystem         (copyDir)
 import           Text.Regex.TDFA             ((=~))
 import           Util
 
 tests :: TestTree
 tests = let
   tst :: (TextDocumentIdentifier -> Position -> Session a, a -> Session [Expect] -> Session ()) -> Position -> String -> Session [Expect] -> String -> TestTree
-  tst (get, check) pos sfp targetRange title = testSessionWithCorePlugin title (mkFs $  fmap (copy . ("hover" </>)) ["Bar.hs", "Foo.hs", "GotoHover.hs", "hie.yaml", "RecordDotSyntax.hs"]) $ do
-    -- Dirty the cache to check that definitions work even in the presence of iface files
-    -- let fooPath = "Foo.hs"
-    -- fooSource <- liftIO $ readFileUtf8 fooPath
-    -- fooDoc <- createDoc fooPath "haskell" fooSource
-    -- _ <- getHover fooDoc $ Position 4 3
-    -- closeDoc fooDoc
-
-    doc <- openDoc sfp "haskell"
-    waitForProgressDone
-    x <- waitForTypecheck doc
-
-
-    found <- get doc pos
-    check found targetRange
+  tst (get, check) pos sfp targetRange title =
+    testSessionWithCorePlugin title (mkFs [copyDir "hover"]) $ do
+        doc <- openDoc sfp "haskell"
+        waitForProgressDone
+        x <- waitForTypecheck doc
+        found <- get doc pos
+        check found targetRange
 
 
 

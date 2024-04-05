@@ -7,15 +7,20 @@
 
 module Util where
 
+import           Control.Monad               (void)
 import           Control.Monad.IO.Class      (MonadIO (..))
+import qualified Data.Aeson                  as A
 import           Data.Default                (Default (..))
 import           Data.Foldable               (traverse_)
 import           Data.Maybe                  (fromJust)
 import           Data.Text                   (Text)
 import qualified Data.Text                   as T
 import qualified Data.Text                   as Text
+import           Debug.Trace                 (traceShow)
 import           Development.IDE             (GhcVersion, ghcVersion)
+import           GHC.TypeLits                (symbolVal)
 import qualified Ide.Plugin.Core             as Core
+import           Ide.Types                   (Config (..))
 import           Language.LSP.Protocol.Types (Definition (..),
                                               DefinitionLink (..),
                                               Location (..), LocationLink (..),
@@ -28,12 +33,16 @@ import           Language.LSP.Test           (Session)
 import           System.Directory.Extra      (canonicalizePath)
 import           System.FilePath             ((</>))
 import           System.Info.Extra
-import           Test.Hls                    (PluginTestDescriptor, TestName,
-                                              TestTree, assertBool,
-                                              expectFailBecause,
+import           Test.Hls                    (FromServerMessage' (..),
+                                              PluginTestDescriptor,
+                                              SMethod (..), TCustomMessage (..),
+                                              TNotificationMessage (..),
+                                              TestName, TestRunner, TestTree,
+                                              assertBool, expectFailBecause,
                                               ignoreTestBecause,
                                               mkPluginTestDescriptor,
                                               runSessionWithServerInTmpDir,
+                                              satisfyMaybe, setConfigSection,
                                               testCase)
 import qualified Test.Hls.FileSystem         as FS
 import           Test.Hls.FileSystem         (copy, file, text)
@@ -44,10 +53,10 @@ import           Test.Tasty.HUnit            (Assertion, assertFailure, (@=?),
 pattern R :: UInt -> UInt -> UInt -> UInt -> Range
 pattern R x y x' y' = Range (Position x y) (Position x' y')
 
-testSessionWithCorePlugin :: TestName -> FS.VirtualFileTree -> Session () -> TestTree
+testSessionWithCorePlugin ::(TestRunner cont ()) => TestName -> FS.VirtualFileTree -> cont -> TestTree
 testSessionWithCorePlugin caseName vfs = testCase caseName . runSessionWithCorePlugin vfs
 
-runSessionWithCorePlugin :: FS.VirtualFileTree -> Session a -> IO a
+runSessionWithCorePlugin :: (TestRunner cont res) => FS.VirtualFileTree -> cont -> IO res
 runSessionWithCorePlugin = runSessionWithServerInTmpDir def corePlugin
 
 runSessionWithCorePluginEmpty :: [Text] -> Session a -> IO a
@@ -162,3 +171,16 @@ standardizeQuotes msg = let
         repl  c  = c
     in  T.map repl msg
 
+
+configureCheckProject :: Bool -> Session ()
+configureCheckProject overrideCheckProject = setConfigSection "haskell" (A.toJSON $ def{checkProject = overrideCheckProject})
+
+
+referenceReady :: (FilePath -> Bool) -> Session FilePath
+referenceReady pred = satisfyMaybe $ \case
+  FromServerMess (SMethod_CustomMethod p) (NotMess TNotificationMessage{_params})
+    | A.Success fp <- A.fromJSON _params
+    , pred fp
+    , symbolVal p == "ghcide/reference/ready"
+    -> traceShow ("referenceReady", fp) $ Just fp
+  _ -> Nothing

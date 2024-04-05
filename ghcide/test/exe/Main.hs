@@ -67,7 +67,6 @@ import BootTests
 import RootUriTests
 import AsyncTests
 import ClientSettingsTests
-import ReferenceTests
 import GarbageCollectionTests
 import ExceptionTests
 
@@ -108,7 +107,6 @@ main = do
     , RootUriTests.tests
     , AsyncTests.tests
     , ClientSettingsTests.tests
-    , ReferenceTests.tests
     , GarbageCollectionTests.tests
     , HieDbRetry.tests
     , ExceptionTests.tests recorder logger

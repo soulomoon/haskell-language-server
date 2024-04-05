@@ -1768,6 +1768,7 @@ test-suite hls-core-plugin-tests
     OutlineTests
     CompletionTests
     HighlightTests
+    ReferenceTests
 
 
   build-depends:
@@ -1793,6 +1794,8 @@ test-suite hls-core-plugin-tests
     , extra
     , hls-test-utils
     , regex-tdfa
+    , directory
+    , tasty-expected-failure
 
 
 -----------------------------

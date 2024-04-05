@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 
 module ReferenceTests (tests) where
 
@@ -7,8 +8,6 @@ import           Control.Monad
 import           Control.Monad.IO.Class          (liftIO)
 import           Data.List.Extra
 import qualified Data.Set                        as Set
-import           Development.IDE.Test            (configureCheckProject,
-                                                  referenceReady)
 import           Development.IDE.Types.Location
 import qualified Language.LSP.Protocol.Lens      as L
 import           Language.LSP.Protocol.Types     hiding
@@ -20,12 +19,18 @@ import           Language.LSP.Test
 import           System.Directory
 import           System.FilePath
 -- import Test.QuickCheck.Instances ()
+import           Control.Concurrent              (threadDelay)
 import           Control.Lens                    ((^.))
 import           Data.Tuple.Extra
+import           Test.Hls                        (waitForAllProgressDone,
+                                                  waitForBuildQueue,
+                                                  waitForProgressDone)
+import           Test.Hls.FileSystem             (copy, copyDir,
+                                                  directProjectMulti, toAbsFp)
 import           Test.Tasty
 import           Test.Tasty.ExpectedFailure
 import           Test.Tasty.HUnit
-import           TestUtils
+import           Util
 
 
 tests :: TestTree
@@ -156,36 +161,43 @@ getReferences' (file, l, c) includeDeclaration = do
     where toBool YesIncludeDeclaration = True
           toBool NoExcludeDeclaration  = False
 
-referenceTestSession :: String -> FilePath -> [FilePath] -> (FilePath -> Session ()) -> TestTree
-referenceTestSession name thisDoc docs' f = testSessionWithExtraFiles "references" name $ \dir -> do
-  -- needed to build whole project indexing
-  configureCheckProject True
-  let docs = map (dir </>) $ delete thisDoc $ nubOrd docs'
-  -- Initial Index
-  docid <- openDoc thisDoc "haskell"
-  let
-    loop :: [FilePath] -> Session ()
-    loop [] = pure ()
-    loop docs = do
-      doc <- skipManyTill anyMessage $ referenceReady (`elem` docs)
-      loop (delete doc docs)
-  loop docs
-  f dir
-  closeDoc docid
+referenceTestSession :: HasCallStack => String -> FilePath -> [FilePath] -> Session () -> TestTree
+referenceTestSession name thisDoc docs' f = do
+  testSessionWithCorePlugin name (mkFs [copyDir "references"]) $ \fs -> do
+    -- needed to build whole project indexing
+    configureCheckProject True
+
+    -- Initial Index
+    docid <- openDoc thisDoc "haskell"
+
+    -- need to get the real paths through links
+    docs <- mapM (liftIO . canonicalizePath . toAbsFp fs) $ delete thisDoc $ nubOrd docs'
+    liftIO $ putStrLn $ "docs:" <> show docs
+    let
+        -- todo wait for docs
+        loop :: [FilePath] -> Session ()
+        loop [] = pure ()
+        loop docs = do
+
+            doc <- skipManyTill anyMessage $ referenceReady (`elem` docs)
+            loop (delete doc docs)
+    loop docs
+    f
+    closeDoc docid
 
 -- | Given a location, lookup the symbol and all references to it. Make sure
 -- they are the ones we expect.
-referenceTest :: String -> SymbolLocation -> IncludeDeclaration -> [SymbolLocation] -> TestTree
+referenceTest :: (HasCallStack) => String -> SymbolLocation -> IncludeDeclaration -> [SymbolLocation] -> TestTree
 referenceTest name loc includeDeclaration expected =
-    referenceTestSession name (fst3 loc) docs $ \dir -> do
+    referenceTestSession name (fst3 loc) docs $ do
         actual <- getReferences' loc includeDeclaration
-        liftIO $ actual `expectSameLocations` map (first3 (dir </>)) expected
+        liftIO $ actual `expectSameLocations` expected
   where
     docs = map fst3 expected
 
 type SymbolLocation = (FilePath, UInt, UInt)
 
-expectSameLocations :: [Location] -> [SymbolLocation] -> Assertion
+expectSameLocations :: (HasCallStack) => [Location] -> [SymbolLocation] -> Assertion
 expectSameLocations actual expected = do
     let actual' =
             Set.map (\location -> (location ^. L.uri

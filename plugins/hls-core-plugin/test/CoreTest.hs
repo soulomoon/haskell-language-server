@@ -7,6 +7,7 @@ import qualified FindDefinitionAndHoverTests
 import qualified HighlightTests
 import qualified InitializeResponseTests
 import qualified OutlineTests
+import qualified ReferenceTests
 import           Test.Hls                    (defaultTestRunner, testGroup)
 
 
@@ -21,4 +22,5 @@ main =
       , CompletionTests.tests
       , HighlightTests.tests
       , FindDefinitionAndHoverTests.tests
+      , ReferenceTests.tests
       ]

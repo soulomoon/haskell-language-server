@@ -373,7 +373,6 @@ test-suite ghcide-tests
     PositionMappingTests
     PreprocessorTests
     Progress
-    ReferenceTests
     RootUriTests
     SafeTests
     SymlinkTests
