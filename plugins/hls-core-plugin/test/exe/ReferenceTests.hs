@@ -155,7 +155,7 @@ getReferences' (file, l, c) includeDeclaration = do
     where toBool YesIncludeDeclaration = True
           toBool NoExcludeDeclaration  = False
 
-referenceTestSession :: HasCallStack => String -> FilePath -> [FilePath] -> Session () -> TestTree
+referenceTestSession :: String -> FilePath -> [FilePath] -> Session () -> TestTree
 referenceTestSession name thisDoc docs' f = do
   testSessionWithCorePlugin name (mkFs [copyDir "references"]) $ \fs -> do
     -- needed to build whole project indexing
