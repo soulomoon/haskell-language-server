@@ -30,155 +30,81 @@ import           Util
 pattern R :: UInt -> UInt -> UInt -> UInt -> Range
 pattern R x y x' y' = Range (Position x y) (Position x' y')
 
+testSymbols :: (HasCallStack) => TestName -> FilePath -> [Text]  -> [DocumentSymbol] -> TestTree
+testSymbols testName path content expectedSymbols =
+    testSessionWithCorePluginSingleFile testName path (T.unlines content) $ do
+        docId   <- openDoc path "haskell"
+        symbols <- getDocumentSymbols docId
+        liftIO $ symbols @?= Right expectedSymbols
+
+testSymbolsA :: (HasCallStack) => TestName -> [Text]  -> [DocumentSymbol] -> TestTree
+testSymbolsA testName content expectedSymbols =
+    testSymbols testName "A.hs" content expectedSymbols
+
 tests :: TestTree
 tests = testGroup
   "outline"
   [
-    -- runSessionWithServerInTmpDir def "type class" $ do
-    -- let source = T.unlines ["module A where", "class A a where a :: a -> Bool"]
-    -- docId   <- createDoc "A.hs" "haskell" source
-    -- symbols <- getDocumentSymbols docId
-    -- liftIO $ symbols @?= Right
-    --   [ moduleSymbol
-    --       "A"
-    --       (R 0 7 0 8)
-    --       [ classSymbol "A a"
-    --                     (R 1 0 1 30)
-    --                     [docSymbol' "a" SymbolKind_Method (R 1 16 1 30) (R 1 16 1 17)]
-    --       ]
-    --   ]
---   , testSessionWait "type class instance " $ do
---     let source = T.unlines ["class A a where", "instance A () where"]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right
---       [ classSymbol "A a" (R 0 0 0 15) []
---       , docSymbol "A ()" SymbolKind_Interface (R 1 0 1 19)
---       ]
---   , testSessionWait "type family" $ do
---     let source = T.unlines ["{-# language TypeFamilies #-}", "type family A"]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right [docSymbolD "A" "type family" SymbolKind_Function (R 1 0 1 13)]
---   , testSessionWait "type family instance " $ do
---     let source = T.unlines
---           [ "{-# language TypeFamilies #-}"
---           , "type family A a"
---           , "type instance A () = ()"
---           ]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right
---       [ docSymbolD "A a"   "type family" SymbolKind_Function     (R 1 0 1 15)
---       , docSymbol "A ()" SymbolKind_Interface (R 2 0 2 23)
---       ]
---   , testSessionWait "data family" $ do
---     let source = T.unlines ["{-# language TypeFamilies #-}", "data family A"]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right [docSymbolD "A" "data family" SymbolKind_Function (R 1 0 1 11)]
---   , testSessionWait "data family instance " $ do
---     let source = T.unlines
---           [ "{-# language TypeFamilies #-}"
---           , "data family A a"
---           , "data instance A () = A ()"
---           ]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right
---       [ docSymbolD "A a"   "data family" SymbolKind_Function     (R 1 0 1 11)
---       , docSymbol "A ()" SymbolKind_Interface (R 2 0 2 25)
---       ]
---   , testSessionWait "constant" $ do
---     let source = T.unlines ["a = ()"]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right
---       [docSymbol "a" SymbolKind_Function (R 0 0 0 6)]
---   , testSessionWait "pattern" $ do
---     let source = T.unlines ["Just foo = Just 21"]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right
---       [docSymbol "Just foo" SymbolKind_Function (R 0 0 0 18)]
---   , testSessionWait "pattern with type signature" $ do
---     let source = T.unlines ["{-# language ScopedTypeVariables #-}", "a :: () = ()"]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right
---       [docSymbol "a :: ()" SymbolKind_Function (R 1 0 1 12)]
---   , testSessionWait "function" $ do
---     let source = T.unlines ["a _x = ()"]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right [docSymbol "a" SymbolKind_Function (R 0 0 0 9)]
---   , testSessionWait "type synonym" $ do
---     let source = T.unlines ["type A = Bool"]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right
---       [docSymbol' "A" SymbolKind_TypeParameter (R 0 0 0 13) (R 0 5 0 6)]
---   , testSessionWait "datatype" $ do
---     let source = T.unlines ["data A = C"]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right
---       [ docSymbolWithChildren "A"
---                               SymbolKind_Struct
---                               (R 0 0 0 10)
---                               [docSymbol "C" SymbolKind_Constructor (R 0 9 0 10)]
---       ]
---   , testSessionWait "record fields" $ do
---     let source = T.unlines ["data A = B {", "  x :: Int", "  , y :: Int}"]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right
---       [ docSymbolWithChildren "A" SymbolKind_Struct (R 0 0 2 13)
---           [ docSymbolWithChildren' "B" SymbolKind_Constructor (R 0 9 2 13) (R 0 9 0 10)
---             [ docSymbol "x" SymbolKind_Field (R 1 2 1 3)
---             , docSymbol "y" SymbolKind_Field (R 2 4 2 5)
---             ]
---           ]
---       ]
---   , testSessionWait "import" $ do
---     let source = T.unlines ["import Data.Maybe ()"]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right
---       [docSymbolWithChildren "imports"
---                              SymbolKind_Module
---                              (R 0 0 0 20)
---                              [ docSymbol "import Data.Maybe" SymbolKind_Module (R 0 0 0 20)
---                              ]
---       ]
---   , testSessionWait "multiple import" $ do
---     let source = T.unlines ["", "import Data.Maybe ()", "", "import Control.Exception ()", ""]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right
---       [docSymbolWithChildren "imports"
---                              SymbolKind_Module
---                              (R 1 0 3 27)
---                              [ docSymbol "import Data.Maybe" SymbolKind_Module (R 1 0 1 20)
---                              , docSymbol "import Control.Exception" SymbolKind_Module (R 3 0 3 27)
---                              ]
---       ]
---   , testSessionWait "foreign import" $ do
---     let source = T.unlines
---           [ "{-# language ForeignFunctionInterface #-}"
---           , "foreign import ccall \"a\" a :: Int"
---           ]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right [docSymbolD "a" "import" SymbolKind_Object (R 1 0 1 33)]
---   , testSessionWait "foreign export" $ do
---     let source = T.unlines
---           [ "{-# language ForeignFunctionInterface #-}"
---           , "foreign export ccall odd :: Int -> Bool"
---           ]
---     docId   <- createDoc "A.hs" "haskell" source
---     symbols <- getDocumentSymbols docId
---     liftIO $ symbols @?= Right [docSymbolD "odd" "export" SymbolKind_Object (R 1 0 1 39)]
+    testSymbolsA "module" ["module A where", "class A a where a :: a -> Bool"]
+            [ moduleSymbol
+                "A"
+                (R 0 7 0 8)
+                [ classSymbol "A a"
+                                (R 1 0 1 30)
+                                [docSymbol' "a" SymbolKind_Method (R 1 16 1 30) (R 1 16 1 17)]
+                ] ]
+  , testSymbolsA "type class instance " ["class A a where", "instance A () where"]
+      [ classSymbol "A a" (R 0 0 0 15) []
+      , docSymbol "A ()" SymbolKind_Interface (R 1 0 1 19)
+      ]
+  , testSymbolsA "type family" ["{-# language TypeFamilies #-}", "type family A"] [docSymbolD "A" "type family" SymbolKind_Function (R 1 0 1 13)]
+  , testSymbolsA "type family instance " [ "{-# language TypeFamilies #-}" , "type family A a" , "type instance A () = ()"]
+      [ docSymbolD "A a"   "type family" SymbolKind_Function     (R 1 0 1 15)
+      , docSymbol "A ()" SymbolKind_Interface (R 2 0 2 23)
+      ]
+  , testSymbolsA "data family" ["{-# language TypeFamilies #-}", "data family A"] [docSymbolD "A" "data family" SymbolKind_Function (R 1 0 1 11)]
+  , testSymbolsA "data family instance " [ "{-# language TypeFamilies #-}" , "data family A a" , "data instance A () = A ()" ]
+      [ docSymbolD "A a"   "data family" SymbolKind_Function     (R 1 0 1 11)
+      , docSymbol "A ()" SymbolKind_Interface (R 2 0 2 25)
+      ]
+  , testSymbolsA "constant" ["a = ()"] [docSymbol "a" SymbolKind_Function (R 0 0 0 6)]
+  , testSymbolsA "pattern" ["Just foo = Just 21"] [docSymbol "Just foo" SymbolKind_Function (R 0 0 0 18)]
+  , testSymbolsA "pattern with type signature" ["{-# language ScopedTypeVariables #-}", "a :: () = ()"] [docSymbol "a :: ()" SymbolKind_Function (R 1 0 1 12)]
+  , testSymbolsA "function" ["a _x = ()"] [docSymbol "a" SymbolKind_Function (R 0 0 0 9)]
+  , testSymbolsA "type synonym" ["type A = Bool"] [docSymbol' "A" SymbolKind_TypeParameter (R 0 0 0 13) (R 0 5 0 6)]
+  , testSymbolsA "datatype" ["data A = C"] [ docSymbolWithChildren "A" SymbolKind_Struct (R 0 0 0 10) [docSymbol "C" SymbolKind_Constructor (R 0 9 0 10)] ]
+  , testSymbolsA "record fields" ["data A = B {", "  x :: Int", "  , y :: Int}"]
+      [ docSymbolWithChildren "A" SymbolKind_Struct (R 0 0 2 13)
+          [ docSymbolWithChildren' "B" SymbolKind_Constructor (R 0 9 2 13) (R 0 9 0 10)
+            [ docSymbol "x" SymbolKind_Field (R 1 2 1 3)
+            , docSymbol "y" SymbolKind_Field (R 2 4 2 5)
+            ]
+          ]
+      ]
+  , testSymbolsA "import" ["import Data.Maybe ()"]
+      [docSymbolWithChildren "imports"
+                             SymbolKind_Module
+                             (R 0 0 0 20)
+                             [ docSymbol "import Data.Maybe" SymbolKind_Module (R 0 0 0 20)
+                             ]
+      ]
+  , testSymbolsA "multiple import" ["", "import Data.Maybe ()", "", "import Control.Exception ()", ""]
+      [docSymbolWithChildren "imports"
+                             SymbolKind_Module
+                             (R 1 0 3 27)
+                             [ docSymbol "import Data.Maybe" SymbolKind_Module (R 1 0 1 20)
+                             , docSymbol "import Control.Exception" SymbolKind_Module (R 3 0 3 27)
+                             ]
+      ]
+  , testSymbolsA "foreign import"
+          [ "{-# language ForeignFunctionInterface #-}"
+          , "foreign import ccall \"a\" a :: Int"
+          ] [docSymbolD "a" "import" SymbolKind_Object (R 1 0 1 33)]
+  , testSymbolsA "foreign export"
+          [ "{-# language ForeignFunctionInterface #-}"
+          , "foreign export ccall odd :: Int -> Bool"
+          ]
+     [docSymbolD "odd" "export" SymbolKind_Object (R 1 0 1 39)]
   ]
  where
   docSymbol name kind loc =
