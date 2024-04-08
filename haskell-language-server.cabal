@@ -1769,6 +1769,7 @@ test-suite hls-core-plugin-tests
     CompletionTests
     HighlightTests
     ReferenceTests
+    CradleTests
 
 
   build-depends:

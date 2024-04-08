@@ -31,6 +31,7 @@ module Test.Hls.FileSystem
   , simpleCabalProject'
   ) where
 
+import           Control.Monad.Extra         (partitionM)
 import           Data.Foldable               (traverse_)
 import qualified Data.Text                   as T
 import qualified Data.Text.IO                as T
@@ -162,11 +163,19 @@ copy fp = File fp (Ref fp)
 copyDir :: FilePath -> FileTree
 copyDir dir = CopiedDirectory dir
 
+copyDirRecursive :: FilePath -> FilePath -> FilePath -> IO [FileTree]
+copyDirRecursive previousDir root dir = do
+  let currentDir = root </> previousDir </> dir
+  let relativeDir = previousDir </> dir
+  filesOrFolders <- listDirectory currentDir
+  (files,folders) <- partitionM (doesFileExist . (currentDir </>)) filesOrFolders
+  let copiedFiles = fmap (copy . (relativeDir </>)) files
+  copiedDirs <- traverse (\subDir -> directory subDir <$> copyDirRecursive relativeDir root subDir) folders
+  return $ copiedFiles <> copiedDirs
+
 -- | Copy a directory into a test project.
 copyDir' :: FilePath -> FilePath -> IO [FileTree]
-copyDir' root dir = do
-  files <- listDirectory (root </> dir)
-  traverse (\f -> pure $ copy (dir </> f)) files
+copyDir' = copyDirRecursive ""
 
 directory :: FilePath -> [FileTree] -> FileTree
 directory name nodes = Directory name nodes

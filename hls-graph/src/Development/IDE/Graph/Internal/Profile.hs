@@ -5,8 +5,9 @@
 
 {- HLINT ignore "Redundant bracket" -} -- a result of CPP expansion
 
-module Development.IDE.Graph.Internal.Profile (writeProfile) where
+module Development.IDE.Graph.Internal.Profile (writeProfile, collectProfileMemory) where
 
+import           Control.Concurrent.STM                  (atomically)
 import           Control.Concurrent.STM.Stats            (readTVarIO)
 import           Data.Bifunctor
 import qualified Data.ByteString.Lazy.Char8              as LBS
@@ -23,13 +24,16 @@ import           Data.Maybe
 import           Data.Time                               (getCurrentTime)
 import           Data.Time.Format.ISO8601                (iso8601Show)
 import           Development.IDE.Graph.Internal.Database (getDirtySet)
+import           Development.IDE.Graph.Internal.DataSize
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Paths
 import           Development.IDE.Graph.Internal.Types
 import qualified Language.Javascript.DGTable             as DGTable
 import qualified Language.Javascript.Flot                as Flot
 import qualified Language.Javascript.JQuery              as JQuery
+import           ListT                                   (toList)
 import           Numeric.Extra                           (showDP)
+import qualified StmContainers.Map                       as SMap
 import           System.FilePath
 import           System.IO.Unsafe                        (unsafePerformIO)
 import           System.Time.Extra                       (Seconds)
@@ -38,6 +42,16 @@ import           System.Time.Extra                       (Seconds)
 import           Data.FileEmbed
 import           Language.Haskell.TH.Syntax              (runIO)
 #endif
+
+data DataBaseProfileMemory = ProfileMemory
+    {}
+
+collectProfileMemory :: ShakeDatabase -> IO DataBaseProfileMemory
+collectProfileMemory (ShakeDatabase _ _ Database{databaseValues}) = do
+    kvss <- atomically $ (fmap . fmap) (first renderKey) $ toList $ SMap.listT databaseValues
+    kvs <- mapM  (\(k, v)->  fmap (k, ) (recursiveSize v)) $ kvss
+    writeFile "profile-memory.txt" $ show kvs
+    pure ProfileMemory
 
 -- | Generates an report given some build system profiling data.
 writeProfile :: FilePath -> Database -> IO ()

@@ -137,6 +137,7 @@ import           Development.IDE.Graph.Database         (ShakeDatabase,
                                                          shakeNewDatabase,
                                                          shakeProfileDatabase,
                                                          shakeRunDatabaseForKeys)
+import           Development.IDE.Graph.Internal.Profile (collectProfileMemory)
 import           Development.IDE.Graph.Rule
 import           Development.IDE.Types.Action
 import           Development.IDE.Types.Diagnostics
@@ -716,6 +717,7 @@ shakeShut IdeState{..} = do
     -- request so we first abort that.
     for_ runner cancelShakeSession
     void $ shakeDatabaseProfile shakeDb
+    void $ collectProfileMemory shakeDb
     progressStop $ progress shakeExtras
     stopMonitoring
 

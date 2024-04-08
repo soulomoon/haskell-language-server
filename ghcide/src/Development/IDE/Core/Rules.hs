@@ -162,6 +162,7 @@ import           Language.LSP.Protocol.Types                  (MessageType (Mess
                                                                ShowMessageParams (ShowMessageParams))
 import           Language.LSP.Server                          (LspT)
 import qualified Language.LSP.Server                          as LSP
+import qualified Language.LSP.Protocol.Message            as LSP
 import           Language.LSP.VFS
 import           Prelude                                      hiding (mod)
 import           System.Directory                             (doesFileExist,
@@ -170,6 +171,7 @@ import           System.Info.Extra                            (isWindows)
 
 
 import           GHC.Fingerprint
+import qualified Development.IDE.Session as Session
 
 -- See Note [Guidelines For Using CPP In GHCIDE Import Statements]
 
@@ -179,12 +181,14 @@ import           GHC                                          (mgModSummaries)
 
 #if MIN_VERSION_ghc(9,3,0)
 import qualified Data.IntMap                                  as IM
+import Data.Row (KnownSymbol)
 #endif
 
 
 
 data Log
   = LogShake Shake.Log
+  | LogSession Session.Log
   | LogReindexingHieFile !NormalizedFilePath
   | LogLoadingHieFile !NormalizedFilePath
   | LogLoadingHieFileFail !FilePath !SomeException
@@ -214,6 +218,7 @@ instance Pretty Log where
         <+> "the HLS version being used, the plugins enabled, and if possible the codebase and file which"
         <+> "triggered this warning."
       ]
+    LogSession msg -> pretty msg
 
 templateHaskellInstructions :: T.Text
 templateHaskellInstructions = "https://haskell-language-server.readthedocs.io/en/latest/troubleshooting.html#static-binaries"
@@ -707,8 +712,24 @@ loadGhcSession recorder ghcSessionDepsConfig = do
         return (fingerprint, res)
 
     defineEarlyCutoff (cmapWithPrio LogShake recorder) $ Rule $ \GhcSession file -> do
+        -- todo add signal
+        ShakeExtras{exportsMap, ideTesting = IdeTesting testing, lspEnv, progress} <- getShakeExtras
+        let
+            signal' :: KnownSymbol s => Proxy s -> String -> Action ()
+            signal' msg str = when testing $ liftIO $
+                mRunLspT lspEnv $
+                    LSP.sendNotification (LSP.SMethod_CustomMethod msg) $
+                    toJSON $ [str]
+            signal :: KnownSymbol s => Proxy s -> Action ()
+            signal msg = signal' msg (show file)
+
+
+
+        signal (Proxy @"GhcSession/start")
         IdeGhcSession{loadSessionFun} <- useNoFile_ GhcSessionIO
+        signal (Proxy @"GhcSession/loadSessionFun/before")
         (val,deps) <- liftIO $ loadSessionFun $ fromNormalizedFilePath file
+        signal (Proxy @"GhcSession/loadSessionFun/after")
 
         -- add the deps to the Shake graph
         let addDependency fp = do
@@ -721,6 +742,7 @@ loadGhcSession recorder ghcSessionDepsConfig = do
         mapM_ addDependency deps
 
         let cutoffHash = LBS.toStrict $ B.encode (hash (snd val))
+        signal (Proxy @"GhcSession/done")
         return (Just cutoffHash, val)
 
     defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \(GhcSessionDeps_ fullModSummary) file -> do

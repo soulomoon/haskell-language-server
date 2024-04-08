@@ -647,6 +647,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} dir = do
            -- Display a user friendly progress message here: They probably don't know what a cradle is
            let progMsg = "Setting up " <> T.pack (takeBaseName (cradleRootDir cradle))
                          <> " (for " <> T.pack lfp <> ")"
+           mRunLspT lspEnv $ sendNotification (SMethod_CustomMethod (Proxy @"ghcide/cradle/eopts/before")) (toJSON cfp)
            eopts <- mRunLspTCallback lspEnv (\act -> withIndefiniteProgress progMsg Nothing NotCancellable (const act)) $
               withTrace "Load cradle" $ \addTag -> do
                   addTag "file" lfp
@@ -654,8 +655,9 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} dir = do
                   res <- cradleToOptsAndLibDir recorder cradle cfp old_files
                   addTag "result" (show res)
                   return res
-
+           mRunLspT lspEnv $ sendNotification (SMethod_CustomMethod (Proxy @"ghcide/cradle/eopts/after")) (toJSON cfp)
            logWith recorder Debug $ LogSessionLoadingResult eopts
+           mRunLspT lspEnv $ sendNotification (SMethod_CustomMethod (Proxy @"ghcide/cradle/eopts/afterLog")) (toJSON (show $ pretty (LogSessionLoadingResult eopts)))
            case eopts of
              -- The cradle gave us some options so get to work turning them
              -- into and HscEnv.

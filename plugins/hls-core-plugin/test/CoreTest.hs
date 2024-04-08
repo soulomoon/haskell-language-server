@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import qualified CompletionTests
+import qualified CradleTests
 import qualified FindDefinitionAndHoverTests
 import qualified HighlightTests
 import qualified InitializeResponseTests
@@ -23,4 +24,5 @@ main =
       , HighlightTests.tests
       , FindDefinitionAndHoverTests.tests
       , ReferenceTests.tests
+      , CradleTests.tests
       ]

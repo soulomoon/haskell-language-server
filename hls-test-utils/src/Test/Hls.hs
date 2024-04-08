@@ -38,6 +38,7 @@ module Test.Hls
     PluginDescriptor,
     IdeState,
     -- * Assertion helper functions
+    expectNoKickDiagnostic,
     waitForProgressDone,
     waitForAllProgressDone,
     waitForBuildQueue,
@@ -48,6 +49,7 @@ module Test.Hls
     getLastBuildKeys,
     waitForKickDone,
     waitForKickStart,
+    captureKickDiagnostics,
     -- * Plugin descriptor helper functions for tests
     PluginTestDescriptor,
     pluginTestRecorder,
@@ -65,6 +67,7 @@ import           Control.Applicative.Combinators
 import           Control.Concurrent.Async           (async, cancel, wait)
 import           Control.Concurrent.Extra
 import           Control.Exception.Safe
+import           Control.Lens                       ((^.))
 import           Control.Lens.Extras                (is)
 import           Control.Monad                      (guard, unless, void)
 import           Control.Monad.Extra                (forM)
@@ -76,7 +79,7 @@ import qualified Data.Aeson                         as A
 import           Data.ByteString.Lazy               (ByteString)
 import           Data.Default                       (def)
 import qualified Data.Map                           as M
-import           Data.Maybe                         (fromMaybe)
+import           Data.Maybe                         (fromMaybe, mapMaybe)
 import           Data.Proxy                         (Proxy (Proxy))
 import qualified Data.Text                          as T
 import qualified Data.Text.Lazy                     as TL
@@ -103,11 +106,13 @@ import           Ide.Logger                         (Doc, Logger (Logger),
                                                      (<+>))
 import           Ide.Types
 import           Language.LSP.Protocol.Capabilities
+import qualified Language.LSP.Protocol.Lens         as L
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Protocol.Types        hiding (Null)
 import           Language.LSP.Test
 import           Prelude                            hiding (log)
-import           System.Directory                   (createDirectoryIfMissing,
+import           System.Directory                   (canonicalizePath,
+                                                     createDirectoryIfMissing,
                                                      getCurrentDirectory,
                                                      getTemporaryDirectory,
                                                      setCurrentDirectory)
@@ -421,22 +426,26 @@ class TestRunner cont res where
         -- Do not clean up the temporary directory if this variable is set to anything but '0'.
         -- Aids debugging.
         cleanupTempDir <- lookupEnv "HLS_TEST_HARNESS_NO_TESTDIR_CLEANUP"
-        let runTestInDir action = case cleanupTempDir of
-                Just val | val /= "0" -> do
-                    (tempDir, _) <- newTempDirWithin testRoot
-                    a <- action tempDir
-                    logWith recorder Debug LogNoCleanup
-                    pure a
+        let runTestInDir action = do
+                (tempDir', cleanup) <- newTempDirWithin testRoot
+                tempDir <- canonicalizePath tempDir'
+                case cleanupTempDir of
+                    Just val | val /= "0" -> do
+                        a <- action tempDir
+                        logWith recorder Debug LogNoCleanup
+                        pure a
 
-                _ -> do
-                    (tempDir, cleanup) <- newTempDirWithin testRoot
-                    a <- action tempDir `finally` cleanup
-                    logWith recorder Debug LogCleanup
-                    pure a
+                    _ -> do
+                        a <- action tempDir `finally` cleanup
+                        logWith recorder Debug LogCleanup
+                        pure a
 
         runTestInDir $ \tmpDir -> do
             logWith recorder Info $ LogTestDir tmpDir
+            print tmpDir
+            print "before"
             fs <- FS.materialiseVFT tmpDir tree
+            print "after"
             runSessionWithServer' plugins conf sessConf caps tmpDir (contToSessionRes fs act)
     contToSessionRes :: FileSystem -> cont -> Session res
 
@@ -741,3 +750,20 @@ kick proxyMsg = do
   case fromJSON _params of
     Success x -> return x
     other     -> error $ "Failed to parse kick/done details: " <> show other
+
+expectNoKickDiagnostic :: Session ()
+expectNoKickDiagnostic = captureKickDiagnostics >>= \case
+    [] -> pure ()
+    diags -> error $ "Expected no diagnostics, but got: " <> show diags
+
+
+captureKickDiagnostics :: Session [Diagnostic]
+captureKickDiagnostics = do
+    _ <- skipManyTill anyMessage nonTrivialKickStart
+    messages <- manyTill anyMessage nonTrivialKickDone
+    pure $ concat $ mapMaybe diagnostics messages
+    where
+        diagnostics :: FromServerMessage' a -> Maybe [Diagnostic]
+        diagnostics = \msg -> case msg of
+            FromServerMess SMethod_TextDocumentPublishDiagnostics diags -> Just (diags ^. L.params . L.diagnostics)
+            _ -> Nothing
