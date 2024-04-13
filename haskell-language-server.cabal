@@ -1775,6 +1775,7 @@ test-suite hls-core-plugin-tests
   build-depends:
     , aeson
     , base
+    , async
     , containers
     , filepath
     , haskell-language-server:hls-core-plugin

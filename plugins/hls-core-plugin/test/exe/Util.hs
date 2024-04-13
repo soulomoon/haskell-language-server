@@ -42,11 +42,12 @@ import           Language.LSP.Protocol.Types (Definition (..),
                                               toNormalizedUri,
                                               type (|?) (InL, InR),
                                               uriToFilePath)
-import           Language.LSP.Test           (Session, sendRequest)
+import qualified Language.LSP.Protocol.Types as L
+import           Language.LSP.Test           (Session, getCurrentDiagnostics,
+                                              sendRequest)
 import qualified Language.LSP.Test           as LspTest
 import           System.Directory.Extra      (canonicalizePath)
 import           System.FilePath             (equalFilePath, (</>))
-import           System.Info.Extra
 import           System.Time.Extra           (Seconds, sleep)
 import           Test.Hls                    (FromServerMessage' (..),
                                               Method (Method_TextDocumentPublishDiagnostics),
@@ -57,7 +58,6 @@ import           Test.Hls                    (FromServerMessage' (..),
                                               TServerMessage, TestName,
                                               TestRunner, TestTree, assertBool,
                                               expectFailBecause, getDocUri,
-                                              ignoreTestBecause,
                                               mkPluginTestDescriptor,
                                               runSessionWithServer,
                                               runSessionWithServerInTmpDir,
@@ -367,4 +367,7 @@ requireDiagnostic actuals expected@(severity, cursor, expectedMsg, expectedTag)
 
 
 
-
+expectNoDiagnostic :: HasCallStack =>  [L.TextDocumentIdentifier] -> Session ()
+expectNoDiagnostic xs = do
+    diags <- fmap concat $ traverse getCurrentDiagnostics xs
+    liftIO $ assertBool "Expecting no diags" $ null diags

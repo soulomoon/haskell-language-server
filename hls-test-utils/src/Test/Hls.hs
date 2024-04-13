@@ -426,7 +426,7 @@ class TestRunner cont res where
         -- Do not clean up the temporary directory if this variable is set to anything but '0'.
         -- Aids debugging.
         cleanupTempDir <- lookupEnv "HLS_TEST_HARNESS_NO_TESTDIR_CLEANUP"
-        let runTestInDir action = do
+        let runSessionInDir action = do
                 (tempDir', cleanup) <- newTempDirWithin testRoot
                 tempDir <- canonicalizePath tempDir'
                 case cleanupTempDir of
@@ -440,12 +440,9 @@ class TestRunner cont res where
                         logWith recorder Debug LogCleanup
                         pure a
 
-        runTestInDir $ \tmpDir -> do
+        runSessionInDir $ \tmpDir -> do
             logWith recorder Info $ LogTestDir tmpDir
-            print tmpDir
-            print "before"
             fs <- FS.materialiseVFT tmpDir tree
-            print "after"
             runSessionWithServer' plugins conf sessConf caps tmpDir (contToSessionRes fs act)
     contToSessionRes :: FileSystem -> cont -> Session res
 
@@ -667,6 +664,7 @@ runSessionWithServer' plugins conf sconf caps root s =  withLock lock $ keepCurr
             (t, _) <- duration $ cancel server
             putStrLn $ "Finishing canceling (took " <> showDuration t <> "s)"
     pure x
+
 
 -- | Wait for the next progress end step
 waitForProgressDone :: Session ()

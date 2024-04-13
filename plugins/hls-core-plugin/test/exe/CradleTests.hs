@@ -11,12 +11,6 @@ import           Control.Monad.IO.Class          (liftIO)
 import           Data.Row
 import qualified Data.Text                       as T
 import           Development.IDE.GHC.Compat      (GhcVersion (..))
-import           Development.IDE.GHC.Util
--- import           Development.IDE.Test            (expectDiagnostics,
---                                                   expectDiagnosticsWithTags,
---                                                   expectNoMoreDiagnostics,
---                                                   isReferenceReady,
---                                                   waitForAction)
 import           Development.IDE.Types.Location
 import qualified Language.LSP.Protocol.Lens      as L
 import           Language.LSP.Protocol.Message
@@ -29,6 +23,7 @@ import           Language.LSP.Test
 import           System.FilePath
 import           System.IO.Extra                 hiding (withTempDir)
 -- import Test.QuickCheck.Instances ()
+import           Control.Concurrent.Async        (wait, withAsync)
 import           Control.Lens                    ((^.))
 import           Development.IDE.Plugin.Test     (WaitForIdeRuleResult (..))
 import           GHC.TypeLits                    (symbolVal)
@@ -44,8 +39,8 @@ import           Test.Tasty
 import           Test.Tasty.HUnit
 import           Util                            (checkDefs, expectDiagnostics,
                                                   expectDiagnosticsWithTags,
+                                                  expectNoDiagnostic,
                                                   isReferenceReady, mkFs, mkL,
-                                                  runSessionWithCorePluginNoVsf,
                                                   runSessionWithServerCorePlugin,
                                                   testSessionWithCorePlugin,
                                                   testSessionWithCorePluginEmptyVsf,
@@ -136,7 +131,9 @@ simpleSubDirectoryTest =
 
 multiTests :: FilePath -> [TestTree]
 multiTests dir =
-  [simpleMultiTest dir, simpleMultiTest2 dir, simpleMultiTest3 dir, simpleMultiDefTest dir]
+  [simpleMultiTest dir, simpleMultiTest2 dir, simpleMultiTest3 dir
+--   simpleMultiDefTest dir
+  ]
 
 multiTestName :: FilePath -> String -> String
 multiTestName dir name = "simple-" ++ dir ++ "-" ++ name
@@ -154,8 +151,6 @@ simpleMultiTest variant = testSessionWithCorePluginSubDir (multiTestName variant
     locs <- getDefinitions bdoc (Position 2 7)
     let fooL = mkL (adoc ^. L.uri) 2 0 2 3
     checkDefs locs (pure [fooL])
-    -- diags <- captureKickDiagnostics
-    -- liftIO $ assertBool "Expecting no warning" $ null diags
 
 -- Like simpleMultiTest but open the files in the other order
 simpleMultiTest2 :: FilePath -> TestTree
@@ -164,13 +159,12 @@ simpleMultiTest2 variant = testSessionWithCorePluginSubDir (multiTestName varian
         bPath = "b/B.hs"
     bdoc <- openDoc bPath "haskell"
     WaitForIdeRuleResult {} <- handleEither $ waitForAction "TypeCheck" bdoc
-    TextDocumentIdentifier auri <- openDoc aPath "haskell"
+    adoc@(TextDocumentIdentifier auri) <- openDoc aPath "haskell"
     skipManyTill anyMessage $ isReferenceReady (toAbsFp fs aPath)
     locs <- getDefinitions bdoc (Position 2 7)
     let fooL = mkL auri 2 0 2 3
     checkDefs locs (pure [fooL])
-    -- diags <- captureKickDiagnostics
-    -- liftIO $ assertBool "Expecting no warning" $ null diags
+    expectNoDiagnostic [adoc, bdoc]
 
 -- Now with 3 components
 simpleMultiTest3 :: FilePath -> TestTree
@@ -181,36 +175,36 @@ simpleMultiTest3 variant =
         cPath = "c/C.hs"
     bdoc <- openDoc bPath "haskell"
     WaitForIdeRuleResult {} <- handleEither $ waitForAction "TypeCheck" bdoc
-    TextDocumentIdentifier auri <- openDoc aPath "haskell"
+    adoc@(TextDocumentIdentifier auri) <- openDoc aPath "haskell"
     skipManyTill anyMessage $ isReferenceReady (toAbsFp fs aPath)
     cdoc <- openDoc cPath "haskell"
     WaitForIdeRuleResult {} <- handleEither $ waitForAction "TypeCheck" cdoc
     locs <- getDefinitions cdoc (Position 2 7)
     let fooL = mkL auri 2 0 2 3
     checkDefs locs (pure [fooL])
-    -- diags <- captureKickDiagnostics
-    -- liftIO $ assertBool "Expecting no warning" $ null diags
+    expectNoDiagnostic [adoc, cdoc, bdoc]
 
 
--- Like simpleMultiTest but open the files in component 'a' in a separate session
-simpleMultiDefTest :: FilePath -> TestTree
-simpleMultiDefTest variant = testSessionWithCorePluginSubDir (multiTestName variant "def-test") variant $ \fs -> do
-    let aPath = "a/A.hs"
-        bPath = "b/B.hs"
-        aAbsPath = toAbsFp fs aPath
-        rootAbs = toAbsFp fs ""
-    adoc <- liftIO $ runSessionWithServerCorePlugin rootAbs $ do
-      adoc <- openDoc aAbsPath "haskell"
-    --   skipManyTill anyMessage $ isReferenceReady $ aAbsPath
-    --   closeDoc adoc
-      pure adoc
-    bdoc <- openDoc bPath "haskell"
-    -- locs <- getDefinitions bdoc (Position 2 7)
-    -- let fooL = mkL (adoc ^. L.uri) 2 0 2 3
-    -- checkDefs locs (pure [fooL])
-    -- diags <- captureKickDiagnostics
-    -- liftIO $ assertBool "Expecting no warning" $ null diags
-    return ()
+-- todo add back this when we have a way to open a file in a separate session in the same test
+-- -- Like simpleMultiTest but open the files in component 'a' in a separate session
+-- simpleMultiDefTest :: FilePath -> TestTree
+-- simpleMultiDefTest variant = do
+--     testSessionWithCorePluginSubDir (multiTestName variant "def-test") variant $ \fs -> do
+--     let aPath = "a/A.hs"
+--         bPath = "b/B.hs"
+--         aAbsPath = toAbsFp fs aPath
+--         rootAbs = toAbsFp fs ""
+--     -- should share the same session
+--     -- adoc <- liftIO $ withAsync (runSessionWithServerCorePlugin rootAbs $ do
+--     --   doc <- openDoc aAbsPath "haskell"
+--     --   skipManyTill anyMessage $ isReferenceReady $ aAbsPath
+--     --   return doc) (\t1 -> wait t1)
+--     let adoc = TextDocumentIdentifier $ filePathToUri aAbsPath
+--     bdoc <- openDoc bPath "haskell"
+--     locs <- getDefinitions bdoc (Position 2 7)
+--     let fooL = mkL (adoc ^. L.uri) 2 0 2 3
+--     checkDefs locs (pure [fooL])
+--     expectNoDiagnostic [adoc, bdoc]
 
 multiRexportTest :: TestTree
 multiRexportTest =
@@ -222,8 +216,7 @@ multiRexportTest =
     let aPath = "a/A.hs"
     let fooL = mkL (filePathToUri aPath) 2 0 2 3
     checkDefs locs (pure [fooL])
-    -- diags <- captureKickDiagnostics
-    -- liftIO $ assertBool "Expecting no warning" $ null diags
+    expectNoDiagnostic [cdoc]
 
 sessionDepsArePickedUp :: TestTree
 sessionDepsArePickedUp = testSessionWithCorePlugin
@@ -245,19 +238,8 @@ sessionDepsArePickedUp = testSessionWithCorePlugin
                                               .+ #text .== "\n"
     changeDoc doc [change]
     expectDiagnostics [("Foo.hs", [(DiagnosticSeverity_Error, (3, 6), "Couldn't match type")])]
-    return ()
 
   where
-    fooContent2 =
-      unlines
-        [ "module Foo where",
-          "import Data.Text",
-          "foo :: Text",
-          "",
-          "foo = \"hello\"",
-          "x=1"
-        ]
-
     fooContent =
       T.unlines
         [ "module Foo where",

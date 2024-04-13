@@ -38,21 +38,21 @@ instance Pretty CoreLog where
 
 
 descriptor :: Recorder (WithPriority CoreLog) -> PluginId -> PluginDescriptor IdeState
-descriptor recorder plId =
-  (defaultPluginDescriptor plId "Provides core IDE features for Haskell")
-    {
-        Ide.Types.pluginHandlers =
-                  mkPluginHandler SMethod_TextDocumentDocumentSymbol moduleOutline
-                  <> mkPluginHandler SMethod_TextDocumentDefinition (\ide _ DefinitionParams{..} ->
-                      gotoDefinition ide TextDocumentPositionParams{..})
-                  <> mkPluginHandler SMethod_TextDocumentTypeDefinition (\ide _ TypeDefinitionParams{..} ->
-                      gotoTypeDefinition ide TextDocumentPositionParams{..})
-                  <> mkPluginHandler SMethod_TextDocumentDocumentHighlight (\ide _ DocumentHighlightParams{..} ->
-                      documentHighlight ide TextDocumentPositionParams{..})
-                  <> mkPluginHandler SMethod_TextDocumentHover hover'
-                  <> mkPluginHandler SMethod_WorkspaceSymbol (wsSymbols recorder)
-                  <> mkPluginHandler SMethod_TextDocumentReferences references
-    }
+descriptor _recorder plId =
+  defaultPluginDescriptor plId "Provides core IDE features for Haskell"
+    -- {
+        -- Ide.Types.pluginHandlers =
+        --           mkPluginHandler SMethod_TextDocumentDocumentSymbol moduleOutline
+        --           <> mkPluginHandler SMethod_TextDocumentDefinition (\ide _ DefinitionParams{..} ->
+        --               gotoDefinition ide TextDocumentPositionParams{..})
+        --           <> mkPluginHandler SMethod_TextDocumentTypeDefinition (\ide _ TypeDefinitionParams{..} ->
+        --               gotoTypeDefinition ide TextDocumentPositionParams{..})
+        --           <> mkPluginHandler SMethod_TextDocumentDocumentHighlight (\ide _ DocumentHighlightParams{..} ->
+        --               documentHighlight ide TextDocumentPositionParams{..})
+        --           <> mkPluginHandler SMethod_TextDocumentHover hover'
+        --           <> mkPluginHandler SMethod_WorkspaceSymbol (wsSymbols recorder)
+        --           <> mkPluginHandler SMethod_TextDocumentReferences references
+    -- }
 
 
 wsSymbols :: Recorder (WithPriority CoreLog) -> PluginMethodHandler IdeState Method_WorkspaceSymbol
