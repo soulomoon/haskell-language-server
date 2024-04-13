@@ -47,7 +47,7 @@ tests = withResource acquire release tests where
     , chk "   find references"          _referencesProvider (Just $ InR (ReferenceOptions (Just False)))
     , chk "   doc highlight"     _documentHighlightProvider (Just $ InR (DocumentHighlightOptions (Just False)))
     , chk "   doc symbol"           _documentSymbolProvider (Just $ InR (DocumentSymbolOptions (Just False) Nothing))
-    -- , chk "   workspace symbol"    _workspaceSymbolProvider (Just $ InR (WorkspaceSymbolOptions (Just False) (Just False)))
+    , chk "   workspace symbol"    _workspaceSymbolProvider (Just $ InR (WorkspaceSymbolOptions (Just False) (Just False)))
     , chk "NO code action"             _codeActionProvider  Nothing
     , chk "   code lens"                 _codeLensProvider  (Just $ CodeLensOptions (Just False) (Just True))
     , chk "NO doc formatting"   _documentFormattingProvider Nothing
