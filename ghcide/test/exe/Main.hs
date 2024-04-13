@@ -47,9 +47,14 @@ import           Test.Tasty.Ingredients.Rerun
 
 import LogType ()
 import OpenCloseTest
+import InitializeResponseTests
+import CompletionTests
 import CPPTests
 import DiagnosticTests
 import CodeLensTests
+import OutlineTests
+import HighlightTests
+import FindDefinitionAndHoverTests
 import PluginSimpleTests
 import PreprocessorTests
 import THTests
@@ -67,6 +72,7 @@ import BootTests
 import RootUriTests
 import AsyncTests
 import ClientSettingsTests
+import ReferenceTests
 import GarbageCollectionTests
 import ExceptionTests
 
@@ -87,9 +93,14 @@ main = do
   -- We mess with env vars so run single-threaded.
   defaultMainWithRerun $ testGroup "ghcide"
     [ OpenCloseTest.tests
+    , InitializeResponseTests.tests
+    , CompletionTests.tests
     , CPPTests.tests
     , DiagnosticTests.tests
     , CodeLensTests.tests
+    , OutlineTests.tests
+    , HighlightTests.tests
+    , FindDefinitionAndHoverTests.tests
     , PluginSimpleTests.tests
     , PreprocessorTests.tests
     , THTests.tests
@@ -107,6 +118,7 @@ main = do
     , RootUriTests.tests
     , AsyncTests.tests
     , ClientSettingsTests.tests
+    , ReferenceTests.tests
     , GarbageCollectionTests.tests
     , HieDbRetry.tests
     , ExceptionTests.tests recorder logger

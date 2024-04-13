@@ -585,21 +585,9 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} dir = do
           let new_cache = newComponentCache recorder optExtensions hieYaml _cfp hscEnv
           all_target_details <- new_cache old_deps new_deps
 
-          this_dep_info <- getDependencyInfo $ maybeToList hieYaml
-          let (all_targets, this_flags_map, this_options)
-                = case HM.lookup _cfp flags_map' of
-                    Just this -> (all_targets', flags_map', this)
-                    Nothing -> (this_target_details : all_targets', HM.insert _cfp this_flags flags_map', this_flags)
-                  where all_targets' = concat all_target_details
-                        flags_map' = HM.fromList (concatMap toFlagsMap all_targets')
-                        this_target_details = TargetDetails (TargetFile _cfp) this_error_env this_dep_info [_cfp]
-                        this_flags = (this_error_env, this_dep_info)
-                        this_error_env = ([this_error], Nothing)
-                        this_error = ideErrorWithSource (Just "cradle") (Just DiagnosticSeverity_Error) _cfp
-                                       $ T.unlines
-                                       [ "No cradle target found. Is this file listed in the targets of your cradle?"
-                                       , "If you are using a .cabal file, please ensure that this module is listed in either the exposed-modules or other-modules section"
-                                       ]
+          let all_targets = concatMap fst all_target_details
+
+          let this_flags_map = HM.fromList (concatMap toFlagsMap all_targets)
 
           void $ modifyVar' fileToFlags $
               Map.insert hieYaml this_flags_map
@@ -627,7 +615,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} dir = do
                     let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
                     liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
 
-          return $ second Map.keys this_options
+          return $ second Map.keys $ this_flags_map HM.! _cfp
 
     let consultCradle :: Maybe FilePath -> FilePath -> IO (IdeResult HscEnvEq, [FilePath])
         consultCradle hieYaml cfp = do
@@ -647,7 +635,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} dir = do
            -- Display a user friendly progress message here: They probably don't know what a cradle is
            let progMsg = "Setting up " <> T.pack (takeBaseName (cradleRootDir cradle))
                          <> " (for " <> T.pack lfp <> ")"
-           mRunLspT lspEnv $ sendNotification (SMethod_CustomMethod (Proxy @"ghcide/cradle/eopts/before")) (toJSON cfp)
            eopts <- mRunLspTCallback lspEnv (\act -> withIndefiniteProgress progMsg Nothing NotCancellable (const act)) $
               withTrace "Load cradle" $ \addTag -> do
                   addTag "file" lfp
@@ -655,9 +642,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} dir = do
                   res <- cradleToOptsAndLibDir recorder cradle cfp old_files
                   addTag "result" (show res)
                   return res
-           mRunLspT lspEnv $ sendNotification (SMethod_CustomMethod (Proxy @"ghcide/cradle/eopts/after")) (toJSON cfp)
+
            logWith recorder Debug $ LogSessionLoadingResult eopts
-           mRunLspT lspEnv $ sendNotification (SMethod_CustomMethod (Proxy @"ghcide/cradle/eopts/afterLog")) (toJSON (show $ pretty (LogSessionLoadingResult eopts)))
            case eopts of
              -- The cradle gave us some options so get to work turning them
              -- into and HscEnv.
@@ -824,7 +810,7 @@ newComponentCache
          -> HscEnv             -- ^ An empty HscEnv
          -> [ComponentInfo]    -- ^ New components to be loaded
          -> [ComponentInfo]    -- ^ old, already existing components
-         -> IO [ [TargetDetails] ]
+         -> IO [ ([TargetDetails], (IdeResult HscEnvEq, DependencyInfo))]
 newComponentCache recorder exts cradlePath _cfp hsc_env old_cis new_cis = do
     let cis = Map.unionWith unionCIs (mkMap new_cis) (mkMap old_cis)
         -- When we have multiple components with the same uid,
@@ -896,13 +882,14 @@ newComponentCache recorder exts cradlePath _cfp hsc_env old_cis new_cis = do
       henv <- createHscEnvEq thisEnv (zip uids dfs)
       let targetEnv = (if isBad ci then multi_errs else [], Just henv)
           targetDepends = componentDependencyInfo ci
-      logWith recorder Debug $ LogNewComponentCache (targetEnv, targetDepends)
+          res = ( targetEnv, targetDepends)
+      logWith recorder Debug $ LogNewComponentCache res
       evaluate $ liftRnf rwhnf $ componentTargets ci
 
       let mk t = fromTargetId (importPaths df) exts (targetId t) targetEnv targetDepends
       ctargets <- concatMapM mk (componentTargets ci)
 
-      return (L.nubOrdOn targetTarget ctargets)
+      return (L.nubOrdOn targetTarget ctargets, res)
 
 {- Note [Avoiding bad interface files]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1094,10 +1081,8 @@ setOptions cfp (ComponentOptions theOpts compRoot _) dflags = do
         -- A special target for the file which caused this wonderful
         -- component to be created. In case the cradle doesn't list all the targets for
         -- the component, in which case things will be horribly broken anyway.
-        --
-        -- When we have a single component that is caused to be loaded due to a
-        -- file, we assume the file is part of that component. This is useful
-        -- for bare GHC sessions, such as many of the ones used in the testsuite
+        -- Otherwise, we will immediately attempt to reload this module which
+        -- causes an infinite loop and high CPU usage.
         --
         -- We don't do this when we have multiple components, because each
         -- component better list all targets or there will be anarchy.
@@ -1105,9 +1090,6 @@ setOptions cfp (ComponentOptions theOpts compRoot _) dflags = do
         -- that case.
         -- Multi unit arguments are likely to come from cabal, which
         -- does list all targets.
-        --
-        -- If we don't end up with a target for the current file in the end, then
-        -- we will report it as an error for that file
         abs_fp <- liftIO $ makeAbsolute (fromNormalizedFilePath cfp)
         let special_target = Compat.mkSimpleTarget df abs_fp
         pure $ (df, special_target : targets) :| []

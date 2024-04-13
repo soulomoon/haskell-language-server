@@ -164,8 +164,10 @@ library
     Development.IDE.GHC.Util
     Development.IDE.Import.DependencyInformation
     Development.IDE.Import.FindImports
+    Development.IDE.LSP.HoverDefinition
     Development.IDE.LSP.LanguageServer
     Development.IDE.LSP.Notifications
+    Development.IDE.LSP.Outline
     Development.IDE.LSP.Server
     Development.IDE.Main
     Development.IDE.Main.HeapStats
@@ -356,22 +358,29 @@ test-suite ghcide-tests
     BootTests
     ClientSettingsTests
     CodeLensTests
+    CompletionTests
     CPPTests
+    CradleTests
     DependentFileTest
     DiagnosticTests
     ExceptionTests
+    FindDefinitionAndHoverTests
     FuzzySearch
     GarbageCollectionTests
     HaddockTests
     HieDbRetry
+    HighlightTests
     IfaceTests
+    InitializeResponseTests
     LogType
     NonLspCommandLine
     OpenCloseTest
+    OutlineTests
     PluginSimpleTests
     PositionMappingTests
     PreprocessorTests
     Progress
+    ReferenceTests
     RootUriTests
     SafeTests
     SymlinkTests

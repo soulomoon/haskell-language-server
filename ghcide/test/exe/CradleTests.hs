@@ -205,21 +205,19 @@ sessionDepsArePickedUp :: TestTree
 sessionDepsArePickedUp = testSession'
   "session-deps-are-picked-up"
   $ \dir -> do
+    liftIO $
+      writeFileUTF8
+        (dir </> "hie.yaml")
+        "cradle: {direct: {arguments: []}}"
     -- Open without OverloadedStrings and expect an error.
     doc <- createDoc "Foo.hs" "haskell" fooContent
+    expectDiagnostics [("Foo.hs", [(DiagnosticSeverity_Error, (3, 6), "Couldn't match type")])]
+
     -- Update hie.yaml to enable OverloadedStrings.
     liftIO $
       writeFileUTF8
         (dir </> "hie.yaml")
         "cradle: {direct: {arguments: [-XOverloadedStrings]}}"
-    -- Now no errors.
-    -- expectDiagnostics [("Foo.hs", [])]
-    expectNoMoreDiagnostics 3
-
-    liftIO $
-      writeFileUTF8
-        (dir </> "hie.yaml")
-        "cradle: {direct: {arguments: []}}"
     sendNotification SMethod_WorkspaceDidChangeWatchedFiles $ DidChangeWatchedFilesParams
         [FileEvent (filePathToUri $ dir </> "hie.yaml") FileChangeType_Changed ]
     -- Send change event.
@@ -228,7 +226,8 @@ sessionDepsArePickedUp = testSession'
                                               .+ #rangeLength .== Nothing
                                               .+ #text .== "\n"
     changeDoc doc [change]
-    expectDiagnostics [("Foo.hs", [(DiagnosticSeverity_Error, (3, 6), "Couldn't match type")])]
+    -- Now no errors.
+    expectDiagnostics [("Foo.hs", [])]
   where
     fooContent =
       T.unlines

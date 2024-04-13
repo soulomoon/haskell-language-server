@@ -51,10 +51,12 @@ module Development.IDE.Core.Shake(
     HLS.getClientConfig,
     getPluginConfigAction,
     knownTargets,
+    setPriority,
     ideLogger,
     actionLogger,
     getVirtualFile,
     FileVersion(..),
+    Priority(..),
     updatePositionMapping,
     updatePositionMappingHelper,
     deleteValue, recordDirtyKeys,
@@ -137,7 +139,6 @@ import           Development.IDE.Graph.Database         (ShakeDatabase,
                                                          shakeNewDatabase,
                                                          shakeProfileDatabase,
                                                          shakeRunDatabaseForKeys)
-import           Development.IDE.Graph.Internal.Profile (collectProfileMemory)
 import           Development.IDE.Graph.Rule
 import           Development.IDE.Types.Action
 import           Development.IDE.Types.Diagnostics
@@ -717,7 +718,6 @@ shakeShut IdeState{..} = do
     -- request so we first abort that.
     for_ runner cancelShakeSession
     void $ shakeDatabaseProfile shakeDb
-    void $ collectProfileMemory shakeDb
     progressStop $ progress shakeExtras
     stopMonitoring
 
@@ -1306,6 +1306,11 @@ updateFileDiagnostics recorder fp ver k ShakeExtras{diagnostics, hiddenDiagnosti
                             ]
             | otherwise = c
 
+
+newtype Priority = Priority Double
+
+setPriority :: Priority -> Action ()
+setPriority (Priority p) = reschedule p
 
 ideLogger :: IdeState -> Logger
 ideLogger IdeState{shakeExtras=ShakeExtras{logger}} = logger
