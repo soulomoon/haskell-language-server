@@ -29,6 +29,7 @@ module Test.Hls
     -- * Running HLS for integration tests
     runSessionWithServer,
     runSessionWithServerAndCaps,
+    TestRunner,
     runSessionWithServerInTmpDir,
     runSessionWithServerAndCapsInTmpDir,
     runSessionWithServer',
@@ -37,6 +38,7 @@ module Test.Hls
     PluginDescriptor,
     IdeState,
     -- * Assertion helper functions
+    expectNoKickDiagnostic,
     waitForProgressDone,
     waitForAllProgressDone,
     waitForBuildQueue,
@@ -47,6 +49,7 @@ module Test.Hls
     getLastBuildKeys,
     waitForKickDone,
     waitForKickStart,
+    captureKickDiagnostics,
     -- * Plugin descriptor helper functions for tests
     PluginTestDescriptor,
     pluginTestRecorder,
@@ -64,6 +67,7 @@ import           Control.Applicative.Combinators
 import           Control.Concurrent.Async           (async, cancel, wait)
 import           Control.Concurrent.Extra
 import           Control.Exception.Safe
+import           Control.Lens                       ((^.))
 import           Control.Lens.Extras                (is)
 import           Control.Monad                      (guard, unless, void)
 import           Control.Monad.Extra                (forM)
@@ -75,7 +79,7 @@ import qualified Data.Aeson                         as A
 import           Data.ByteString.Lazy               (ByteString)
 import           Data.Default                       (def)
 import qualified Data.Map                           as M
-import           Data.Maybe                         (fromMaybe)
+import           Data.Maybe                         (fromMaybe, mapMaybe)
 import           Data.Proxy                         (Proxy (Proxy))
 import qualified Data.Text                          as T
 import qualified Data.Text.Lazy                     as TL
@@ -102,11 +106,13 @@ import           Ide.Logger                         (Doc, Logger (Logger),
                                                      (<+>))
 import           Ide.Types
 import           Language.LSP.Protocol.Capabilities
+import qualified Language.LSP.Protocol.Lens         as L
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Protocol.Types        hiding (Null)
 import           Language.LSP.Test
 import           Prelude                            hiding (log)
-import           System.Directory                   (createDirectoryIfMissing,
+import           System.Directory                   (canonicalizePath,
+                                                     createDirectoryIfMissing,
                                                      getCurrentDirectory,
                                                      getTemporaryDirectory,
                                                      setCurrentDirectory)
@@ -368,6 +374,87 @@ initialiseTestRecorder envVars = do
 -- ------------------------------------------------------------
 -- Run an HLS server testing a specific plugin
 -- ------------------------------------------------------------
+class TestRunner cont res where
+    runSessionWithServerInTmpDir :: Pretty b => Config -> PluginTestDescriptor b -> VirtualFileTree -> cont -> IO res
+    runSessionWithServerInTmpDir config plugin tree act = do
+        recorder <- pluginTestRecorder
+        runSessionWithServerInTmpDir' (plugin recorder) config def fullCaps tree act
+    runSessionWithServerAndCapsInTmpDir :: Pretty b => Config -> PluginTestDescriptor b -> ClientCapabilities -> VirtualFileTree -> cont -> IO res
+    runSessionWithServerAndCapsInTmpDir config plugin caps tree act = do
+        recorder <- pluginTestRecorder
+        runSessionWithServerInTmpDir' (plugin recorder) config def caps tree act
+
+    -- | Host a server, and run a test session on it.
+    --
+    -- Creates a temporary directory, and materializes the VirtualFileTree
+    -- in the temporary directory.
+    --
+    -- To debug test cases and verify the file system is correctly set up,
+    -- you should set the environment variable 'HLS_TEST_HARNESS_NO_TESTDIR_CLEANUP=1'.
+    -- Further, we log the temporary directory location on startup. To view
+    -- the logs, set the environment variable 'HLS_TEST_HARNESS_STDERR=1'.
+    --
+    -- Example invocation to debug test cases:
+    --
+    -- @
+    --   HLS_TEST_HARNESS_NO_TESTDIR_CLEANUP=1 HLS_TEST_HARNESS_STDERR=1 cabal test <plugin-name>
+    -- @
+    --
+    -- Don't forget to use 'TASTY_PATTERN' to debug only a subset of tests.
+    --
+    -- For plugin test logs, look at the documentation of 'mkPluginTestDescriptor'.
+    --
+    -- Note: cwd will be shifted into a temporary directory in @Session a@
+    runSessionWithServerInTmpDir' ::
+        -- | Plugins to load on the server.
+        --
+        -- For improved logging, make sure these plugins have been initalised with
+        -- the recorder produced by @pluginTestRecorder@.
+        IdePlugins IdeState ->
+        -- | lsp config for the server
+        Config ->
+        -- | config for the test session
+        SessionConfig ->
+        ClientCapabilities ->
+        VirtualFileTree ->
+        cont -> IO res
+    runSessionWithServerInTmpDir' plugins conf sessConf caps tree act = withLock lockForTempDirs $ do
+        testRoot <- setupTestEnvironment
+        (recorder, _) <- initialiseTestRecorder
+            ["LSP_TEST_LOG_STDERR", "HLS_TEST_HARNESS_STDERR", "HLS_TEST_LOG_STDERR"]
+
+        -- Do not clean up the temporary directory if this variable is set to anything but '0'.
+        -- Aids debugging.
+        cleanupTempDir <- lookupEnv "HLS_TEST_HARNESS_NO_TESTDIR_CLEANUP"
+        let runSessionInDir action = do
+                (tempDir', cleanup) <- newTempDirWithin testRoot
+                tempDir <- canonicalizePath tempDir'
+                case cleanupTempDir of
+                    Just val | val /= "0" -> do
+                        a <- action tempDir
+                        logWith recorder Debug LogNoCleanup
+                        pure a
+
+                    _ -> do
+                        a <- action tempDir `finally` cleanup
+                        logWith recorder Debug LogCleanup
+                        pure a
+
+        runSessionInDir $ \tmpDir -> do
+            logWith recorder Info $ LogTestDir tmpDir
+            fs <- FS.materialiseVFT tmpDir tree
+            runSessionWithServer' plugins conf sessConf caps tmpDir (contToSessionRes fs act)
+    contToSessionRes :: FileSystem -> cont -> Session res
+
+
+instance TestRunner (Session a) a where
+    contToSessionRes _ act = act
+
+
+instance TestRunner (FileSystem -> Session a) a where
+    contToSessionRes fs act = act fs
+
+
 
 runSessionWithServer :: Pretty b => Config -> PluginTestDescriptor b -> FilePath -> Session a -> IO a
 runSessionWithServer config plugin fp act = do
@@ -379,77 +466,6 @@ runSessionWithServerAndCaps config plugin caps fp act = do
   recorder <- pluginTestRecorder
   runSessionWithServer' (plugin recorder) config def caps fp act
 
-runSessionWithServerInTmpDir :: Pretty b => Config -> PluginTestDescriptor b -> VirtualFileTree -> Session a -> IO a
-runSessionWithServerInTmpDir config plugin tree act = do
-  recorder <- pluginTestRecorder
-  runSessionWithServerInTmpDir' (plugin recorder) config def fullCaps tree act
-
-runSessionWithServerAndCapsInTmpDir :: Pretty b => Config ->  PluginTestDescriptor b -> ClientCapabilities -> VirtualFileTree -> Session a -> IO a
-runSessionWithServerAndCapsInTmpDir config plugin caps tree act = do
-  recorder <- pluginTestRecorder
-  runSessionWithServerInTmpDir' (plugin recorder) config def caps tree act
-
--- | Host a server, and run a test session on it.
---
--- Creates a temporary directory, and materializes the VirtualFileTree
--- in the temporary directory.
---
--- To debug test cases and verify the file system is correctly set up,
--- you should set the environment variable 'HLS_TEST_HARNESS_NO_TESTDIR_CLEANUP=1'.
--- Further, we log the temporary directory location on startup. To view
--- the logs, set the environment variable 'HLS_TEST_HARNESS_STDERR=1'.
---
--- Example invocation to debug test cases:
---
--- @
---   HLS_TEST_HARNESS_NO_TESTDIR_CLEANUP=1 HLS_TEST_HARNESS_STDERR=1 cabal test <plugin-name>
--- @
---
--- Don't forget to use 'TASTY_PATTERN' to debug only a subset of tests.
---
--- For plugin test logs, look at the documentation of 'mkPluginTestDescriptor'.
---
--- Note: cwd will be shifted into a temporary directory in @Session a@
-runSessionWithServerInTmpDir' ::
-  -- | Plugins to load on the server.
-  --
-  -- For improved logging, make sure these plugins have been initalised with
-  -- the recorder produced by @pluginTestRecorder@.
-  IdePlugins IdeState ->
-  -- | lsp config for the server
-  Config ->
-  -- | config for the test session
-  SessionConfig ->
-  ClientCapabilities ->
-  VirtualFileTree ->
-  Session a ->
-  IO a
-runSessionWithServerInTmpDir' plugins conf sessConf caps tree act = withLock lockForTempDirs $ do
-  testRoot <- setupTestEnvironment
-  (recorder, _) <- initialiseTestRecorder
-    ["LSP_TEST_LOG_STDERR", "HLS_TEST_HARNESS_STDERR", "HLS_TEST_LOG_STDERR"]
-
-  -- Do not clean up the temporary directory if this variable is set to anything but '0'.
-  -- Aids debugging.
-  cleanupTempDir <- lookupEnv "HLS_TEST_HARNESS_NO_TESTDIR_CLEANUP"
-  let runTestInDir action = case cleanupTempDir of
-        Just val
-          | val /= "0" -> do
-            (tempDir, _) <- newTempDirWithin testRoot
-            a <- action tempDir
-            logWith recorder Debug LogNoCleanup
-            pure a
-
-        _ -> do
-          (tempDir, cleanup) <- newTempDirWithin testRoot
-          a <- action tempDir `finally` cleanup
-          logWith recorder Debug LogCleanup
-          pure a
-
-  runTestInDir $ \tmpDir -> do
-    logWith recorder Info $ LogTestDir tmpDir
-    _fs <- FS.materialiseVFT tmpDir tree
-    runSessionWithServer' plugins conf sessConf caps tmpDir act
 
 -- | Setup the test environment for isolated tests.
 --
@@ -649,6 +665,7 @@ runSessionWithServer' plugins conf sconf caps root s =  withLock lock $ keepCurr
             putStrLn $ "Finishing canceling (took " <> showDuration t <> "s)"
     pure x
 
+
 -- | Wait for the next progress end step
 waitForProgressDone :: Session ()
 waitForProgressDone = skipManyTill anyMessage $ satisfyMaybe $ \case
@@ -731,3 +748,20 @@ kick proxyMsg = do
   case fromJSON _params of
     Success x -> return x
     other     -> error $ "Failed to parse kick/done details: " <> show other
+
+expectNoKickDiagnostic :: Session ()
+expectNoKickDiagnostic = captureKickDiagnostics >>= \case
+    [] -> pure ()
+    diags -> error $ "Expected no diagnostics, but got: " <> show diags
+
+
+captureKickDiagnostics :: Session [Diagnostic]
+captureKickDiagnostics = do
+    _ <- skipManyTill anyMessage nonTrivialKickStart
+    messages <- manyTill anyMessage nonTrivialKickDone
+    pure $ concat $ mapMaybe diagnostics messages
+    where
+        diagnostics :: FromServerMessage' a -> Maybe [Diagnostic]
+        diagnostics = \msg -> case msg of
+            FromServerMess SMethod_TextDocumentPublishDiagnostics diags -> Just (diags ^. L.params . L.diagnostics)
+            _ -> Nothing

@@ -37,8 +37,8 @@ import           System.FilePath
 import           Test.Hls                           (HasCallStack,
                                                      PluginTestDescriptor,
                                                      SMethod (SMethod_TextDocumentSemanticTokensFullDelta),
-                                                     TestName, TestTree,
-                                                     changeDoc,
+                                                     TestName, TestRunner,
+                                                     TestTree, changeDoc,
                                                      defaultTestRunner,
                                                      documentContents, fullCaps,
                                                      goldenGitDiff,
@@ -72,14 +72,14 @@ semanticTokensPlugin = Test.Hls.mkPluginTestDescriptor enabledSemanticDescriptor
                   }
             }
 
-goldenWithHaskellAndCapsOutPut :: Pretty b => Config -> PluginTestDescriptor b -> TestName -> FS.VirtualFileTree -> FilePath -> String -> (TextDocumentIdentifier -> Session String) -> TestTree
+goldenWithHaskellAndCapsOutPut :: (Pretty b) => Config -> PluginTestDescriptor b -> TestName -> FS.VirtualFileTree -> FilePath -> String -> (TextDocumentIdentifier -> Session String) -> TestTree
 goldenWithHaskellAndCapsOutPut config plugin title tree path desc act =
   goldenGitDiff title (FS.vftOriginalRoot tree </> path <.> desc) $
-    runSessionWithServerInTmpDir config plugin tree $
-      fromString <$> do
+    fromString <$> (runSessionWithServerInTmpDir config plugin tree $
+      do
         doc <- openDoc (path <.> "hs") "haskell"
         void waitForBuildQueue
-        act doc
+        act doc)
 
 goldenWithSemanticTokensWithDefaultConfig :: TestName -> FilePath -> TestTree
 goldenWithSemanticTokensWithDefaultConfig title path =
