@@ -11,15 +11,18 @@ module Development.IDE.Main
 ,Log(..)
 ) where
 
-import           Control.Concurrent.Extra                 (withNumCapabilities)
+import           Control.Concurrent.Extra                 (tryTakeMVar,
+                                                           withNumCapabilities)
 import           Control.Concurrent.MVar                  (newEmptyMVar,
                                                            putMVar, tryReadMVar)
 import           Control.Concurrent.STM.Stats             (dumpSTMStats)
+import           Control.Exception                        (bracket)
 import           Control.Exception.Safe                   (SomeException,
                                                            catchAny,
                                                            displayException)
-import           Control.Monad.Extra                      (concatMapM, unless,
-                                                           when)
+import           Control.Monad.Extra                      (concatMapM, maybeM,
+                                                           unless, when,
+                                                           whenJust, whenJustM)
 import           Control.Monad.IO.Class                   (liftIO)
 import qualified Data.Aeson                               as J
 import           Data.Coerce                              (coerce)
@@ -89,7 +92,8 @@ import           Development.IDE.Types.Options            (IdeGhcSession,
                                                            optModifyDynFlags,
                                                            optTesting)
 import           Development.IDE.Types.Shake              (WithHieDb, toKey)
-import           GHC.Conc                                 (getNumProcessors)
+import           GHC.Conc                                 (getNumProcessors,
+                                                           withMVar)
 import           GHC.IO.Encoding                          (setLocaleEncoding)
 import           GHC.IO.Handle                            (hDuplicate)
 import           HIE.Bios.Cradle                          (findCradle)
@@ -189,7 +193,7 @@ isLSP _   = False
 
 commandP :: IdePlugins IdeState -> Parser Command
 commandP plugins =
-    hsubparser(command "typecheck" (info (Check <$> fileCmd) fileInfo)
+    hsubparser (command "typecheck" (info (Check <$> fileCmd) fileInfo)
             <> command "hiedb" (info (Db <$> HieDb.optParser "" True <*> HieDb.cmdParser) hieInfo)
             <> command "lsp" (info (pure LSP) lspInfo)
             <> pluginCommands
@@ -309,6 +313,10 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
             ioT <- offsetTime
             logWith recorder Info $ LogLspStart (pluginId <$> ipMap argsHlsPlugins)
 
+            -- Notice why we are using `ideStateVar`:
+            -- 1. to pass the ide state to config update callback after the initialization
+            -- 2. guard against the case when the server is still starting up and
+            --    and after shutdown handler has been called(empty in this case).
             ideStateVar <- newEmptyMVar
             let getIdeState :: LSP.LanguageContextEnv Config -> Maybe FilePath -> WithHieDb -> IndexQueue -> IO IdeState
                 getIdeState env rootPath withHieDb hieChan = do
@@ -355,19 +363,20 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
                   putMVar ideStateVar ide
                   pure ide
 
-            let setup = setupLSP (cmapWithPrio LogLanguageServer recorder) argsGetHieDbLoc (pluginHandlers plugins) getIdeState
+            let setup = setupLSP (cmapWithPrio LogLanguageServer recorder) ideStateVar argsGetHieDbLoc (pluginHandlers plugins) getIdeState
                 -- See Note [Client configuration in Rules]
                 onConfigChange cfg = do
                   -- TODO: this is nuts, we're converting back to JSON just to get a fingerprint
                   let cfgObj = J.toJSON cfg
-                  mide <- liftIO $ tryReadMVar ideStateVar
-                  case mide of
-                    Nothing -> pure ()
-                    Just ide -> liftIO $ do
-                        let msg = T.pack $ show cfg
-                        logDebug (Shake.ideLogger ide) $ "Configuration changed: " <> msg
-                        modifyClientSettings ide (const $ Just cfgObj)
-                        setSomethingModified Shake.VFSUnmodified ide [toKey Rules.GetClientSettings emptyFilePath] "config change"
+                  -- tryTakeMVar is essential here, as the MVar might be empty if the server is still starting up
+                  -- and it might be gone if the server shut down.
+                  liftIO $ bracket (liftIO $ tryTakeMVar ideStateVar) (`whenJust` putMVar ideStateVar) $ \case
+                      Nothing -> pure ()
+                      Just ide -> liftIO $ do
+                          let msg = T.pack $ show cfg
+                          logDebug (Shake.ideLogger ide) $ "Configuration changed: " <> msg
+                          modifyClientSettings ide (const $ Just cfgObj)
+                          setSomethingModified Shake.VFSUnmodified ide [toKey Rules.GetClientSettings emptyFilePath] "config change"
 
             runLanguageServer (cmapWithPrio LogLanguageServer recorder) options inH outH argsDefaultHlsConfig argsParseConfig onConfigChange setup
             dumpSTMStats
