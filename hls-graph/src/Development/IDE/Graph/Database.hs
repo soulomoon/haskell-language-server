@@ -8,8 +8,9 @@ module Development.IDE.Graph.Database(
     shakeGetBuildStep,
     shakeGetDatabaseKeys,
     shakeGetDirtySet,
-    shakeGetCleanKeys
-    ,shakeGetBuildEdges) where
+    shakeGetCleanKeys,
+    shakeMarkDirtyKeys,
+    shakeGetBuildEdges) where
 import           Control.Concurrent.STM.Stats            (readTVarIO)
 import           Data.Dynamic
 import           Data.Maybe
@@ -34,7 +35,7 @@ shakeNewDatabase opts rules = do
     pure $ ShakeDatabase (length actions) actions db
 
 shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [a]
-shakeRunDatabase = shakeRunDatabaseForKeys Nothing
+shakeRunDatabase = shakeRunDatabaseForKeys
 
 -- | Returns the set of dirty keys annotated with their age (in # of builds)
 shakeGetDirtySet :: ShakeDatabase -> IO [(Key, Int)]
@@ -52,15 +53,18 @@ unvoid :: Functor m => m () -> m a
 unvoid = fmap undefined
 
 -- | Assumes that the database is not running a build
+-- dirty keys should be marked using `shakeMarkDirtyKeys`
+-- before calling this function
 shakeRunDatabaseForKeys
-    :: Maybe [Key]
-      -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
-    -> ShakeDatabase
+    ::
+    ShakeDatabase
     -> [Action a]
     -> IO [a]
-shakeRunDatabaseForKeys keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
-    incDatabase db keysChanged
+shakeRunDatabaseForKeys (ShakeDatabase lenAs1 as1 db) as2 = do
     fmap (drop lenAs1) $ runActions db $ map unvoid as1 ++ as2
+
+shakeMarkDirtyKeys :: ShakeDatabase -> KeySet -> IO ()
+shakeMarkDirtyKeys (ShakeDatabase _ _ db) keys = incDatabase db $ Just (toListKeySet keys)
 
 -- | Given a 'ShakeDatabase', write an HTML profile to the given file about the latest run.
 shakeProfileDatabase :: ShakeDatabase -> FilePath -> IO ()
