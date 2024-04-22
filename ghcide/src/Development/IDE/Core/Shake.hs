@@ -96,7 +96,7 @@ import           Data.Default
 import           Data.Dynamic
 import           Data.EnumMap.Strict                    (EnumMap)
 import qualified Data.EnumMap.Strict                    as EM
-import           Data.Foldable                          (find, for_, traverse_)
+import           Data.Foldable                          (find, for_)
 import           Data.Functor                           ((<&>))
 import           Data.Functor.Identity
 import           Data.Hashable
@@ -172,7 +172,6 @@ import qualified StmContainers.Map                      as STM
 import           System.FilePath                        hiding (makeRelative)
 import           System.IO.Unsafe                       (unsafePerformIO)
 import           System.Time.Extra
-import Development.IDE.Graph.Database (shakeMarkDirtyKeys)
 -- See Note [Guidelines For Using CPP In GHCIDE Import Statements]
 
 #if !MIN_VERSION_ghc(9,3,0)
@@ -854,15 +853,14 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
           whenJust allPendingKeys $ \kk -> setTag otSpan "keys" (BS8.pack $ unlines $ map show $ toListKeySet kk)
           let keysActs = pumpActionThread otSpan : map (run otSpan) (reenqueued ++ acts)
           res <- try @SomeException $
-            restore $ shakeRunDatabaseForKeys shakeDb keysActs
+            restore $ shakeRunDatabaseForKeys (toListKeySet <$> allPendingKeys) shakeDb keysActs
           return $ do
               let exception =
                     case res of
                       Left e -> Just e
                       _      -> Nothing
               logWith recorder Debug $ LogBuildSessionFinish exception
-    -- mark the key as dirty in hls graph
-    traverse_ (shakeMarkDirtyKeys shakeDb) allPendingKeys
+
     -- Do the work in a background thread
     workThread <- asyncWithUnmask workRun
 
