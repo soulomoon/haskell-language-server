@@ -249,8 +249,7 @@ setSomethingModified vfs state keys reason = do
     -- Update database to remove any files that might have been renamed/deleted
     atomically $ do
         writeTQueue (indexQueue $ hiedbWriter $ shakeExtras state) (\withHieDb -> withHieDb deleteMissingRealFiles)
-        modifyTVar' (dirtyKeys $ shakeExtras state) $ \x ->
-            foldl' (flip insertKeySet) x keys
+        recordDirtyKeySet (shakeExtras state) keys
     void $ restartShakeSession (shakeExtras state) vfs reason []
 
 registerFileWatches :: [String] -> LSP.LspT Config IO Bool

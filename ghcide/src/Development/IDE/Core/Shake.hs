@@ -57,7 +57,7 @@ module Development.IDE.Core.Shake(
     FileVersion(..),
     updatePositionMapping,
     updatePositionMappingHelper,
-    deleteValue, recordDirtyKeys,
+    deleteValue, recordDirtyKeys, recordDirtyKeySet,
     WithProgressFunc, WithIndefiniteProgressFunc,
     ProgressEvent(..),
     DelayedAction, mkDelayedAction,
@@ -137,6 +137,7 @@ import           Development.IDE.Graph.Database         (ShakeDatabase,
                                                          shakeNewDatabase,
                                                          shakeProfileDatabase,
                                                          shakeRunDatabaseForKeys)
+import           Development.IDE.Graph.Internal.Key     (deleteKeySet)
 import           Development.IDE.Graph.Rule
 import           Development.IDE.Types.Action
 import           Development.IDE.Types.Diagnostics
@@ -328,6 +329,8 @@ data ShakeExtras = ShakeExtras
       -- ^ Default HLS config, only relevant if the client does not provide any Config
     , dirtyKeys :: TVar KeySet
       -- ^ Set of dirty rule keys since the last Shake run
+    , runningKeys:: TVar KeySet
+      -- ^ Set of running rule keys since the last Shake run
     }
 
 type WithProgressFunc = forall a.
@@ -573,10 +576,21 @@ recordDirtyKeys
   -> k
   -> [NormalizedFilePath]
   -> STM (IO ())
-recordDirtyKeys ShakeExtras{dirtyKeys} key file = do
+recordDirtyKeys ShakeExtras{dirtyKeys, runningKeys} key file = do
+    modifyTVar' runningKeys $ \x -> foldl' (flip deleteKeySet) x (toKey key <$> file)
     modifyTVar' dirtyKeys $ \x -> foldl' (flip insertKeySet) x (toKey key <$> file)
     return $ withEventTrace "recordDirtyKeys" $ \addEvent -> do
         addEvent (fromString $ unlines $ "dirty " <> show key : map fromNormalizedFilePath file)
+
+recordDirtyKeySet
+  :: ShakeExtras
+  -> [Key]
+  -> STM (IO ())
+recordDirtyKeySet ShakeExtras{dirtyKeys, runningKeys} keys = do
+    modifyTVar' runningKeys $ \x -> foldl' (flip deleteKeySet) x keys
+    modifyTVar' dirtyKeys $ \x -> foldl' (flip insertKeySet) x keys
+    return $ withEventTrace "recordDirtyKeys" $ \addEvent -> do
+        addEvent (fromString $ unlines $ "dirty: ": map show keys)
 
 -- | We return Nothing if the rule has not run and Just Failed if it has failed to produce a value.
 getValues ::
@@ -672,6 +686,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
 
         let clientCapabilities = maybe def LSP.resClientCapabilities lspEnv
         dirtyKeys <- newTVarIO mempty
+        runningKeys <- newTVarIO mempty
         -- Take one VFS snapshot at the start
         vfsVar <- newTVarIO =<< vfsSnapshot lspEnv
         pure ShakeExtras{shakeRecorder = recorder, ..}
@@ -925,6 +940,7 @@ garbageCollectKeys label maxAge checkParents agedKeys = do
     ShakeExtras{state, dirtyKeys, lspEnv, shakeRecorder, ideTesting} <- getShakeExtras
     (n::Int, garbage) <- liftIO $
         foldM (removeDirtyKey dirtyKeys state) (0,[]) agedKeys
+
     t <- liftIO start
     when (n>0) $ liftIO $ do
         logWith shakeRecorder Debug $ LogShakeGarbageCollection (T.pack label) n t
@@ -1186,9 +1202,11 @@ defineEarlyCutoff'
     -> (Value v -> Action (Maybe BS.ByteString, IdeResult v))
     -> Action (RunResult (A (RuleResult k)))
 defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
-    ShakeExtras{state, progress, dirtyKeys} <- getShakeExtras
+    ShakeExtras{state, progress, dirtyKeys, runningKeys} <- getShakeExtras
     options <- getIdeOptions
     (if optSkipProgress options key then id else inProgress progress file) $ do
+        let theKey = toKey key file
+        liftIO $ atomicallyNamed "define - runningKeys" $ modifyTVar' runningKeys (insertKeySet theKey)
         val <- case mbOld of
             Just old | mode == RunDependenciesSame -> do
                 mbValue <- liftIO $ atomicallyNamed "define - read 1" $ getValues state key file
@@ -1234,7 +1252,9 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                     (if eq then ChangedRecomputeSame else ChangedRecomputeDiff)
                     (encodeShakeValue bs) $
                     A res
-        liftIO $ atomicallyNamed "define - dirtyKeys" $ modifyTVar' dirtyKeys (deleteKeySet $ toKey key file)
+        liftIO $ atomicallyNamed "define - (runningKeys, dirtyKeys)" $ do
+            running <- readTVar runningKeys
+            when (memberKeySet theKey running) $ return (deleteKeySet theKey running) >> modifyTVar' dirtyKeys (deleteKeySet theKey)
         return res
   where
     -- Highly unsafe helper to compute the version of a file
