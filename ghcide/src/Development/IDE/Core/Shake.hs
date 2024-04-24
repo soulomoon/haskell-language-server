@@ -138,7 +138,6 @@ import           Development.IDE.Graph.Database         (ShakeDatabase,
                                                          shakeNewDatabase,
                                                          shakeProfileDatabase,
                                                          shakeRunDatabaseForKeys)
-import           Development.IDE.Graph.Internal.Key     (deleteKeySet)
 import           Development.IDE.Graph.Rule
 import           Development.IDE.Types.Action
 import           Development.IDE.Types.Diagnostics
