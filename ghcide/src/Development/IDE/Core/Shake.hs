@@ -128,6 +128,7 @@ import           Development.IDE.GHC.Compat             (NameCache,
                                                          initNameCache,
                                                          knownKeyNames)
 import           Development.IDE.GHC.Orphans            ()
+import           Development.IDE.Graph                  (deleteKeySet)
 import           Development.IDE.Graph                  hiding (ShakeValue,
                                                          action)
 import qualified Development.IDE.Graph                  as Shake
@@ -939,10 +940,9 @@ garbageCollectDirtyKeysOlderThan maxAge checkParents = otTracedGarbageCollection
 garbageCollectKeys :: String -> Int -> CheckParents -> [(Key, Int)] -> Action [Key]
 garbageCollectKeys label maxAge checkParents agedKeys = do
     start <- liftIO offsetTime
-    ShakeExtras{state, dirtyKeys, lspEnv, shakeRecorder, ideTesting} <- getShakeExtras
+    ShakeExtras{state, dirtyKeys, runningCleanlyKeys, lspEnv, shakeRecorder, ideTesting} <- getShakeExtras
     (n::Int, garbage) <- liftIO $
-        foldM (removeDirtyKey dirtyKeys state) (0,[]) agedKeys
-
+        foldM (removeDirtyKey dirtyKeys runningCleanlyKeys state) (0,[]) agedKeys
     t <- liftIO start
     when (n>0) $ liftIO $ do
         logWith shakeRecorder Debug $ LogShakeGarbageCollection (T.pack label) n t
@@ -953,14 +953,16 @@ garbageCollectKeys label maxAge checkParents agedKeys = do
 
     where
         showKey = show . Q
-        removeDirtyKey dk values st@(!counter, keys) (k, age)
+        removeDirtyKey dk ck values st@(!counter, keys) (k, age)
             | age > maxAge
             , Just (kt,_) <- fromKeyType k
             , not(kt `HSet.member` preservedKeys checkParents)
             = atomicallyNamed "GC" $ do
                 gotIt <- STM.focus (Focus.member <* Focus.delete) k values
-                when gotIt $
+                when gotIt $ do
                    modifyTVar' dk (insertKeySet k)
+                   modifyTVar' ck (deleteKeySet k)
+
                 return $ if gotIt then (counter+1, k:keys) else st
             | otherwise = pure st
 
