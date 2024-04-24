@@ -330,7 +330,7 @@ data ShakeExtras = ShakeExtras
     , dirtyKeys :: TVar KeySet
       -- ^ Set of dirty rule keys since the last Shake run
     , runningCleanlyKeys:: TVar KeySet
-      -- ^ Set of running rule keys since the last Shake run
+      -- ^ Set of running keys which will produce non-dirty results since the last Shake run
     -- dirtyKeys and runningCleanlyKeys are related in one way,
     -- do not remove it from dirtyKeys if not in the runningCleanlyKeys.
     }
