@@ -589,7 +589,7 @@ recordDirtyKeySet
 recordDirtyKeySet ShakeExtras{dirtyKeys, runningKeys} keys = do
     modifyTVar' runningKeys $ \x -> foldl' (flip deleteKeySet) x keys
     modifyTVar' dirtyKeys $ \x -> foldl' (flip insertKeySet) x keys
-    return $ withEventTrace "recordDirtyKeys" $ \addEvent -> do
+    return $ withEventTrace "recordDirtyKeySet" $ \addEvent -> do
         addEvent (fromString $ unlines $ "dirty: ": map show keys)
 
 -- | We return Nothing if the rule has not run and Just Failed if it has failed to produce a value.
