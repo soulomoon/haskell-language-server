@@ -1254,7 +1254,9 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                     A res
         liftIO $ atomicallyNamed "define - (runningKeys, dirtyKeys)" $ do
             running <- readTVar runningKeys
-            when (memberKeySet theKey running) $ return (deleteKeySet theKey running) >> modifyTVar' dirtyKeys (deleteKeySet theKey)
+            when (memberKeySet theKey running) $ do
+                modifyTVar' runningKeys (deleteKeySet theKey)
+                modifyTVar' dirtyKeys (deleteKeySet theKey)
         return res
   where
     -- Highly unsafe helper to compute the version of a file
