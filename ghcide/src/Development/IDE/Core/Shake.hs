@@ -329,8 +329,10 @@ data ShakeExtras = ShakeExtras
       -- ^ Default HLS config, only relevant if the client does not provide any Config
     , dirtyKeys :: TVar KeySet
       -- ^ Set of dirty rule keys since the last Shake run
-    , runningKeys:: TVar KeySet
+    , runningCleanlyKeys:: TVar KeySet
       -- ^ Set of running rule keys since the last Shake run
+    -- dirtyKeys and runningCleanlyKeys are related in one way,
+    -- do not remove it from dirtyKeys if not in the runningCleanlyKeys.
     }
 
 type WithProgressFunc = forall a.
@@ -576,18 +578,18 @@ recordDirtyKeys
   -> k
   -> [NormalizedFilePath]
   -> STM (IO ())
-recordDirtyKeys ShakeExtras{dirtyKeys, runningKeys} key file = do
-    modifyTVar' runningKeys $ \x -> foldl' (flip deleteKeySet) x (toKey key <$> file)
-    modifyTVar' dirtyKeys $ \x -> foldl' (flip insertKeySet) x (toKey key <$> file)
+recordDirtyKeys ShakeExtras{dirtyKeys, runningCleanlyKeys} key files = do
+    modifyTVar' runningCleanlyKeys $ \x -> foldl' (flip deleteKeySet) x (toKey key <$> files)
+    modifyTVar' dirtyKeys $ \x -> foldl' (flip insertKeySet) x (toKey key <$> files)
     return $ withEventTrace "recordDirtyKeys" $ \addEvent -> do
-        addEvent (fromString $ unlines $ "dirty " <> show key : map fromNormalizedFilePath file)
+        addEvent (fromString $ unlines $ "dirty " <> show key : map fromNormalizedFilePath files)
 
 recordDirtyKeySet
   :: ShakeExtras
   -> [Key]
   -> STM (IO ())
-recordDirtyKeySet ShakeExtras{dirtyKeys, runningKeys} keys = do
-    modifyTVar' runningKeys $ \x -> foldl' (flip deleteKeySet) x keys
+recordDirtyKeySet ShakeExtras{dirtyKeys, runningCleanlyKeys} keys = do
+    modifyTVar' runningCleanlyKeys $ \x -> foldl' (flip deleteKeySet) x keys
     modifyTVar' dirtyKeys $ \x -> foldl' (flip insertKeySet) x keys
     return $ withEventTrace "recordDirtyKeySet" $ \addEvent -> do
         addEvent (fromString $ unlines $ "dirty: ": map show keys)
@@ -686,7 +688,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
 
         let clientCapabilities = maybe def LSP.resClientCapabilities lspEnv
         dirtyKeys <- newTVarIO mempty
-        runningKeys <- newTVarIO mempty
+        runningCleanlyKeys <- newTVarIO mempty
         -- Take one VFS snapshot at the start
         vfsVar <- newTVarIO =<< vfsSnapshot lspEnv
         pure ShakeExtras{shakeRecorder = recorder, ..}
@@ -1202,11 +1204,11 @@ defineEarlyCutoff'
     -> (Value v -> Action (Maybe BS.ByteString, IdeResult v))
     -> Action (RunResult (A (RuleResult k)))
 defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
-    ShakeExtras{state, progress, dirtyKeys, runningKeys} <- getShakeExtras
+    ShakeExtras{state, progress, dirtyKeys, runningCleanlyKeys} <- getShakeExtras
     options <- getIdeOptions
     (if optSkipProgress options key then id else inProgress progress file) $ do
         let theKey = toKey key file
-        liftIO $ atomicallyNamed "define - runningKeys" $ modifyTVar' runningKeys (insertKeySet theKey)
+        liftIO $ atomicallyNamed "define - runningCleanlyKeys" $ modifyTVar' runningCleanlyKeys (insertKeySet theKey)
         val <- case mbOld of
             Just old | mode == RunDependenciesSame -> do
                 mbValue <- liftIO $ atomicallyNamed "define - read 1" $ getValues state key file
@@ -1252,10 +1254,10 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                     (if eq then ChangedRecomputeSame else ChangedRecomputeDiff)
                     (encodeShakeValue bs) $
                     A res
-        liftIO $ atomicallyNamed "define - (runningKeys, dirtyKeys)" $ do
-            running <- readTVar runningKeys
+        liftIO $ atomicallyNamed "define - (runningCleanlyKeys, dirtyKeys)" $ do
+            running <- readTVar runningCleanlyKeys
             when (memberKeySet theKey running) $ do
-                modifyTVar' runningKeys (deleteKeySet theKey)
+                modifyTVar' runningCleanlyKeys (deleteKeySet theKey)
                 modifyTVar' dirtyKeys (deleteKeySet theKey)
         return res
   where
