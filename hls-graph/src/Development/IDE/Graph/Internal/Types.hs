@@ -28,6 +28,7 @@ import qualified StmContainers.Map                  as SMap
 import           StmContainers.Map                  (Map)
 import           System.Time.Extra                  (Seconds)
 import           UnliftIO                           (MonadUnliftIO)
+import Control.Concurrent.STM (STM)
 
 #if !MIN_VERSION_base(4,18,0)
 import           Control.Applicative                (liftA2)
@@ -107,8 +108,12 @@ data Database = Database {
     databaseExtra  :: Dynamic,
     databaseRules  :: TheRules,
     databaseStep   :: !(TVar Step),
-    databaseValues :: !(Map Key KeyDetails)
+    databaseValues :: !(Map Key KeyDetails),
+    databaseDirtyKeys :: !(TVar KeySet)
     }
+
+getDatabaseDirtyKeys :: Action (TVar KeySet)
+getDatabaseDirtyKeys = Action $ asks (databaseDirtyKeys . actionDatabase)
 
 getDatabaseValues :: Database -> IO [(Key, Status)]
 getDatabaseValues = atomically
@@ -206,6 +211,9 @@ data RunResult value = RunResult
     ,runHook    :: STM ()
         -- ^ The hook to run after the rule completes.
     } deriving Functor
+
+instance NFData value => NFData (RunResult value) where
+    rnf (RunResult x1 x2 x3 _) = rnf x1 `seq` x2 `seq` rnf x3
 
 ---------------------------------------------------------------------
 -- EXCEPTIONS

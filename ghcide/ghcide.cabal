@@ -242,6 +242,7 @@ executable ghcide
   main-is:            Main.hs
   build-depends:
     , base                  >=4.16 && <5
+    , Cabal >= 3.12
     , data-default
     , extra
     , ghcide
