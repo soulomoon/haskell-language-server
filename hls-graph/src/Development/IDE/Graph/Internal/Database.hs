@@ -57,8 +57,6 @@ incDatabase :: Database -> Maybe [Key] -> IO ()
 incDatabase db (Just kk) = do
     atomicallyNamed "incDatabase" $ modifyTVar'  (databaseStep db) $ \(Step i) -> Step $ i + 1
     transitiveDirtyKeys <- transitiveDirtySet db kk
-    -- kick off the computation for the dirty keys
-    _res <- runAIO $ builder db emptyStack (toListKeySet transitiveDirtyKeys)
     for_ (toListKeySet transitiveDirtyKeys) $ \k ->
         -- Updating all the keys atomically is not necessary
         -- since we assume that no build is mutating the db.
