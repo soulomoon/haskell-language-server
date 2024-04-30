@@ -179,6 +179,7 @@ import           GHC                                          (mgModSummaries)
 
 #if MIN_VERSION_ghc(9,3,0)
 import qualified Data.IntMap                                  as IM
+import Development.IDE.Graph.Internal.Action (runEval)
 #endif
 
 
@@ -611,12 +612,17 @@ readHieFileFromDisk recorder hie_loc = do
     Right _ -> liftIO $ logWith recorder Logger.Debug $ LogLoadingHieFileSuccess hie_loc
   except res
 
+seqTup :: (Functor f, Applicative f) => (f a, f b, f c) -> f (a, b, c)
+seqTup (a, b, c) = (,,) <$> a <*> b <*> c
+
 -- | Typechecks a module.
 typeCheckRule :: Recorder (WithPriority Log) -> Rules ()
 typeCheckRule recorder = define (cmapWithPrio LogShake recorder) $ \TypeCheck file -> do
-    pm <- use_ GetParsedModule file
-    hsc  <- hscEnv <$> use_ GhcSessionDeps file
-    foi <- use_ IsFileOfInterest file
+    let pmA = useEval_ GetParsedModule file
+    let hscA = fmap hscEnv <$> useEval_ GhcSessionDeps file
+    let foiA = useEval_ IsFileOfInterest file
+    tup <- (,,) <$> pmA <*> hscA <*> foiA
+    (pm, hsc, foi) <- runEval $ seqTup tup
     -- We should only call the typecheck rule for files of interest.
     -- Keeping typechecked modules in memory for other files is
     -- very expensive.

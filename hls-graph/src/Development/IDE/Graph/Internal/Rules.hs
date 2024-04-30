@@ -19,9 +19,48 @@ import           Data.Typeable
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Types
+import Data.Kind (Type)
 
 -- | The type mapping between the @key@ or a rule and the resulting @value@.
 type family RuleResult key -- = value
+type family RunResults keys where
+    RunResults '[] = '[]
+    RunResults (x ': xs) = RunResult x ': RunResults xs
+
+-- type family MapListType f keys where
+--     MapListType _ '[] = '[]
+--     MapListType f (x ': xs) = f x ': MapListType f xs
+
+-- type family MapResults as bs where
+    -- MapResults '[] = '[]
+    -- MapResults (a ': as) = RunResult a ': MapResults as
+
+class HMap f as where
+    hMap :: f -> HList as -> HList (RunResults as)
+
+type IsKey a = (Typeable a, Hashable a, Show a)
+
+data HList :: [Type] -> Type where
+    HNil :: HList '[]
+    HCons :: a -> HList as -> HList (a ': as)
+
+class HListKeys as where
+    hListList :: HList as -> [Key]
+instance HListKeys '[] where
+    hListList HNil = []
+instance (IsKey a, HListKeys as) => HListKeys (a ': as) where
+    hListList (HCons k xs) = newKey k : hListList xs
+
+
+class HListValues as where
+    listHList :: [Dynamic] -> HList as
+instance HListValues '[] where
+    listHList [] = HNil
+    listHList _ = error "listHList: too many elements"
+instance (Typeable a, HListValues as) => HListValues (a ': as) where
+    listHList  [] = error "listHList: empty list"
+    listHList (x:xs) = HCons (unwrapDynamic x) (listHList xs)
+
 
 action :: Action a -> Rules ()
 action x = do

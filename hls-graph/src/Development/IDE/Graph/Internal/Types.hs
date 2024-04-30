@@ -69,11 +69,21 @@ data SRules = SRules {
 newtype Action a = Action {fromAction :: ReaderT SAction IO a}
     deriving newtype (Monad, Applicative, Functor, MonadIO, MonadFail, MonadThrow, MonadCatch, MonadMask, MonadUnliftIO)
 
+
 data SAction = SAction {
     actionDatabase :: !Database,
     actionDeps     :: !(IORef ResultDeps),
     actionStack    :: !Stack
     }
+
+-- newtype FAction a = FAction {fromFAction :: ReaderT FSAction IO a}
+--     deriving newtype (Monad, Applicative, Functor, MonadIO, MonadFail, MonadThrow, MonadCatch, MonadMask, MonadUnliftIO)
+
+-- data FSAction = FSAction {
+--     factionDatabase :: !Database,
+--     factionDeps     :: !ResultDeps,
+--     factionStack    :: !Stack
+--     }
 
 getDatabase :: Action Database
 getDatabase = Action $ asks actionDatabase
@@ -157,6 +167,10 @@ getResultDepsDefault :: KeySet -> ResultDeps -> KeySet
 getResultDepsDefault _ (ResultDeps ids)      = fold ids
 getResultDepsDefault _ (AlwaysRerunDeps ids) = ids
 getResultDepsDefault def UnknownDeps         = def
+
+mergeWithFirst :: KeySet -> ResultDeps -> ResultDeps
+mergeWithFirst ks (ResultDeps (x:xs)) = ResultDeps (ks <> x : xs)
+mergeWithFirst ks x = ResultDeps [ks] <> x
 
 mapResultDeps :: (KeySet -> KeySet) -> ResultDeps -> ResultDeps
 mapResultDeps f (ResultDeps ids)      = ResultDeps $ fmap f ids

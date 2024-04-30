@@ -73,6 +73,7 @@ module Development.IDE.Core.Shake(
     garbageCollectDirtyKeysOlderThan,
     Log(..),
     VFSModified(..), getClientConfigAction,
+    useEval_
     ) where
 
 import           Control.Concurrent.Async
@@ -172,6 +173,11 @@ import qualified StmContainers.Map                      as STM
 import           System.FilePath                        hiding (makeRelative)
 import           System.IO.Unsafe                       (unsafePerformIO)
 import           System.Time.Extra
+import Development.IDE.Graph.Internal.Action (apply', AEval, applyEval)
+import Development.IDE.Graph.Internal.Rules
+import GHC.Base (undefined)
+import Data.Maybe (fromMaybe)
+import Control.Monad (sequence)
 -- See Note [Guidelines For Using CPP In GHCIDE Import Statements]
 
 #if !MIN_VERSION_ghc(9,3,0)
@@ -1105,10 +1111,53 @@ uses_ key files = do
         Nothing -> liftIO $ throwIO $ BadDependency (show key)
         Just v  -> return v
 
+useEval_ :: IdeRule k v => k -> NormalizedFilePath -> Action (AEval v)
+useEval_ key file = fmap runIdentity <$> usesEval_ key (Identity file)
+
+usesEval_ :: (Traversable f, IdeRule k v) => k -> f NormalizedFilePath -> Action (AEval (f v))
+usesEval_ key files = do
+    res <- usesEval key files
+    case sequence $ fmap sequence res of
+        Nothing -> liftIO $ throwIO $ BadDependency (show key)
+        Just v  -> return v
+
+
+usesEval :: (Traversable f, IdeRule k v)
+    => k -> f NormalizedFilePath -> Action (AEval (f (Maybe v)))
+usesEval key files = (fmap . fmap) (\(A value) -> currentValue value) <$> applyEval (fmap (Q . (key,)) files)
+
 -- | Plural version of 'use'
 uses :: (Traversable f, IdeRule k v)
     => k -> f NormalizedFilePath -> Action (f (Maybe v))
 uses key files = fmap (\(A value) -> currentValue value) <$> apply (fmap (Q . (key,)) files)
+
+-- go :: '[Int]
+-- go = [1]
+
+class CurrentValues keys where
+    type HFmap (f :: * -> *) keys :: [*]
+    currentValues :: HList keys -> HList (HFmap Maybe keys)
+instance CurrentValues '[] where
+    type HFmap f '[] = '[]
+    currentValues HNil = HNil
+instance (CurrentValues xs) => CurrentValues (A x ': xs) where
+    type HFmap f (A x ': xs) = f x ': HFmap f xs
+    currentValues (HCons (A x) b) = HCons (currentValue x) (currentValues b)
+
+-- class UnMaybe keys where
+--     unMaybe :: HList (HFmap Maybe (RunResults keys)) -> HList (RunResults keys)
+    -- unMaybe
+    -- unMaybe (HCons Nothing xs) = unMaybe xs
+
+
+uses'_ :: (CurrentValues (RunResults keys), HListKeys keys,  HListValues (RunResults keys)) => HList keys -> Action (HList (RunResults keys))
+uses'_ = undefined
+-- uses_' :: (CurrentValues (RunResults keys), HListKeys keys,  HListValues (RunResults keys))
+--     => HList keys -> Action (HList (RunResults keys))
+-- uses_' ks = fmap currentValues $ apply' ks
+
+uses' :: (CurrentValues (RunResults keys), HListKeys keys,  HListValues (RunResults keys)) => HList keys -> Action (HList (HFmap Maybe (RunResults keys)))
+uses' ks = fmap currentValues $ apply' ks
 
 -- | Return the last computed result which might be stale.
 usesWithStale :: (Traversable f, IdeRule k v)
