@@ -153,21 +153,21 @@ refreshDeps visited db stack key result = \case
         case res of
             Left res ->  if isDirty result res
                 -- restart the computation if any of the deps are dirty
-                then asyncWithCleanUp $ liftIO $ compute db stack key RunDependenciesChanged (Just result)
+                then pure $ compute db stack key RunDependenciesChanged (Just result)
                 -- else kick the rest of the deps
                 else refreshDeps newVisited db stack key result deps
-            Right iores -> asyncWithCleanUp $ liftIO $ do
-                res <- iores
+            Right iores -> do
+                res <- liftIO iores
                 if isDirty result res
-                    then compute db stack key RunDependenciesChanged (Just result)
-                    else join $ runAIO $ refreshDeps newVisited db stack key result deps
+                    then pure $ compute db stack key RunDependenciesChanged (Just result)
+                    else refreshDeps newVisited db stack key result deps
 
 -- | Refresh a key:
 refresh :: Database -> Stack -> Key -> Maybe Result -> AIO (IO Result)
 -- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
 refresh db stack key result = case (addStack key stack, result) of
     (Left e, _) -> throw e
-    (Right stack, Just me@Result{resultDeps = ResultDeps deps}) -> refreshDeps mempty db stack key me (reverse deps)
+    (Right stack, Just me@Result{resultDeps = ResultDeps deps}) -> fmap join $ asyncWithCleanUp $ refreshDeps mempty db stack key me (reverse deps)
     (Right stack, _) ->
         asyncWithCleanUp $ liftIO $ compute db stack key RunDependenciesChanged result
 
