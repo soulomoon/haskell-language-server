@@ -168,6 +168,10 @@ getResultDepsDefault _ (ResultDeps ids)      = fold ids
 getResultDepsDefault _ (AlwaysRerunDeps ids) = ids
 getResultDepsDefault def UnknownDeps         = def
 
+mergeWithFirst :: KeySet -> ResultDeps -> ResultDeps
+mergeWithFirst ks (ResultDeps (x:xs)) = ResultDeps (ks <> x : xs)
+mergeWithFirst ks x = ResultDeps [ks] <> x
+
 mapResultDeps :: (KeySet -> KeySet) -> ResultDeps -> ResultDeps
 mapResultDeps f (ResultDeps ids)      = ResultDeps $ fmap f ids
 mapResultDeps f (AlwaysRerunDeps ids) = AlwaysRerunDeps $ f ids

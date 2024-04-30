@@ -36,6 +36,7 @@ import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
 import           System.Exit
 import GHC.Conc (par)
+import Debug.Trace (traceM, trace)
 
 type ShakeValue a = (Show a, Typeable a, Eq a, Hashable a, NFData a)
 
@@ -137,7 +138,7 @@ instance Functor AEval where
 
 instance Applicative AEval where
     pure x = AEval mempty x
-    AEval ks1 f <*> AEval ks2 x = x `par` f `seq` AEval (ks1 <> ks2) $ f x
+    AEval ks1 f <*> AEval ks2 x = x `par` f `par` AEval (ks1 <> ks2) $ f x
 
 applyEval :: (Traversable f, RuleResult key ~ value, ShakeValue key, Typeable value) => f key -> Action (AEval (f value))
 applyEval ks = do
@@ -145,12 +146,14 @@ applyEval ks = do
     stack <- Action $ asks actionStack
     (is, vs) <- liftIO $ build db stack ks
     let ks = force $ fromListKeySet $ toList is
+    traceM $ "[TRACE]: applyEval: " ++ show ks
+    ref <- Action $ asks actionDeps
+    liftIO $ modifyIORef' ref (mergeWithFirst ks)
     pure $ AEval ks vs
 
 runEval :: AEval value -> Action value
-runEval (AEval ks vs) = do
-    ref <- Action $ asks actionDeps
-    liftIO $ modifyIORef' ref (ResultDeps [ks] <>)
+runEval (AEval ks vs) = trace "runEval" $ do
+    traceM $ "[TRACE]: runEval: " ++ show ks
     pure vs
 
 apply :: (Traversable f, RuleResult key ~ value, ShakeValue key, Typeable value) => f key -> Action (f value)
