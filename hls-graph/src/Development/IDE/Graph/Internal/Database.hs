@@ -47,7 +47,6 @@ newDatabase :: Dynamic -> TheRules -> IO Database
 newDatabase databaseExtra databaseRules = do
     databaseStep <- newTVarIO $ Step 0
     databaseValues <- atomically SMap.new
-    databaseDirtyKeys <- newTVarIO mempty
     pure Database{..}
 
 -- | Increment the step and mark dirty.
@@ -61,9 +60,7 @@ incDatabase db (Just kk) = do
         -- Updating all the keys atomically is not necessary
         -- since we assume that no build is mutating the db.
         -- Therefore run one transaction per key to minimise contention.
-        atomicallyNamed "incDatabase" $ do
-            modifyTVar' (databaseDirtyKeys db) (insertKeySet k)
-            SMap.focus updateDirty k (databaseValues db)
+        atomicallyNamed "incDatabase" $ SMap.focus updateDirty k (databaseValues db)
 
 -- all keys are dirty
 incDatabase db Nothing = do
@@ -123,7 +120,6 @@ builder db@Database{..} stack keys = withRunInIO $ \(RunInIO run) -> do
                     let act = run (refresh db stack id s)
                         (force, val) = splitIO (join act)
                     SMap.focus (updateStatus $ Running current force val s) id databaseValues
-
                     modifyTVar' toForce (Spawn force:)
                     pure val
 
@@ -204,9 +200,7 @@ compute db@Database{..} stack key mode result = do
                     (getResultDepsDefault mempty previousDeps)
                     deps
         _ -> pure ()
-
     atomicallyNamed "compute and run hook" $ do
-        modifyTVar' databaseDirtyKeys (deleteKeySet key)
         runHook
         SMap.focus (updateStatus $ Clean res) key databaseValues
     pure res

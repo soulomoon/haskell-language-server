@@ -8,9 +8,8 @@ module Development.IDE.Graph.Database(
     shakeGetBuildStep,
     shakeGetDatabaseKeys,
     shakeGetDirtySet,
-    shakeGetCleanKeys,
-    getDatabaseDirtyKeys,
-    shakeGetBuildEdges) where
+    shakeGetCleanKeys
+    ,shakeGetBuildEdges) where
 import           Control.Concurrent.STM.Stats            (readTVarIO)
 import           Data.Dynamic
 import           Data.Maybe
