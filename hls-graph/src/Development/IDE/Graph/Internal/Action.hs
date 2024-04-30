@@ -9,9 +9,13 @@ module Development.IDE.Graph.Internal.Action
 , alwaysRerun
 , apply1
 , apply
+, apply'
 , applyWithoutDependency
 , parallel
 , runActions
+, AEval(..)
+, applyEval
+, runEval
 , Development.IDE.Graph.Internal.Action.getDirtySet
 , getKeysAndVisitedAge
 ) where
@@ -28,9 +32,10 @@ import           Data.IORef
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Database
 import           Development.IDE.Graph.Internal.Key
-import           Development.IDE.Graph.Internal.Rules    (RuleResult)
+import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
 import           System.Exit
+import GHC.Conc (par)
 
 type ShakeValue a = (Show a, Typeable a, Eq a, Hashable a, NFData a)
 
@@ -110,12 +115,50 @@ actionFinally a b = do
 apply1 :: (RuleResult key ~ value, ShakeValue key, Typeable value) => key -> Action value
 apply1 k = runIdentity <$> apply (Identity k)
 
+-- apply' :: (Traversable f, RuleResult key ~ value, ShakeValue key, Typeable value) => f key -> Action (f value)
+apply' :: (HListKeys keys, HListValues (RunResults keys)) => HList keys -> Action (HList (RunResults keys))
+apply' ks = do
+    db <- Action $ asks actionDatabase
+    stack <- Action $ asks actionStack
+    (is, vs) <- liftIO $ build1 db stack ks
+    ref <- Action $ asks actionDeps
+    let !ks = force $ fromListKeySet $ toList is
+    liftIO $ modifyIORef' ref (ResultDeps [ks] <>)
+    pure vs
+
+data AEval a = AEval KeySet a
+
+instance Foldable AEval where
+    foldMap f (AEval _ x) = f x
+instance Traversable AEval where
+    traverse f (AEval k x) = AEval k <$> f x
+instance Functor AEval where
+    fmap f (AEval k x) = AEval k $ f x
+
+instance Applicative AEval where
+    pure x = AEval mempty x
+    AEval ks1 f <*> AEval ks2 x = x `par` f `seq` AEval (ks1 <> ks2) $ f x
+
+applyEval :: (Traversable f, RuleResult key ~ value, ShakeValue key, Typeable value) => f key -> Action (AEval (f value))
+applyEval ks = do
+    db <- Action $ asks actionDatabase
+    stack <- Action $ asks actionStack
+    (is, vs) <- liftIO $ build db stack ks
+    let ks = force $ fromListKeySet $ toList is
+    pure $ AEval ks vs
+
+runEval :: AEval value -> Action value
+runEval (AEval ks vs) = do
+    ref <- Action $ asks actionDeps
+    liftIO $ modifyIORef' ref (ResultDeps [ks] <>)
+    pure vs
+
 apply :: (Traversable f, RuleResult key ~ value, ShakeValue key, Typeable value) => f key -> Action (f value)
 apply ks = do
     db <- Action $ asks actionDatabase
     stack <- Action $ asks actionStack
-    (is, vs) <- liftIO $ build db stack ks
     ref <- Action $ asks actionDeps
+    (is, vs) <- liftIO $ build db stack ks
     let !ks = force $ fromListKeySet $ toList is
     liftIO $ modifyIORef' ref (ResultDeps [ks] <>)
     pure vs
