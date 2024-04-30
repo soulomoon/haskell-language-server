@@ -72,10 +72,12 @@ newtype Action a = Action {fromAction :: ReaderT SAction IO a}
 instance Applicative Action where
     pure a = Action $ pure a
     (<*>) f x = Action $ do
-        (fn, xn) <- concurrently (fromAction f) (fromAction x)
+        -- (fn, xn) <- concurrently (fromAction f) (fromAction x)
+        fn <- fromAction f
+        xn <- fromAction x
         -- merged last two actions
         deps <- asks actionDeps
-        liftIO $ modifyIORef' deps mergeLastTwo
+        liftIO $ atomicModifyIORef' deps (\x -> (mergeLastTwo x, ()))
         return $ fn xn
 
 data SAction = SAction {
