@@ -143,36 +143,33 @@ isDirty me = any (\(_,dep) -> resultBuilt me < resultChanged dep)
 -- * If no dirty dependencies and we have evaluated the key previously, then we refresh it in the current thread.
 --   This assumes that the implementation will be a lookup
 -- * Otherwise, we spawn a new thread to refresh the dirty deps (if any) and the key itself
-refreshDeps :: KeySet -> Database -> Stack -> Key -> Result -> [KeySet] -> AIO (IO Result)
+refreshDeps :: KeySet -> Database -> Stack -> Key -> Result -> [KeySet] -> AIO Result
 refreshDeps visited db stack key result = \case
     -- no more deps to refresh
-    [] -> computeWithCleanup db stack key RunDependenciesSame (Just result)
+    [] -> liftIO $ compute db stack key RunDependenciesSame (Just result)
     (dep:deps) -> do
         let newVisited = dep <> visited
         res <- builder db stack (toListKeySet (dep `differenceKeySet` visited))
         case res of
             Left res ->  if isDirty result res
                 -- restart the computation if any of the deps are dirty
-                then computeWithCleanup db stack key RunDependenciesChanged (Just result)
+                then liftIO $ compute db stack key RunDependenciesChanged (Just result)
                 -- else kick the rest of the deps
                 else refreshDeps newVisited db stack key result deps
             Right iores -> do
                 res <- liftIO iores
                 if isDirty result res
-                    then computeWithCleanup db stack key RunDependenciesChanged (Just result)
+                    then liftIO $ compute db stack key RunDependenciesChanged (Just result)
                     else refreshDeps newVisited db stack key result deps
-
-computeWithCleanup :: Database -> Stack -> Key -> RunMode -> Maybe Result -> AIO (IO Result)
-computeWithCleanup db stack key a b = asyncWithCleanUp $ liftIO $  compute db stack key a b
 
 -- | Refresh a key:
 refresh :: Database -> Stack -> Key -> Maybe Result -> AIO (IO Result)
 -- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
 refresh db stack key result = case (addStack key stack, result) of
     (Left e, _) -> throw e
-    (Right stack, Just me@Result{resultDeps = ResultDeps deps}) -> refreshDeps mempty db stack key me (reverse deps)
+    (Right stack, Just me@Result{resultDeps = ResultDeps deps}) -> asyncWithCleanUp $ refreshDeps mempty db stack key me (reverse deps)
     (Right stack, _) ->
-        computeWithCleanup db stack key RunDependenciesChanged result
+        asyncWithCleanUp $ liftIO $ compute db stack key RunDependenciesChanged result
 
 -- | Compute a key.
 compute :: Database -> Stack -> Key -> RunMode -> Maybe Result -> IO Result
