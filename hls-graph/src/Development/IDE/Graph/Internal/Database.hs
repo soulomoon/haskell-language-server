@@ -146,30 +146,33 @@ isDirty me = any (\(_,dep) -> resultBuilt me < resultChanged dep)
 refreshDeps :: KeySet -> Database -> Stack -> Key -> Result -> [KeySet] -> AIO (IO Result)
 refreshDeps visited db stack key result = \case
     -- no more deps to refresh
-    [] -> pure $ compute db stack key RunDependenciesSame (Just result)
+    [] -> computeWithCleanup db stack key RunDependenciesSame (Just result)
     (dep:deps) -> do
         let newVisited = dep <> visited
         res <- builder db stack (toListKeySet (dep `differenceKeySet` visited))
         case res of
             Left res ->  if isDirty result res
                 -- restart the computation if any of the deps are dirty
-                then pure $ compute db stack key RunDependenciesChanged (Just result)
+                then computeWithCleanup db stack key RunDependenciesChanged (Just result)
                 -- else kick the rest of the deps
                 else refreshDeps newVisited db stack key result deps
             Right iores -> do
                 res <- liftIO iores
                 if isDirty result res
-                    then pure $ compute db stack key RunDependenciesChanged (Just result)
+                    then computeWithCleanup db stack key RunDependenciesChanged (Just result)
                     else refreshDeps newVisited db stack key result deps
+
+computeWithCleanup :: Database -> Stack -> Key -> RunMode -> Maybe Result -> AIO (IO Result)
+computeWithCleanup db stack key a b = asyncWithCleanUp $ liftIO $  compute db stack key a b
 
 -- | Refresh a key:
 refresh :: Database -> Stack -> Key -> Maybe Result -> AIO (IO Result)
 -- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
 refresh db stack key result = case (addStack key stack, result) of
     (Left e, _) -> throw e
-    (Right stack, Just me@Result{resultDeps = ResultDeps deps}) -> fmap join $ asyncWithCleanUp $ refreshDeps mempty db stack key me (reverse deps)
+    (Right stack, Just me@Result{resultDeps = ResultDeps deps}) -> refreshDeps mempty db stack key me (reverse deps)
     (Right stack, _) ->
-        asyncWithCleanUp $ liftIO $ compute db stack key RunDependenciesChanged result
+        computeWithCleanup db stack key RunDependenciesChanged result
 
 -- | Compute a key.
 compute :: Database -> Stack -> Key -> RunMode -> Maybe Result -> IO Result
