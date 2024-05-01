@@ -31,6 +31,7 @@ import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules    (RuleResult)
 import           Development.IDE.Graph.Internal.Types
 import           System.Exit
+import Data.IORef.Extra (atomicModifyIORef'_)
 
 type ShakeValue a = (Show a, Typeable a, Eq a, Hashable a, NFData a)
 
@@ -38,7 +39,7 @@ type ShakeValue a = (Show a, Typeable a, Eq a, Hashable a, NFData a)
 alwaysRerun :: Action ()
 alwaysRerun = do
     ref <- Action $ asks actionDeps
-    liftIO $ modifyIORef' ref (AlwaysRerunDeps mempty <>)
+    liftIO $ atomicModifyIORef'_ ref (AlwaysRerunDeps mempty <>)
 
 parallel :: [Action a] -> Action [a]
 parallel [] = pure []
@@ -52,7 +53,7 @@ parallel xs = do
             liftIO $ mapConcurrently (ignoreState a) xs
         deps -> do
             (newDeps, res) <- liftIO $ unzip <$> mapConcurrently (usingState a) xs
-            liftIO $ writeIORef (actionDeps a) $ mconcat $ deps : newDeps
+            liftIO $ atomicWriteIORef (actionDeps a) $ mconcat $ deps : newDeps
             pure res
     where
         usingState a x = do
@@ -117,7 +118,8 @@ apply ks = do
     (is, vs) <- liftIO $ build db stack ks
     ref <- Action $ asks actionDeps
     let !ks = force $ fromListKeySet $ toList is
-    liftIO $ modifyIORef' ref (ResultDeps [ks] <>)
+    -- liftIO $ modifyIORef' ref (ResultDeps [ks] <>)
+    liftIO $ atomicModifyIORef'_ ref (ResultDeps [ks]<>)
     pure vs
 
 -- | Evaluate a list of keys without recording any dependencies.

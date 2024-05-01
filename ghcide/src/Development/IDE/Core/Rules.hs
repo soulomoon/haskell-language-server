@@ -614,9 +614,9 @@ readHieFileFromDisk recorder hie_loc = do
 -- | Typechecks a module.
 typeCheckRule :: Recorder (WithPriority Log) -> Rules ()
 typeCheckRule recorder = define (cmapWithPrio LogShake recorder) $ \TypeCheck file -> do
-    pm <- use_ GetParsedModule file
-    hsc  <- hscEnv <$> use_ GhcSessionDeps file
-    foi <- use_ IsFileOfInterest file
+    (pm, hsc, foi) <- (,,) <$> use_ GetParsedModule file
+                           <*> (hscEnv <$> use_ GhcSessionDeps file)
+                           <*> use_ IsFileOfInterest file
     -- We should only call the typecheck rule for files of interest.
     -- Keeping typechecked modules in memory for other files is
     -- very expensive.

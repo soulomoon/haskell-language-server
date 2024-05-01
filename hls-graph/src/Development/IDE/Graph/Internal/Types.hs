@@ -21,13 +21,14 @@ import           Data.Maybe
 import           Data.Typeable
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
-import           GHC.Conc                           (TVar, atomically)
+import           GHC.Conc                           (TVar, atomically, par)
 import           GHC.Generics                       (Generic)
 import qualified ListT
 import qualified StmContainers.Map                  as SMap
 import           StmContainers.Map                  (Map)
 import           System.Time.Extra                  (Seconds)
-import           UnliftIO                           (MonadUnliftIO)
+import           UnliftIO                           (MonadUnliftIO, concurrently)
+import Data.IORef.Extra (atomicModifyIORef'_)
 
 #if !MIN_VERSION_base(4,18,0)
 import           Control.Applicative                (liftA2)
@@ -67,7 +68,18 @@ data SRules = SRules {
 -- 'Development.IDE.Graph.Internal.Action.actionCatch'. In particular, it is
 -- permissible to use the 'MonadFail' instance, which will lead to an 'IOException'.
 newtype Action a = Action {fromAction :: ReaderT SAction IO a}
-    deriving newtype (Monad, Applicative, Functor, MonadIO, MonadFail, MonadThrow, MonadCatch, MonadMask, MonadUnliftIO)
+    deriving newtype (Monad, Functor, MonadIO, MonadFail, MonadThrow, MonadCatch, MonadMask, MonadUnliftIO)
+
+instance Applicative Action where
+    pure a = Action $ pure a
+    (<*>) f x = Action $ do
+        (fn, xn) <- concurrently (fromAction f) (fromAction x)
+        -- fn <- fromAction f
+        -- xn <- fromAction x
+        -- merged last two actions
+        deps <- asks actionDeps
+        liftIO $ atomicModifyIORef'_ deps mergeLastTwo
+        return $ fn xn
 
 data SAction = SAction {
     actionDatabase :: !Database,
@@ -152,6 +164,12 @@ data Result = Result {
 -- so we can do a linear dependency refreshing in refreshDeps.
 data ResultDeps = UnknownDeps | AlwaysRerunDeps !KeySet | ResultDeps ![KeySet]
   deriving (Eq, Show)
+
+-- | mergeLastTwo is used to merge the last two ResultDeps in the list
+-- so applicative actions can be run in parallel.
+mergeLastTwo :: ResultDeps -> ResultDeps
+mergeLastTwo (ResultDeps (x:y:xs)) = ResultDeps $ (x <> y) : xs
+mergeLastTwo x = x
 
 getResultDepsDefault :: KeySet -> ResultDeps -> KeySet
 getResultDepsDefault _ (ResultDeps ids)      = fold ids
