@@ -28,6 +28,7 @@ import qualified StmContainers.Map                  as SMap
 import           StmContainers.Map                  (Map)
 import           System.Time.Extra                  (Seconds)
 import           UnliftIO                           (MonadUnliftIO, concurrently)
+import Data.IORef.Extra (atomicModifyIORef'_)
 
 #if !MIN_VERSION_base(4,18,0)
 import           Control.Applicative                (liftA2)
@@ -72,12 +73,12 @@ newtype Action a = Action {fromAction :: ReaderT SAction IO a}
 instance Applicative Action where
     pure a = Action $ pure a
     (<*>) f x = Action $ do
-        -- (fn, xn) <- concurrently (fromAction f) (fromAction x)
-        fn <- fromAction f
-        xn <- fromAction x
+        (fn, xn) <- concurrently (fromAction f) (fromAction x)
+        -- fn <- fromAction f
+        -- xn <- fromAction x
         -- merged last two actions
         deps <- asks actionDeps
-        liftIO $ atomicModifyIORef' deps (\x -> (mergeLastTwo x, ()))
+        liftIO $ atomicModifyIORef'_ deps mergeLastTwo
         return $ fn xn
 
 data SAction = SAction {
