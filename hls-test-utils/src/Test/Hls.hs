@@ -67,7 +67,7 @@ import           Control.Concurrent.Async           (async, cancel, wait)
 import           Control.Concurrent.Extra
 import           Control.Exception.Safe
 import           Control.Lens.Extras                (is)
-import           Control.Monad                      (guard, unless, void)
+import           Control.Monad                      (guard, unless, void, when)
 import           Control.Monad.Extra                (forM)
 import           Control.Monad.IO.Class
 import           Data.Aeson                         (Result (Success),
@@ -106,9 +106,12 @@ import           Language.LSP.Protocol.Message
 import           Language.LSP.Protocol.Types        hiding (Null)
 import           Language.LSP.Test
 import           Prelude                            hiding (log)
-import           System.Directory                   (createDirectoryIfMissing,
+import           System.Directory                   (canonicalizePath,
+                                                     createDirectoryIfMissing,
+                                                     doesDirectoryExist,
                                                      getCurrentDirectory,
                                                      getTemporaryDirectory,
+                                                     removeDirectoryRecursive,
                                                      setCurrentDirectory)
 import           System.Environment                 (lookupEnv, setEnv)
 import           System.FilePath
@@ -451,7 +454,8 @@ runSessionWithServerInTmpDirCont plugins conf sessConf caps tree act = withLock 
                 logWith recorder Debug LogCleanup
                 pure a
 
-    runTestInDir $ \tmpDir -> do
+    runTestInDir $ \tmpDir' -> do
+        tmpDir <- canonicalizePath tmpDir'
         logWith recorder Info $ LogTestDir tmpDir
         fs <- FS.materialiseVFT tmpDir tree
         runSessionWithServer' plugins conf sessConf caps tmpDir (act fs)
@@ -483,7 +487,11 @@ setupTestEnvironment = do
   tmpDirRoot <- getTemporaryDirectory
   let testRoot = tmpDirRoot </> "hls-test-root"
       testCacheDir = testRoot </> ".cache"
+  -- If the cache directory already exists, delete it and its contents
+  cacheDirExists <- doesDirectoryExist testCacheDir
+  when cacheDirExists $ removeDirectoryRecursive testCacheDir
   createDirectoryIfMissing True testCacheDir
+  -- cleanup the cache dir
   setEnv "XDG_CACHE_HOME" testCacheDir
   pure testRoot
 
