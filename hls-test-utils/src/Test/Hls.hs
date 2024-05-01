@@ -67,7 +67,7 @@ import           Control.Concurrent.Async           (async, cancel, wait)
 import           Control.Concurrent.Extra
 import           Control.Exception.Safe
 import           Control.Lens.Extras                (is)
-import           Control.Monad                      (guard, unless, void)
+import           Control.Monad                      (guard, unless, void, when)
 import           Control.Monad.Extra                (forM)
 import           Control.Monad.IO.Class
 import           Data.Aeson                         (Result (Success),
@@ -108,8 +108,10 @@ import           Language.LSP.Test
 import           Prelude                            hiding (log)
 import           System.Directory                   (canonicalizePath,
                                                      createDirectoryIfMissing,
+                                                     doesDirectoryExist,
                                                      getCurrentDirectory,
                                                      getTemporaryDirectory,
+                                                     removeDirectoryRecursive,
                                                      setCurrentDirectory)
 import           System.Environment                 (lookupEnv, setEnv)
 import           System.FilePath
@@ -485,7 +487,11 @@ setupTestEnvironment = do
   tmpDirRoot <- getTemporaryDirectory
   let testRoot = tmpDirRoot </> "hls-test-root"
       testCacheDir = testRoot </> ".cache"
+  -- If the cache directory already exists, delete it and its contents
+  cacheDirExists <- doesDirectoryExist testCacheDir
+  when cacheDirExists $ removeDirectoryRecursive testCacheDir
   createDirectoryIfMissing True testCacheDir
+  -- cleanup the cache dir
   setEnv "XDG_CACHE_HOME" testCacheDir
   pure testRoot
 
