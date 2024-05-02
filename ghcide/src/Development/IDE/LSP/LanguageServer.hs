@@ -262,13 +262,10 @@ shutdownHandler :: Recorder (WithPriority Log) -> IO () -> LSP.Handlers (ServerM
 shutdownHandler recorder stopReactor = LSP.requestHandler SMethod_Shutdown $ \_ resp -> do
     (_, ide) <- ask
     liftIO $ logWith recorder Debug LogServerShutdownMessage
-    -- we need to shut down the ide session before stopping the reactor
-    -- since SessionIO depends on the reactor, we may hang if we stop the reactor first
-
-    -- flush out the Shake session to record a Shake profile if applicable
-    liftIO $ shakeShut ide
     -- stop the reactor to free up the hiedb connection
     liftIO stopReactor
+    -- flush out the Shake session to record a Shake profile if applicable
+    liftIO $ shakeShut ide
     resp $ Right Null
 
 exitHandler :: IO () -> LSP.Handlers (ServerM c)
