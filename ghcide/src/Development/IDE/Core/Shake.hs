@@ -75,7 +75,7 @@ module Development.IDE.Core.Shake(
     VFSModified(..), getClientConfigAction,
     ) where
 
-import           Control.Concurrent                     (withMVar)
+import           Control.Concurrent                     (takeMVar, withMVar)
 import           Control.Concurrent.Async
 import           Control.Concurrent.STM
 import           Control.Concurrent.STM.Stats           (atomicallyNamed)
@@ -729,16 +729,17 @@ shakeSessionInit recorder ide@IdeState{..} = do
 
 shakeShut :: Recorder (WithPriority Log) -> IdeState -> IO ()
 shakeShut recorder IdeState{..} = do
-    res <- timeout 1 $ withMVar shakeSession $ \runner -> do
-        -- Shake gets unhappy if you try to close when there is a running
-        -- request so we first abort that.
-        cancelShakeSession runner
-        void $ shakeDatabaseProfile shakeDb
-        progressStop $ progress shakeExtras
-        stopMonitoring
+    res <- timeout 1 $ takeMVar shakeSession
     case res of
+        Just session -> do
+            -- Shake gets unhappy if you try to close when there is a running
+            -- request so we first abort that.
+            cancelShakeSession session
+            void $ shakeDatabaseProfile shakeDb
+            progressStop $ progress shakeExtras
+            stopMonitoring
+            case res of
         Nothing -> logWith recorder Error $ LogTimeOutShuttingDownWaitForSessionVar 1
-        Just _ -> pure ()
 
 
 -- | This is a variant of withMVar where the first argument is run unmasked and if it throws
