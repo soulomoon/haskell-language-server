@@ -246,7 +246,15 @@ instance Pretty Log where
             <> indent 4 (pretty $ fmap (first fromNormalizedFilePath) ofInterest)
     LogTimeOutShuttingDownWaitForSessionVar seconds ->
         "ShutWaitFor session timed out waiting for session var after" <+> pretty seconds <+> "seconds"
+    LogShakeShutProcess stage -> "Shutting down shake process" <+> pretty stage
 
+instance Pretty ShutStage where
+  pretty = \case
+    ShutSessionCanceled -> "Session canceled"
+    ShutProfiledDone -> "Profiled done"
+    ShutProgressMonitorStop -> "Progress monitor stop"
+    ShutProgressStop -> "Progress stop"
+    ShutSessionGet -> "Session get"
 -- | We need to serialize writes to the database, so we send any function that
 -- needs to write to the database over the channel, where it will be picked up by
 -- a worker thread.
