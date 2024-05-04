@@ -77,6 +77,7 @@ instance Pretty Log where
     LogSession msg -> pretty msg
     LogLspServer msg -> pretty msg
     LogServerShutdownMessage -> "Received shutdown message"
+    LogShake msg -> pretty msg
 
 -- used to smuggle RankNType WithHieDb through dbMVar
 newtype WithHieDbShield = WithHieDbShield WithHieDb
