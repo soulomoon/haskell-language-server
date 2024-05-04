@@ -734,12 +734,11 @@ shakeShut recorder IdeState{..} = do
         -- request so we first abort that.
         cancelShakeSession runner
         void $ shakeDatabaseProfile shakeDb
-        progressStop $ progress shakeExtras
-        stopMonitoring
     case res of
         Nothing -> logWith recorder Error $ LogTimeOutShuttingDownWaitForSessionVar 1
         Just _ -> pure ()
-
+    progressStop $ progress shakeExtras
+    stopMonitoring
 
 -- | This is a variant of withMVar where the first argument is run unmasked and if it throws
 -- an exception, the previous value is restored while the second argument is executed masked.
