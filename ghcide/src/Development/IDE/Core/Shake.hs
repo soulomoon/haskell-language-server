@@ -198,6 +198,9 @@ data Log
   -- * OfInterest Log messages
   | LogSetFilesOfInterest ![(NormalizedFilePath, FileOfInterestStatus)]
   | LogTimeOutShuttingDownWaitForSessionVar !Seconds
+  | LogShakeShutProcess !ShutStage
+  deriving Show
+data ShutStage = ShutSessionCanceled | ShutProfiledDone | ShutProgressMonitorStop | ShutProgressStop | ShutSessionGet
   deriving Show
 
 instance Pretty Log where
@@ -242,7 +245,7 @@ instance Pretty Log where
         "Set files of interst to" <> Pretty.line
             <> indent 4 (pretty $ fmap (first fromNormalizedFilePath) ofInterest)
     LogTimeOutShuttingDownWaitForSessionVar seconds ->
-        "Timed out waiting for session var after" <+> pretty seconds <+> "seconds"
+        "ShutWaitFor session timed out waiting for session var after" <+> pretty seconds <+> "seconds"
 
 -- | We need to serialize writes to the database, so we send any function that
 -- needs to write to the database over the channel, where it will be picked up by
@@ -732,15 +735,19 @@ shakeShut recorder IdeState{..} = do
     res <- timeout 1 $ withMVar shakeSession $ \runner -> do
         -- Shake gets unhappy if you try to close when there is a running
         -- request so we first abort that.
+        logWith recorder Warning $ LogShakeShutProcess ShutSessionGet
         cancelShakeSession runner
+        logWith recorder Warning $ LogShakeShutProcess ShutSessionCanceled
         void $ shakeDatabaseProfile shakeDb
+        logWith recorder Warning $ LogShakeShutProcess ShutProfiledDone
         -- might hang if there are still running
         progressStop $ progress shakeExtras
+        logWith recorder Warning $ LogShakeShutProcess ShutProgressStop
         stopMonitoring
+        logWith recorder Warning $ LogShakeShutProcess ShutProgressMonitorStop
     case res of
-        Nothing -> do
+        Nothing ->
             logWith recorder Error $ LogTimeOutShuttingDownWaitForSessionVar 1
-            stopMonitoring
         Just _ -> pure ()
 
 -- | This is a variant of withMVar where the first argument is run unmasked and if it throws
