@@ -75,7 +75,7 @@ module Development.IDE.Core.Shake(
     VFSModified(..), getClientConfigAction,
     ) where
 
-import           Control.Concurrent                     (withMVar)
+import           Control.Concurrent                     (tryReadMVar, withMVar)
 import           Control.Concurrent.Async
 import           Control.Concurrent.STM
 import           Control.Concurrent.STM.Stats           (atomicallyNamed)
@@ -734,11 +734,14 @@ shakeShut recorder IdeState{..} = do
         -- request so we first abort that.
         cancelShakeSession runner
         void $ shakeDatabaseProfile shakeDb
+        -- might hang if there are still running
+        progressStop $ progress shakeExtras
+        stopMonitoring
     case res of
-        Nothing -> logWith recorder Error $ LogTimeOutShuttingDownWaitForSessionVar 1
+        Nothing -> do
+            logWith recorder Error $ LogTimeOutShuttingDownWaitForSessionVar 1
+            stopMonitoring
         Just _ -> pure ()
-    progressStop $ progress shakeExtras
-    stopMonitoring
 
 -- | This is a variant of withMVar where the first argument is run unmasked and if it throws
 -- an exception, the previous value is restored while the second argument is executed masked.
