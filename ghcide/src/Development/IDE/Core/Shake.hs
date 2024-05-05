@@ -75,6 +75,7 @@ module Development.IDE.Core.Shake(
     VFSModified(..), getClientConfigAction,
     ) where
 
+import           Control.Concurrent                     (tryReadMVar, withMVar)
 import           Control.Concurrent.Async
 import           Control.Concurrent.STM
 import           Control.Concurrent.STM.Stats           (atomicallyNamed)
@@ -196,6 +197,7 @@ data Log
   | LogShakeGarbageCollection !T.Text !Int !Seconds
   -- * OfInterest Log messages
   | LogSetFilesOfInterest ![(NormalizedFilePath, FileOfInterestStatus)]
+  | LogTimeOutShuttingDownWaitForSessionVar !Seconds
   deriving Show
 
 instance Pretty Log where
@@ -239,6 +241,8 @@ instance Pretty Log where
     LogSetFilesOfInterest ofInterest ->
         "Set files of interst to" <> Pretty.line
             <> indent 4 (pretty $ fmap (first fromNormalizedFilePath) ofInterest)
+    LogTimeOutShuttingDownWaitForSessionVar seconds ->
+        "Timed out waiting for session var after" <+> pretty seconds <+> "seconds"
 
 -- | We need to serialize writes to the database, so we send any function that
 -- needs to write to the database over the channel, where it will be picked up by
@@ -714,16 +718,21 @@ shakeSessionInit recorder ide@IdeState{..} = do
     putMVar shakeSession initSession
     logWith recorder Debug LogSessionInitialised
 
-shakeShut :: IdeState -> IO ()
-shakeShut IdeState{..} = do
-    runner <- tryReadMVar shakeSession
-    -- Shake gets unhappy if you try to close when there is a running
-    -- request so we first abort that.
-    for_ runner cancelShakeSession
-    void $ shakeDatabaseProfile shakeDb
-    progressStop $ progress shakeExtras
-    stopMonitoring
-
+shakeShut :: Recorder (WithPriority Log) -> IdeState -> IO ()
+shakeShut recorder IdeState{..} = do
+    res <- timeout 1 $ withMVar shakeSession $ \runner -> do
+        -- Shake gets unhappy if you try to close when there is a running
+        -- request so we first abort that.
+        cancelShakeSession runner
+        void $ shakeDatabaseProfile shakeDb
+        -- might hang if there are still running
+        progressStop $ progress shakeExtras
+        stopMonitoring
+    case res of
+        Nothing -> do
+            logWith recorder Error $ LogTimeOutShuttingDownWaitForSessionVar 1
+            stopMonitoring
+        Just _ -> pure ()
 
 -- | This is a variant of withMVar where the first argument is run unmasked and if it throws
 -- an exception, the previous value is restored while the second argument is executed masked.
