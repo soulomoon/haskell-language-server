@@ -57,7 +57,7 @@ module Development.IDE.Core.Shake(
     FileVersion(..),
     updatePositionMapping,
     updatePositionMappingHelper,
-    deleteValue, recordDirtyKeys,
+    deleteValue,
     WithProgressFunc, WithIndefiniteProgressFunc,
     ProgressEvent(..),
     DelayedAction, mkDelayedAction,
@@ -75,6 +75,7 @@ module Development.IDE.Core.Shake(
     VFSModified(..), getClientConfigAction,
     ) where
 
+import           Control.Concurrent                     (tryReadMVar, withMVar)
 import           Control.Concurrent.Async
 import           Control.Concurrent.STM
 import           Control.Concurrent.STM.Stats           (atomicallyNamed)
@@ -196,6 +197,10 @@ data Log
   | LogShakeGarbageCollection !T.Text !Int !Seconds
   -- * OfInterest Log messages
   | LogSetFilesOfInterest ![(NormalizedFilePath, FileOfInterestStatus)]
+  | LogTimeOutShuttingDownWaitForSessionVar !Seconds
+  | LogShakeShutProcess !ShutStage
+  deriving Show
+data ShutStage = ShutSessionCanceled | ShutProfiledDone | ShutProgressMonitorStop | ShutProgressStop | ShutSessionGet
   deriving Show
 
 instance Pretty Log where
@@ -239,7 +244,17 @@ instance Pretty Log where
     LogSetFilesOfInterest ofInterest ->
         "Set files of interst to" <> Pretty.line
             <> indent 4 (pretty $ fmap (first fromNormalizedFilePath) ofInterest)
+    LogTimeOutShuttingDownWaitForSessionVar seconds ->
+        "ShutWaitFor session timed out waiting for session var after" <+> pretty seconds <+> "seconds"
+    LogShakeShutProcess stage -> "Shutting down shake process" <+> pretty stage
 
+instance Pretty ShutStage where
+  pretty = \case
+    ShutSessionCanceled -> "Session canceled"
+    ShutProfiledDone -> "Profiled done"
+    ShutProgressMonitorStop -> "Progress monitor stop"
+    ShutProgressStop -> "Progress stop"
+    ShutSessionGet -> "Session get"
 -- | We need to serialize writes to the database, so we send any function that
 -- needs to write to the database over the channel, where it will be picked up by
 -- a worker thread.
@@ -300,6 +315,7 @@ data ShakeExtras = ShakeExtras
         :: VFSModified
         -> String
         -> [DelayedAction ()]
+        -> IO [Key]
         -> IO ()
 #if MIN_VERSION_ghc(9,3,0)
     ,ideNc :: NameCache
@@ -562,21 +578,11 @@ deleteValue
   => ShakeExtras
   -> k
   -> NormalizedFilePath
-  -> STM ()
+  -> STM [Key]
 deleteValue ShakeExtras{dirtyKeys, state} key file = do
     STM.delete (toKey key file) state
-    modifyTVar' dirtyKeys $ insertKeySet (toKey key file)
+    return [toKey key file]
 
-recordDirtyKeys
-  :: Shake.ShakeValue k
-  => ShakeExtras
-  -> k
-  -> [NormalizedFilePath]
-  -> STM (IO ())
-recordDirtyKeys ShakeExtras{dirtyKeys} key file = do
-    modifyTVar' dirtyKeys $ \x -> foldl' (flip insertKeySet) x (toKey key <$> file)
-    return $ withEventTrace "recordDirtyKeys" $ \addEvent -> do
-        addEvent (fromString $ unlines $ "dirty " <> show key : map fromNormalizedFilePath file)
 
 -- | We return Nothing if the rule has not run and Just Failed if it has failed to produce a value.
 getValues ::
@@ -723,16 +729,25 @@ shakeSessionInit recorder ide@IdeState{..} = do
     putMVar shakeSession initSession
     logWith recorder Debug LogSessionInitialised
 
-shakeShut :: IdeState -> IO ()
-shakeShut IdeState{..} = do
-    runner <- tryReadMVar shakeSession
-    -- Shake gets unhappy if you try to close when there is a running
-    -- request so we first abort that.
-    for_ runner cancelShakeSession
-    void $ shakeDatabaseProfile shakeDb
-    progressStop $ progress shakeExtras
-    stopMonitoring
-
+shakeShut :: Recorder (WithPriority Log) -> IdeState -> IO ()
+shakeShut recorder IdeState{..} = do
+    res <- timeout 1 $ withMVar shakeSession $ \runner -> do
+        -- Shake gets unhappy if you try to close when there is a running
+        -- request so we first abort that.
+        logWith recorder Warning $ LogShakeShutProcess ShutSessionGet
+        cancelShakeSession runner
+        logWith recorder Warning $ LogShakeShutProcess ShutSessionCanceled
+        void $ shakeDatabaseProfile shakeDb
+        logWith recorder Warning $ LogShakeShutProcess ShutProfiledDone
+        -- might hang if there are still running
+        progressStop $ progress shakeExtras
+        logWith recorder Warning $ LogShakeShutProcess ShutProgressStop
+        stopMonitoring
+        logWith recorder Warning $ LogShakeShutProcess ShutProgressMonitorStop
+    case res of
+        Nothing ->
+            logWith recorder Error $ LogTimeOutShuttingDownWaitForSessionVar 1
+        Just _ -> pure ()
 
 -- | This is a variant of withMVar where the first argument is run unmasked and if it throws
 -- an exception, the previous value is restored while the second argument is executed masked.
@@ -759,12 +774,14 @@ delayedAction a = do
 -- | Restart the current 'ShakeSession' with the given system actions.
 --   Any actions running in the current session will be aborted,
 --   but actions added via 'shakeEnqueue' will be requeued.
-shakeRestart :: Recorder (WithPriority Log) -> IdeState -> VFSModified -> String -> [DelayedAction ()] -> IO ()
-shakeRestart recorder IdeState{..} vfs reason acts =
+shakeRestart :: Recorder (WithPriority Log) -> IdeState -> VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
+shakeRestart recorder IdeState{..} vfs reason acts ioActionBetweenShakeSession =
     withMVar'
         shakeSession
         (\runner -> do
               (stopTime,()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner
+              keys <- ioActionBetweenShakeSession
+              atomically $ modifyTVar' (dirtyKeys shakeExtras) $ \x -> foldl' (flip insertKeySet) x keys
               res <- shakeDatabaseProfile shakeDb
               backlog <- readTVarIO $ dirtyKeys shakeExtras
               queue <- atomicallyNamed "actionQueue - peek" $ peekInProgress $ actionQueue shakeExtras
@@ -1198,7 +1215,7 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                     Just (v@(Succeeded _ x), diags) -> do
                         ver <- estimateFileVersionUnsafely key (Just x) file
                         doDiagnostics (vfsVersion =<< ver) $ Vector.toList diags
-                        return $ Just $ RunResult ChangedNothing old $ A v
+                        return $ Just $ RunResult ChangedNothing old (A v) $ return ()
                     _ -> return Nothing
             _ ->
                 -- assert that a "clean" rule is never a cache miss
@@ -1222,7 +1239,6 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                     Nothing -> do
                         pure (toShakeValue ShakeStale mbBs, staleV)
                     Just v -> pure (maybe ShakeNoCutoff ShakeResult mbBs, Succeeded ver v)
-                liftIO $ atomicallyNamed "define - write" $ setValues state key file res (Vector.fromList diags)
                 doDiagnostics (vfsVersion =<< ver) diags
                 let eq = case (bs, fmap decodeShakeValue mbOld) of
                         (ShakeResult a, Just (ShakeResult b)) -> cmp a b
@@ -1232,9 +1248,9 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                         _                                     -> False
                 return $ RunResult
                     (if eq then ChangedRecomputeSame else ChangedRecomputeDiff)
-                    (encodeShakeValue bs) $
-                    A res
-        liftIO $ atomicallyNamed "define - dirtyKeys" $ modifyTVar' dirtyKeys (deleteKeySet $ toKey key file)
+                    (encodeShakeValue bs)
+                    (A res)
+                    (setValues state key file res (Vector.fromList diags) >> modifyTVar' dirtyKeys (deleteKeySet $ toKey key file))
         return res
   where
     -- Highly unsafe helper to compute the version of a file

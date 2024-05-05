@@ -833,6 +833,7 @@ atomicFileWrite se targetPath write = do
   let dir = takeDirectory targetPath
   createDirectoryIfMissing True dir
   (tempFilePath, cleanUp) <- newTempFileWithin dir
+  -- todo value delete key value here but not mark as dirty.
   (write tempFilePath >>= \x -> renameFile tempFilePath targetPath >> atomically (resetInterfaceStore se (toNormalizedFilePath' targetPath)) >> pure x)
     `onException` cleanUp
 
