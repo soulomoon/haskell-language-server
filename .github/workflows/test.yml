@@ -61,6 +61,8 @@ jobs:
     needs:
       - pre_job
     runs-on: ${{ matrix.os }}
+    env:
+      LSP_TEST_LOG_STDERR: 0
     strategy:
       # We don't want to fail fast.
       # We used to fail fast, to avoid caches of failing PRs to overpopulate the CI

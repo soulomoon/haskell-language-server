@@ -93,7 +93,8 @@ initialise recorder defaultConfig plugins mainRule lspEnv debouncer options with
             mainRule
 
 -- | Shutdown the Compiler Service.
-shutdown :: IdeState -> IO ()
+-- shutdown :: Recorder (WithPriority Log) -> IdeState -> IO ()
+shutdown :: Recorder (WithPriority Shake.Log) -> IdeState -> IO ()
 shutdown = shakeShut
 
 -- This will return as soon as the result of the action is

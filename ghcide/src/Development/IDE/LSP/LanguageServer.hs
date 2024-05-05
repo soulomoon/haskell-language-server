@@ -35,6 +35,7 @@ import qualified Colog.Core                            as Colog
 import           Control.Monad.IO.Unlift               (MonadUnliftIO)
 import           Development.IDE.Core.IdeConfiguration
 import           Development.IDE.Core.Shake            hiding (Log, Priority)
+import qualified Development.IDE.Core.Shake            as Shake
 import           Development.IDE.Core.Tracing
 import qualified Development.IDE.Session               as Session
 import           Development.IDE.Types.Shake           (WithHieDb)
@@ -49,6 +50,7 @@ data Log
   | LogReactorThreadStopped
   | LogCancelledRequest !SomeLspId
   | LogSession Session.Log
+  | LogShake Shake.Log
   | LogLspServer LspServerLog
   | LogServerShutdownMessage
   deriving Show
@@ -265,7 +267,7 @@ shutdownHandler recorder stopReactor = LSP.requestHandler SMethod_Shutdown $ \_ 
     -- stop the reactor to free up the hiedb connection
     liftIO stopReactor
     -- flush out the Shake session to record a Shake profile if applicable
-    liftIO $ shakeShut ide
+    liftIO $ shakeShut (cmapWithPrio LogShake recorder) ide
     resp $ Right Null
 
 exitHandler :: IO () -> LSP.Handlers (ServerM c)
