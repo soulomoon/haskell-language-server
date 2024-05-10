@@ -25,10 +25,12 @@ module Development.IDE.Core.Shake(
     IdeState, shakeSessionInit, shakeExtras, shakeDb,
     ShakeExtras(..), getShakeExtras, getShakeExtrasRules,
     KnownTargets, Target(..), toKnownFiles,
-    IdeRule, IdeResult,
+    IdeRule, IdeResult, restartRecorder,
     GetModificationTime(GetModificationTime, GetModificationTime_, missingFileDiagnostics),
-    shakeOpen, shakeShut,
+    shakeOpen, shakeShut, runWithShake,
+    doShakeRestart,
     shakeEnqueue,
+    ShakeOpQueue,
     newSession,
     use, useNoFile, uses, useWithStaleFast, useWithStaleFast', delayedAction,
     FastResult(..),
@@ -76,7 +78,11 @@ module Development.IDE.Core.Shake(
     ) where
 
 import           Control.Concurrent.Async
+import           Control.Concurrent.Extra               (signalBarrier,
+                                                         waitBarrier)
 import           Control.Concurrent.STM
+import           Control.Concurrent.STM                 (readTQueue,
+                                                         writeTQueue)
 import           Control.Concurrent.STM.Stats           (atomicallyNamed)
 import           Control.Concurrent.Strict
 import           Control.DeepSeq
@@ -103,10 +109,13 @@ import           Data.Hashable
 import qualified Data.HashMap.Strict                    as HMap
 import           Data.HashSet                           (HashSet)
 import qualified Data.HashSet                           as HSet
-import           Data.List.Extra                        (foldl', partition,
-                                                         takeEnd)
+import           Data.List                              (concat)
+import           Data.List.Extra                        (foldl', intercalate,
+                                                         partition, takeEnd)
+import qualified Data.List.NonEmpty                     as NE
 import qualified Data.Map.Strict                        as Map
 import           Data.Maybe
+import           Data.Semigroup                         (Semigroup (sconcat))
 import qualified Data.SortedList                        as SL
 import           Data.String                            (fromString)
 import qualified Data.Text                              as T
@@ -117,6 +126,7 @@ import           Data.Typeable
 import           Data.Unique
 import           Data.Vector                            (Vector)
 import qualified Data.Vector                            as Vector
+import           Debug.Trace                            (traceM)
 import           Development.IDE.Core.Debouncer
 import           Development.IDE.Core.FileUtils         (getModTime)
 import           Development.IDE.Core.PositionMapping
@@ -193,6 +203,7 @@ data Log
   | LogCancelledAction !T.Text
   | LogSessionInitialised
   | LogLookupPersistentKey !T.Text
+  | LogRestartDebounceCount !Int !String
   | LogShakeGarbageCollection !T.Text !Int !Seconds
   -- * OfInterest Log messages
   | LogSetFilesOfInterest ![(NormalizedFilePath, FileOfInterestStatus)]
@@ -239,6 +250,8 @@ instance Pretty Log where
     LogSetFilesOfInterest ofInterest ->
         "Set files of interst to" <> Pretty.line
             <> indent 4 (pretty $ fmap (first fromNormalizedFilePath) ofInterest)
+    LogRestartDebounceCount count reason ->
+        "Restart debounce count:" <+> pretty count <+> ":" <+> pretty reason
 
 -- | We need to serialize writes to the database, so we send any function that
 -- needs to write to the database over the channel, where it will be picked up by
@@ -256,6 +269,10 @@ data HieDbWriter
 -- The inner `(HieDb -> IO ()) -> IO ()` wraps `HieDb -> IO ()`
 -- with (currently) retry functionality
 type IndexQueue = TQueue (((HieDb -> IO ()) -> IO ()) -> IO ())
+
+-- ShakeOpQueue is used to enqueue Shake operations.
+-- shutdown, restart
+type ShakeOpQueue = TQueue RestartArguments
 
 -- Note [Semantic Tokens Cache Location]
 -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -329,6 +346,7 @@ data ShakeExtras = ShakeExtras
       -- ^ Default HLS config, only relevant if the client does not provide any Config
     , dirtyKeys :: TVar KeySet
       -- ^ Set of dirty rule keys since the last Shake run
+    , shakeOpQueue :: ShakeOpQueue
     }
 
 type WithProgressFunc = forall a.
@@ -615,6 +633,7 @@ shakeOpen :: Recorder (WithPriority Log)
           -> IdeTesting
           -> WithHieDb
           -> IndexQueue
+          -> ShakeOpQueue
           -> ShakeOptions
           -> Monitoring
           -> Rules ()
@@ -622,7 +641,7 @@ shakeOpen :: Recorder (WithPriority Log)
 shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
   shakeProfileDir (IdeReportProgress reportProgress)
   ideTesting@(IdeTesting testing)
-  withHieDb indexQueue opts monitoring rules = mdo
+  withHieDb indexQueue shakeOpQueue opts monitoring rules = mdo
 
 #if MIN_VERSION_ghc(9,3,0)
     ideNc <- initNameCache 'r' knownKeyNames
@@ -748,36 +767,110 @@ delayedAction a = do
   extras <- ask
   liftIO $ shakeEnqueue extras a
 
+data RestartArguments = RestartArguments
+  { restartVFS                       :: VFSModified
+  , restartReasons                   :: [String]
+  , restartActions                   :: [DelayedAction ()]
+  , restartActionBetweenShakeSession :: [IO [Key]]
+  -- barrier to wait for the session stopped
+  , restartBarriers                  :: [Barrier ()]
+  , restartRecorder                  :: Recorder (WithPriority Log)
+  , restartIdeState                  :: IdeState
+  }
+
+instance Semigroup RestartArguments where
+    RestartArguments a1 a2 a3 a4 a5 a6 _a7 <> RestartArguments b1 b2 b3 b4 b5 b6 b7 =
+        RestartArguments (a1 <> b1) (a2 <> b2) (a3 <> b3) (a4 <> b4) (a5 <> b5) b6 b7
+
+-- do x until time up and do y
+-- doUntil time out
+doUntil :: IO a -> IO [a]
+doUntil x = do
+    res <- x
+    rest <- doUntil x
+    return (res:rest)
+
+runWithShake :: (ShakeOpQueue-> IO ()) -> IO ()
+runWithShake f = do
+    stopQueue <- newTQueueIO
+    -- withAsync (stopShakeLoop stopQueue doQueue) $ const $
+    withAsync (runShakeLoop stopQueue) $
+            const $ f stopQueue
+    where
+        runShakeLoop :: ShakeOpQueue -> IO ()
+        runShakeLoop q = do
+            argHead <- atomically $ readTQueue q
+            -- sleep 0.1
+            -- args <- atomically $ flushTQueue q
+            case NE.nonEmpty (argHead:[]) of
+                Nothing -> return ()
+                Just xs -> do
+                    let count = length xs
+                    let arg = sconcat xs
+                    let recorder = restartRecorder arg
+                    logWith recorder Info $ LogRestartDebounceCount count (intercalate ", " (restartReasons arg))
+                    doShakeRestart arg 0
+            runShakeLoop q
+
+-- prepare the restart
+stopShakeSession :: RestartArguments -> IO Seconds
+stopShakeSession RestartArguments{restartIdeState=IdeState{..}, ..} = do
+            withMVarMasked shakeSession
+                (\runner -> do
+                    (stopTime,()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner
+                    -- signal the caller that we are done stopping and ready to restart
+                    return stopTime
+                )
+        where
+            logErrorAfter :: Seconds -> IO () -> IO ()
+            logErrorAfter seconds action = flip withAsync (const action) $ do
+                sleep seconds
+                logWith restartRecorder Error (LogBuildSessionRestartTakingTooLong seconds)
+
+
+doShakeRestart :: RestartArguments -> Seconds -> IO ()
+doShakeRestart RestartArguments{restartIdeState=IdeState{..}, ..} stopTime = do
+        withMVar' shakeSession
+            (\runner -> do
+                (stopTime,()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner
+                keys <- concat <$> sequence restartActionBetweenShakeSession
+                mapM_ (flip signalBarrier ()) restartBarriers
+                atomically $ modifyTVar' (dirtyKeys shakeExtras) $ \x -> foldl' (flip insertKeySet) x keys
+                res <- shakeDatabaseProfile shakeDb
+                backlog <- readTVarIO $ dirtyKeys shakeExtras
+                queue <- atomicallyNamed "actionQueue - peek" $ peekInProgress $ actionQueue shakeExtras
+                -- this log is required by tests
+                logWith restartRecorder Debug $ LogBuildSessionRestart (intercalate ", " restartReasons) queue backlog stopTime res
+            )
+            -- It is crucial to be masked here, otherwise we can get killed
+            -- between spawning the new thread and updating shakeSession.
+            -- See https://github.com/haskell/ghcide/issues/79
+            (\() -> do
+            (,()) <$> newSession restartRecorder shakeExtras restartVFS shakeDb restartActions (intercalate ", " restartReasons))
+        where
+            logErrorAfter :: Seconds -> IO () -> IO ()
+            logErrorAfter seconds action = flip withAsync (const action) $ do
+                sleep seconds
+                logWith restartRecorder Error (LogBuildSessionRestartTakingTooLong seconds)
+
+
 -- | Restart the current 'ShakeSession' with the given system actions.
 --   Any actions running in the current session will be aborted,
 --   but actions added via 'shakeEnqueue' will be requeued.
 shakeRestart :: Recorder (WithPriority Log) -> IdeState -> VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
-shakeRestart recorder IdeState{..} vfs reason acts ioActionBetweenShakeSession =
-    withMVar'
-        shakeSession
-        (\runner -> do
-              (stopTime,()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner
-              keys <- ioActionBetweenShakeSession
-              -- it is every important to update the dirty keys after we enter the critical section
-              -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
-              atomically $ modifyTVar' (dirtyKeys shakeExtras) $ \x -> foldl' (flip insertKeySet) x keys
-              res <- shakeDatabaseProfile shakeDb
-              backlog <- readTVarIO $ dirtyKeys shakeExtras
-              queue <- atomicallyNamed "actionQueue - peek" $ peekInProgress $ actionQueue shakeExtras
-
-              -- this log is required by tests
-              logWith recorder Debug $ LogBuildSessionRestart reason queue backlog stopTime res
-        )
-        -- It is crucial to be masked here, otherwise we can get killed
-        -- between spawning the new thread and updating shakeSession.
-        -- See https://github.com/haskell/ghcide/issues/79
-        (\() -> do
-          (,()) <$> newSession recorder shakeExtras vfs shakeDb acts reason)
-    where
-        logErrorAfter :: Seconds -> IO () -> IO ()
-        logErrorAfter seconds action = flip withAsync (const action) $ do
-            sleep seconds
-            logWith recorder Error (LogBuildSessionRestartTakingTooLong seconds)
+shakeRestart recorder IdeState{..} vfs reason acts ioActionBetweenShakeSession = do
+    barrier <- newBarrier
+    let restartArgs = RestartArguments
+          { restartVFS = vfs
+          , restartReasons = [reason]
+          , restartActions = acts
+          , restartActionBetweenShakeSession = [ioActionBetweenShakeSession]
+          , restartBarriers = [barrier]
+          , restartRecorder = recorder
+          , restartIdeState = IdeState{..}
+          }
+    atomically $ writeTQueue (shakeOpQueue $ shakeExtras) restartArgs
+    waitBarrier barrier
 
 -- | Enqueue an action in the existing 'ShakeSession'.
 --   Returns a computation to block until the action is run, propagating exceptions.
@@ -802,6 +895,9 @@ shakeEnqueue ShakeExtras{actionQueue, shakeRecorder} act = do
     return (wait' b >>= either throwIO return)
 
 data VFSModified = VFSUnmodified | VFSModified !VFS
+instance Semigroup VFSModified where
+  VFSUnmodified <> x = x
+  x <> _             = x
 
 -- | Set up a new 'ShakeSession' with a set of initial actions
 --   Will crash if there is an existing 'ShakeSession' running.
