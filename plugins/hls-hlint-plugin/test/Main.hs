@@ -116,7 +116,12 @@ suggestionsTests =
         contents <- skipManyTill anyMessage $ getDocumentEdit doc
         liftIO $ contents @?= "main = undefined\nfoo x = x\n"
 
-    , testCase "falls back to pre 3.8 code actions" $ runSessionWithServerAndCaps def hlintPlugin noLiteralCaps testDir $ do
+    , testCase "falls back to pre 3.8 code actions" $
+        runSessionWithTestConfig def {
+            testConfigCaps = noLiteralCaps,
+            testConfigRoot = testDir,
+            testPluginDescriptor = hlintPlugin,
+            testShiftRoot = True} $ const $ do
         doc <- openDoc "Base.hs" "haskell"
 
         _ <- waitForDiagnosticsFromSource doc "hlint"
@@ -341,7 +346,9 @@ testDir :: FilePath
 testDir = "plugins/hls-hlint-plugin/test/testdata"
 
 runHlintSession :: FilePath -> Session a -> IO a
-runHlintSession subdir = failIfSessionTimeout . runSessionWithServerAndCaps def hlintPlugin codeActionNoResolveCaps (testDir </> subdir)
+runHlintSession subdir = failIfSessionTimeout .
+    runSessionWithTestConfig (mkTestConfig (testDir </> subdir) hlintPlugin){testConfigCaps=codeActionNoResolveCaps, testShiftRoot=True}
+    . const
 
 noHlintDiagnostics :: [Diagnostic] -> Assertion
 noHlintDiagnostics diags =
@@ -419,9 +426,12 @@ goldenTest testCaseName goldenFilename point hintText =
           void $ skipManyTill anyMessage $ getDocumentEdit document
       _ -> liftIO $ assertFailure $ makeCodeActionNotFoundAtString point
 
+
 setupGoldenHlintTest :: TestName -> FilePath -> (TextDocumentIdentifier -> Session ()) -> TestTree
 setupGoldenHlintTest testName path =
-  goldenWithHaskellAndCaps def codeActionNoResolveCaps hlintPlugin testName testDir path "expected" "hs"
+    goldenWithTestConfig (mkTestConfig testDir hlintPlugin){testConfigCaps=codeActionNoResolveCaps, testShiftRoot=True}
+        testName testDir path "expected" "hs"
+
 
 ignoreHintGoldenResolveTest :: TestName -> FilePath -> Point -> T.Text -> TestTree
 ignoreHintGoldenResolveTest testCaseName goldenFilename point hintName =
@@ -442,4 +452,5 @@ goldenResolveTest testCaseName goldenFilename point hintText =
 
 setupGoldenHlintResolveTest :: TestName -> FilePath -> (TextDocumentIdentifier -> Session ()) -> TestTree
 setupGoldenHlintResolveTest testName path =
-  goldenWithHaskellAndCaps def codeActionResolveCaps hlintPlugin testName testDir path "expected" "hs"
+    goldenWithTestConfig (mkTestConfig testDir hlintPlugin){testConfigCaps=codeActionResolveCaps, testShiftRoot=True}
+        testName testDir path "expected" "hs"

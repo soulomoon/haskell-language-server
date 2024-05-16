@@ -36,7 +36,9 @@ import           Control.Monad.Extra             (whenJust)
 import           Data.Default                    (def)
 import           Development.IDE.Plugin.Test     (WaitForIdeRuleResult (..))
 import           System.Time.Extra
-import           Test.Hls                        (runSessionWithServerInTmpDirCont,
+import           Test.Hls                        (TestConfig (testConfigCaps, testLspConfig, testPluginDescriptor),
+                                                  runSessionWithServerInTmpDirCont,
+                                                  runSessionWithTestConfig,
                                                   waitForProgressBegin)
 import           Test.Hls.FileSystem             (directCradle, file, text,
                                                   toAbsFp)
@@ -169,7 +171,12 @@ tests = testGroup "diagnostics"
       let contentA = T.unlines [ "module ModuleA where" ]
       _ <- createDoc "ModuleA.hs" "haskell" contentA
       expectDiagnostics [("ModuleB.hs", [])]
-  , testWithDummyPluginAndCap' "add missing module (non workspace)" lspTestCapsNoFileWatches $ \tmpDir -> do
+  , testCase "add missing module (non workspace)" $
+    runSessionWithTestConfig def {
+        testPluginDescriptor = dummyPlugin
+        , testConfigCaps = lspTestCapsNoFileWatches
+    }
+    $ \tmpDir -> do
     -- By default lsp-test sends FileWatched notifications for all files, which we don't want
     -- as non workspace modules will not be watched by the LSP server.
     -- To work around this, we tell lsp-test that our client doesn't have the
@@ -178,11 +185,11 @@ tests = testGroup "diagnostics"
             [ "module ModuleB where"
             , "import ModuleA ()"
             ]
-      _ <- createDoc (tmpDir `toAbsFp` "ModuleB.hs") "haskell" contentB
-      expectDiagnostics [(tmpDir `toAbsFp` "ModuleB.hs", [(DiagnosticSeverity_Error, (1, 7), "Could not find module")])]
+      _ <- createDoc (tmpDir </> "ModuleB.hs") "haskell" contentB
+      expectDiagnostics [(tmpDir </> "ModuleB.hs", [(DiagnosticSeverity_Error, (1, 7), "Could not find module")])]
       let contentA = T.unlines [ "module ModuleA where" ]
-      _ <- createDoc (tmpDir `toAbsFp` "ModuleA.hs") "haskell" contentA
-      expectDiagnostics [(tmpDir `toAbsFp` "ModuleB.hs", [])]
+      _ <- createDoc (tmpDir </> "ModuleA.hs") "haskell" contentA
+      expectDiagnostics [(tmpDir </> "ModuleB.hs", [])]
   , testWithDummyPluginEmpty "cyclic module dependency" $ do
       let contentA = T.unlines
             [ "module ModuleA where"
@@ -452,9 +459,9 @@ tests = testGroup "diagnostics"
           )
         ]
   , testCase "typecheck-all-parents-of-interest" $ runWithExtraFiles "recomp" $ \dir -> do
-    let bPath = dir `toAbsFp` "B.hs"
-        pPath = dir `toAbsFp` "P.hs"
-        aPath = dir `toAbsFp` "A.hs"
+    let bPath = dir </> "B.hs"
+        pPath = dir </> "P.hs"
+        aPath = dir </> "A.hs"
 
     bSource <- liftIO $ readFileUtf8 bPath -- y :: Int
     pSource <- liftIO $ readFileUtf8 pPath -- bar = x :: Int

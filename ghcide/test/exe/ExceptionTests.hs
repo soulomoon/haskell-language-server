@@ -7,20 +7,17 @@ import           Control.Lens
 import           Control.Monad.Error.Class         (MonadError (throwError))
 import           Control.Monad.IO.Class            (liftIO)
 import qualified Data.Aeson                        as A
+import           Data.Default                      (Default (..))
 import           Data.Text                         as T
 import           Development.IDE.Core.Shake        (IdeState (..))
 import qualified Development.IDE.LSP.Notifications as Notifications
-import qualified Development.IDE.Main              as IDE
 import           Development.IDE.Plugin.HLS        (toResponseError)
-import           Development.IDE.Plugin.Test       as Test
-import           Development.IDE.Types.Options
 import           GHC.Base                          (coerce)
 import           Ide.Logger                        (Recorder, WithPriority,
                                                     cmapWithPrio)
 import           Ide.Plugin.Error
 import           Ide.Plugin.HandleRequestTypes     (RejectionReason (DisabledGlobally))
-import           Ide.PluginUtils                   (idePluginsToPluginDesc,
-                                                    pluginDescToIdePlugins)
+import           Ide.PluginUtils                   (pluginDescToIdePlugins)
 import           Ide.Types
 import qualified Language.LSP.Protocol.Lens        as L
 import           Language.LSP.Protocol.Message
@@ -31,18 +28,21 @@ import           Language.LSP.Protocol.Types       hiding
                                                     mkRange)
 import           Language.LSP.Test
 import           LogType                           (Log (..))
-import           Test.Hls                          (waitForProgressDone)
+import           Test.Hls                          (TestConfig (testDisableDefaultPlugin, testPluginDescriptor),
+                                                    hlsPluginTestRecorder,
+                                                    runSessionWithTestConfig,
+                                                    waitForProgressDone)
 import           Test.Tasty
 import           Test.Tasty.HUnit
-import           TestUtils
 
-tests :: Recorder (WithPriority Log) -> TestTree
-tests recorder = do
+tests :: TestTree
+tests = do
   testGroup "Exceptions and PluginError" [
     testGroup "Testing that IO Exceptions are caught in..."
       [ testCase "PluginHandlers" $ do
           let pluginId = "plugin-handler-exception"
-              plugins = pluginDescToIdePlugins $
+              plugins :: Recorder (WithPriority Log) -> IdePlugins IdeState
+              plugins _ = pluginDescToIdePlugins $
                   [ (defaultPluginDescriptor pluginId "")
                       { pluginHandlers = mconcat
                           [ mkPluginHandler SMethod_TextDocumentCodeLens $ \_ _ _-> do
@@ -50,7 +50,7 @@ tests recorder = do
                               pure (InL [])
                           ]
                       }]
-          testIde recorder (testingLite recorder plugins) $ do
+          runSessionWithTestConfig def {testPluginDescriptor = plugins, testDisableDefaultPlugin=True} $ const $ do
               doc <- createDoc "A.hs" "haskell" "module A where"
               waitForProgressDone
               (view L.result -> lens) <- request SMethod_TextDocumentCodeLens (CodeLensParams Nothing Nothing doc)
@@ -63,7 +63,8 @@ tests recorder = do
         , testCase "Commands" $ do
           let pluginId = "command-exception"
               commandId = CommandId "exception"
-              plugins = pluginDescToIdePlugins $
+              plugins :: Recorder (WithPriority Log) -> IdePlugins IdeState
+              plugins _ = pluginDescToIdePlugins $
                   [ (defaultPluginDescriptor pluginId "")
                       { pluginCommands =
                           [ PluginCommand commandId "Causes an exception" $ \_ _ (_::Int) -> do
@@ -71,7 +72,7 @@ tests recorder = do
                               pure (InR Null)
                           ]
                       }]
-          testIde recorder (testingLite recorder plugins) $ do
+          runSessionWithTestConfig def {testPluginDescriptor = plugins, testDisableDefaultPlugin=True} $ const $ do
               _ <- createDoc "A.hs" "haskell" "module A where"
               waitForProgressDone
               let cmd = mkLspCommand (coerce pluginId) commandId "" (Just [A.toJSON (1::Int)])
@@ -85,7 +86,8 @@ tests recorder = do
 
         , testCase "Notification Handlers" $ do
           let pluginId = "notification-exception"
-              plugins = pluginDescToIdePlugins $
+              plugins :: Recorder (WithPriority Log) -> IdePlugins IdeState
+              plugins _ = pluginDescToIdePlugins $
                   [ (defaultPluginDescriptor pluginId "")
                       { pluginNotificationHandlers = mconcat
                           [  mkPluginNotificationHandler SMethod_TextDocumentDidOpen $ \_ _ _ _ ->
@@ -96,7 +98,7 @@ tests recorder = do
                               pure (InL [])
                           ]
                       }]
-          testIde recorder (testingLite recorder plugins) $ do
+          runSessionWithTestConfig def {testPluginDescriptor = plugins, testDisableDefaultPlugin=True} $ const $ do
               doc <- createDoc "A.hs" "haskell" "module A where"
               waitForProgressDone
               (view L.result -> lens) <- request SMethod_TextDocumentCodeLens (CodeLensParams Nothing Nothing doc)
@@ -108,37 +110,18 @@ tests recorder = do
                 _ -> liftIO $ assertFailure $ "We should have had an empty list" <> show lens]
 
    , testGroup "Testing PluginError order..."
-      [ pluginOrderTestCase recorder "InternalError over InvalidParams" (PluginInternalError "error test") (PluginInvalidParams "error test")
-      , pluginOrderTestCase recorder "InvalidParams over InvalidUserState" (PluginInvalidParams "error test") (PluginInvalidUserState "error test")
-      , pluginOrderTestCase recorder "InvalidUserState over RequestRefused" (PluginInvalidUserState "error test") (PluginRequestRefused DisabledGlobally)
+      [ pluginOrderTestCase "InternalError over InvalidParams" (PluginInternalError "error test") (PluginInvalidParams "error test")
+      , pluginOrderTestCase "InvalidParams over InvalidUserState" (PluginInvalidParams "error test") (PluginInvalidUserState "error test")
+      , pluginOrderTestCase "InvalidUserState over RequestRefused" (PluginInvalidUserState "error test") (PluginRequestRefused DisabledGlobally)
       ]
    ]
 
-testingLite :: Recorder (WithPriority Log) -> IdePlugins IdeState -> IDE.Arguments
-testingLite recorder plugins =
-  let
-    arguments@IDE.Arguments{ argsIdeOptions } =
-        IDE.defaultArguments (cmapWithPrio LogIDEMain recorder) plugins
-    hlsPlugins = pluginDescToIdePlugins $
-      idePluginsToPluginDesc plugins
-      ++ [Notifications.descriptor (cmapWithPrio LogNotifications recorder) "ghcide-core"]
-      ++ [Test.blockCommandDescriptor "block-command", Test.plugin]
-    ideOptions config sessionLoader =
-      let
-        defOptions = argsIdeOptions config sessionLoader
-      in
-        defOptions{ optTesting = IdeTesting True }
-  in
-    arguments
-      { IDE.argsHlsPlugins = hlsPlugins
-      , IDE.argsIdeOptions = ideOptions
-      }
-
-pluginOrderTestCase :: Recorder (WithPriority Log) -> TestName -> PluginError -> PluginError -> TestTree
-pluginOrderTestCase recorder msg err1 err2 =
+pluginOrderTestCase :: TestName -> PluginError -> PluginError -> TestTree
+pluginOrderTestCase msg err1 err2 =
   testCase msg $ do
       let pluginId = "error-order-test"
-          plugins = pluginDescToIdePlugins $
+          plugins :: Recorder (WithPriority Log) -> IdePlugins IdeState
+          plugins r = pluginDescToIdePlugins $
               [ (defaultPluginDescriptor pluginId "")
                   { pluginHandlers = mconcat
                       [ mkPluginHandler SMethod_TextDocumentCodeLens $ \_ _ _-> do
@@ -146,8 +129,8 @@ pluginOrderTestCase recorder msg err1 err2 =
                         ,mkPluginHandler SMethod_TextDocumentCodeLens $ \_ _ _-> do
                           throwError err2
                       ]
-                  }]
-      testIde recorder (testingLite recorder plugins) $ do
+                  }] ++ [Notifications.descriptor (cmapWithPrio LogNotifications r) "ghcide-core"]
+      runSessionWithTestConfig def {testPluginDescriptor = plugins, testDisableDefaultPlugin=True} $ const $ do
           doc <- createDoc "A.hs" "haskell" "module A where"
           waitForProgressDone
           (view L.result -> lens) <- request SMethod_TextDocumentCodeLens (CodeLensParams Nothing Nothing doc)

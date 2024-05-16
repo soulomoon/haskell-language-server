@@ -15,19 +15,23 @@ import           Language.LSP.Protocol.Types    hiding
                                                  SemanticTokensEdit (..),
                                                  mkRange)
 import           Language.LSP.Test
+import           System.Directory               (setCurrentDirectory)
+import           System.FilePath                ((</>))
 import           Test.Hls.FileSystem            (FileSystem, toAbsFp)
 import           Test.Tasty
+import Test.Hls
+
 
 tests :: TestTree
 tests = testGroup "addDependentFile"
-    [testGroup "file-changed" [testWithDummyPluginEmpty' "test" test]
+    [testGroup "file-changed" [testCase "test" $ runSessionWithTestConfig (mkTestConfig "" dummyPlugin) {testShiftRoot=True, testFileTree=Just (mkIdeTestFs [])} test]
     ]
     where
-      test :: FileSystem -> Session ()
+      test :: FilePath -> Session ()
       test dir = do
         -- If the file contains B then no type error
         -- otherwise type error
-        let depFilePath = toAbsFp dir "dep-file.txt"
+        let depFilePath = "dep-file.txt"
         liftIO $ writeFile depFilePath "A"
         let fooContent = T.unlines
               [ "{-# LANGUAGE TemplateHaskell #-}"
@@ -35,8 +39,8 @@ tests = testGroup "addDependentFile"
               , "import Language.Haskell.TH.Syntax"
               , "foo :: Int"
               , "foo = 1 + $(do"
-              , "               qAddDependentFile \"dep-file.txt\""
-              , "               f <- qRunIO (readFile \"dep-file.txt\")"
+              , "               qAddDependentFile \"" <> T.pack depFilePath <> "\""
+              , "               f <- qRunIO (readFile \"" <> T.pack depFilePath <> "\")"
               , "               if f == \"B\" then [| 1 |] else lift f)"
               ]
         let bazContent = T.unlines ["module Baz where", "import Foo ()"]
@@ -47,7 +51,7 @@ tests = testGroup "addDependentFile"
         -- Now modify the dependent file
         liftIO $ writeFile depFilePath "B"
         sendNotification SMethod_WorkspaceDidChangeWatchedFiles $ DidChangeWatchedFilesParams
-            [FileEvent (filePathToUri "dep-file.txt") FileChangeType_Changed ]
+            [FileEvent (filePathToUri depFilePath) FileChangeType_Changed ]
 
         -- Modifying Baz will now trigger Foo to be rebuilt as well
         let change = TextDocumentContentChangeEvent $ InL TextDocumentContentChangePartial
