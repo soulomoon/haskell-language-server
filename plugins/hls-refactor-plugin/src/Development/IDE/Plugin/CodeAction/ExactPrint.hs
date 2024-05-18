@@ -31,27 +31,33 @@ import           GHC.Stack                              (HasCallStack)
 import           Language.Haskell.GHC.ExactPrint
 import           Language.LSP.Protocol.Types
 
-import           Development.IDE.Plugin.CodeAction.Util
-
--- GHC version specific imports. For any supported GHC version, make sure there is no warning in imports.
 import           Control.Lens                           (_head, _last, over)
 import           Data.Bifunctor                         (first)
-import           Data.Default                           (Default (..))
-import           Data.Maybe                             (fromMaybe,
-                                                         mapMaybe)
+import           Data.Maybe                             (fromMaybe, mapMaybe)
+import           Development.IDE.Plugin.CodeAction.Util
 import           GHC                                    (AddEpAnn (..),
                                                          AnnContext (..),
                                                          AnnList (..),
                                                          AnnParen (..),
                                                          DeltaPos (SameLine),
                                                          EpAnn (..),
-                                                         EpaLocation (EpaDelta),
                                                          IsUnicodeSyntax (NormalSyntax),
                                                          NameAdornment (NameParens),
                                                          TrailingAnn (AddCommaAnn),
-                                                         addAnns, ann,
                                                          emptyComments, reAnnL)
 
+-- See Note [Guidelines For Using CPP In GHCIDE Import Statements]
+
+#if !MIN_VERSION_ghc(9,9,0)
+import           Data.Default                           (Default (..))
+import           GHC                                    (EpaLocation (EpaDelta),
+                                                         addAnns, ann)
+#endif
+
+#if MIN_VERSION_ghc(9,9,0)
+import           GHC                                    (EpaLocation' (..),
+                                                         NoAnn (..))
+#endif
 
 ------------------------------------------------------------------------------
 
@@ -69,9 +75,15 @@ data Rewrite where
 ------------------------------------------------------------------------------
 class ResetEntryDP ann where
     resetEntryDP :: GenLocated ann ast -> GenLocated ann ast
+#if MIN_VERSION_ghc(9,9,0)
+instance {-# OVERLAPPING #-} NoAnn an => ResetEntryDP (EpAnn an) where
+    -- resetEntryDP = flip setEntryDP (SameLine 0)
+    resetEntryDP (L srcAnn x) = setEntryDP (L srcAnn{anns=noAnn} x) (SameLine 0)
+#else
 instance {-# OVERLAPPING #-} Default an => ResetEntryDP (SrcAnn an) where
     -- resetEntryDP = flip setEntryDP (SameLine 0)
     resetEntryDP (L srcAnn x) = setEntryDP (L srcAnn{ann=EpAnnNotUsed} x) (SameLine 0)
+#endif
 instance {-# OVERLAPPABLE #-} ResetEntryDP fallback where
     resetEntryDP = id
 
@@ -161,11 +173,19 @@ appendConstraint constraintT = go . traceAst "appendConstraint"
 #endif
     constraint <- liftParseAST df constraintT
     constraint <- pure $ setEntryDP constraint (SameLine 1)
+#if MIN_VERSION_ghc(9,9,0)
+    let l'' = fmap (addParensToCtxt close_dp) l'
+#else
     let l'' = (fmap.fmap) (addParensToCtxt close_dp) l'
+#endif
     -- For singleton constraints, the close Paren DP is attached to an HsPar wrapping the constraint
     -- we have to reposition it manually into the AnnContext
         close_dp = case ctxt of
+#if MIN_VERSION_ghc(9,9,0)
+            [L _ (HsParTy AnnParen{ap_close} _)] -> Just ap_close
+#else
             [L _ (HsParTy EpAnn{anns=AnnParen{ap_close}} _)] -> Just ap_close
+#endif
             _ -> Nothing
         ctxt' = over _last (first addComma) $ map dropHsParTy ctxt
 #if MIN_VERSION_ghc(9,4,0)
@@ -187,7 +207,7 @@ appendConstraint constraintT = go . traceAst "appendConstraint"
 #endif
         annCtxt = AnnContext (Just (NormalSyntax, epl 1)) [epl 0 | needsParens] [epl 0 | needsParens]
         needsParens = hsTypeNeedsParens sigPrec $ unLoc constraint
-    ast <- pure $ setEntryDP ast (SameLine 1)
+    ast <- pure $ setEntryDP (makeDeltaAst ast) (SameLine 1)
 
     return $ reLocA $ L lTop $ HsQualTy noExtField context ast
 
@@ -259,6 +279,9 @@ extendImportTopLevel thing (L l it@ImportDecl{..})
                                noExtField
 #endif
                                lie
+#if MIN_VERSION_ghc(9,9,0)
+                               Nothing
+#endif
 
     if x `elem` lies
       then TransformT $ lift (Left $ thing <> " already imported")
@@ -304,9 +327,17 @@ extendImportViaParent df parent child (L l it@ImportDecl{..})
   | Just (hide, L l' lies) <- ideclHiding = go hide l' [] lies
 #endif
  where
+#if MIN_VERSION_ghc(9,9,0)
+  go _hide _l' _pre ((L _ll' (IEThingAll _ (L _ ie) _)) : _xs)
+#else
   go _hide _l' _pre ((L _ll' (IEThingAll _ (L _ ie))) : _xs)
+#endif
     | parent == unIEWrappedName ie = TransformT $ lift . Left $ child <> " already included in " <> parent <> " imports"
+#if MIN_VERSION_ghc(9,9,0)
+  go hide l' pre ((L ll' (IEThingAbs _ absIE@(L _ ie) docs)) : xs)
+#else
   go hide l' pre ((L ll' (IEThingAbs _ absIE@(L _ ie))) : xs)
+#endif
     -- ThingAbs ie => ThingWith ie child
     | parent == unIEWrappedName ie = do
       srcChild <- uniqueSrcSpanT
@@ -317,12 +348,18 @@ extendImportViaParent df parent child (L l it@ImportDecl{..})
 #endif
                                              childRdr
           x :: LIE GhcPs = L ll' $ IEThingWith
-#if MIN_VERSION_ghc(9,7,0)
+#if MIN_VERSION_ghc(9,9,0)
+                                     (Nothing, [AddEpAnn AnnOpenP (EpaDelta (SameLine 1) []), AddEpAnn AnnCloseP noAnn])
+#elif MIN_VERSION_ghc(9,7,0)
                                      (Nothing, addAnns mempty [AddEpAnn AnnOpenP (EpaDelta (SameLine 1) []), AddEpAnn AnnCloseP def] emptyComments)
 #else
                                      (addAnns mempty [AddEpAnn AnnOpenP (EpaDelta (SameLine 1) []), AddEpAnn AnnCloseP def] emptyComments)
 #endif
                                      absIE NoIEWildcard [childLIE]
+#if MIN_VERSION_ghc(9,9,0)
+                                     docs
+#endif
+
 
 #if MIN_VERSION_ghc(9,5,0)
       return $ L l it{ideclImportList = Just (hide, L l' $ reverse pre ++ [x] ++ xs)}
@@ -330,7 +367,11 @@ extendImportViaParent df parent child (L l it@ImportDecl{..})
       return $ L l it{ideclHiding = Just (hide, L l' $ reverse pre ++ [x] ++ xs)}
 #endif
 
+#if MIN_VERSION_ghc(9,9,0)
+  go hide l' pre ((L l'' (IEThingWith l''' twIE@(L _ ie) _ lies' docs)) : xs)
+#else
   go hide l' pre ((L l'' (IEThingWith l''' twIE@(L _ ie) _ lies')) : xs)
+#endif
     -- ThingWith ie lies' => ThingWith ie (lies' ++ [child])
     | parent == unIEWrappedName ie
     , child == wildCardSymbol = do
@@ -340,7 +381,10 @@ extendImportViaParent df parent child (L l it@ImportDecl{..})
         let it' = it{ideclHiding = Just (hide, lies)}
 #endif
             thing = IEThingWith newl twIE (IEWildcard 2) []
-#if MIN_VERSION_ghc(9,7,0)
+#if MIN_VERSION_ghc(9,9,0)
+                                docs
+#endif
+#if MIN_VERSION_ghc(9,7,0) && !MIN_VERSION_ghc(9,9,0)
             newl = fmap (\ann -> ann ++ [AddEpAnn AnnDotdot d0]) <$> l'''
 #else
             newl = (\ann -> ann ++ [AddEpAnn AnnDotdot d0]) <$> l'''
@@ -369,7 +413,11 @@ extendImportViaParent df parent child (L l it@ImportDecl{..})
         let it' = it{ideclHiding = Just (hide, lies)}
 #endif
             lies = L l' $ reverse pre ++
-                [L l'' (IEThingWith l''' twIE NoIEWildcard (over _last fixLast lies' ++ [childLIE]))] ++ xs
+                [L l'' (IEThingWith l''' twIE NoIEWildcard (over _last fixLast lies' ++ [childLIE])
+#if MIN_VERSION_ghc(9,9,0)
+                                    docs
+#endif
+                       )] ++ xs
             fixLast = if hasSibling then first addComma else id
         return $ L l it'
   go hide l' pre (x : xs) = go hide l' (x : pre) xs
@@ -395,12 +443,17 @@ extendImportViaParent df parent child (L l it@ImportDecl{..})
                                              noExtField
 #endif
                                              childRdr
-#if MIN_VERSION_ghc(9,7,0)
+#if MIN_VERSION_ghc(9,9,0)
+          listAnn = (Nothing, [AddEpAnn AnnOpenP (epl 1), AddEpAnn AnnCloseP (epl 0)])
+#elif MIN_VERSION_ghc(9,7,0)
           listAnn = (Nothing, epAnn srcParent [AddEpAnn AnnOpenP (epl 1), AddEpAnn AnnCloseP (epl 0)])
 #else
           listAnn = epAnn srcParent [AddEpAnn AnnOpenP (epl 1), AddEpAnn AnnCloseP (epl 0)]
 #endif
           x :: LIE GhcPs = reLocA $ L l'' $ IEThingWith listAnn parentLIE NoIEWildcard [childLIE]
+#if MIN_VERSION_ghc(9,9,0)
+                                                        Nothing -- TODO preserve docs?
+#endif
 
           lies' = addCommaInImportList (reverse pre) x
 #if MIN_VERSION_ghc(9,5,0)
@@ -427,9 +480,14 @@ addCommaInImportList lies x =
     -- check if there is an existing trailing comma
     existingTrailingComma = fromMaybe False $ do
         L lastItemSrcAnn _ <- lastMaybe lies
+#if MIN_VERSION_ghc(9,9,0)
+        lastItemAnn <- case lastItemSrcAnn of
+            EpAnn _ lastItemAnn _ -> pure lastItemAnn
+#else
         lastItemAnn <- case ann lastItemSrcAnn of
             EpAnn _ lastItemAnn _ -> pure lastItemAnn
             _ -> Nothing
+#endif
         pure $ any isTrailingAnnComma (lann_trailing lastItemAnn)
 
     hasSibling = not $ null lies
@@ -482,9 +540,17 @@ extendHiding ::
 extendHiding symbol (L l idecls) mlies df = do
   L l' lies <- case mlies of
     Nothing -> do
+#if MIN_VERSION_ghc(9,9,0)
+        let ann = noAnnSrcSpanDP0
+#else
         src <- uniqueSrcSpanT
         let ann = noAnnSrcSpanDP0 src
+#endif
+#if MIN_VERSION_ghc(9,9,0)
+            ann' = flip fmap ann $ \x -> x
+#else
             ann' = flip (fmap.fmap) ann $ \x -> x
+#endif
                 {al_rest = [AddEpAnn AnnHiding (epl 1)]
                 ,al_open = Just $ AddEpAnn AnnOpenP (epl 1)
                 ,al_close = Just $ AddEpAnn AnnCloseP (epl 0)
@@ -508,6 +574,9 @@ extendHiding symbol (L l idecls) mlies df = do
                              noExtField
 #endif
                              lie
+#if MIN_VERSION_ghc(9,9,0)
+                             Nothing
+#endif
   x <- pure $ if hasSibling then first addComma x else x
   lies <- pure $ over _head (`setEntryDP` SameLine 1) lies
 #if MIN_VERSION_ghc(9,5,0)
@@ -541,13 +610,25 @@ deleteFromImport (T.pack -> symbol) (L l idecl) (L lieLoc lies) _ = do
     over _last removeTrailingComma $
     mapMaybe killLie lies
   killLie :: LIE GhcPs -> Maybe (LIE GhcPs)
+#if MIN_VERSION_ghc(9,9,0)
+  killLie v@(L _ (IEVar _ (L _ (unqualIEWrapName -> nam)) _))
+#else
   killLie v@(L _ (IEVar _ (L _ (unqualIEWrapName -> nam))))
+#endif
     | nam == symbol = Nothing
     | otherwise = Just v
+#if MIN_VERSION_ghc(9,9,0)
+  killLie v@(L _ (IEThingAbs _ (L _ (unqualIEWrapName -> nam)) _))
+#else
   killLie v@(L _ (IEThingAbs _ (L _ (unqualIEWrapName -> nam))))
+#endif
     | nam == symbol = Nothing
     | otherwise = Just v
+#if MIN_VERSION_ghc(9,9,0)
+  killLie (L lieL (IEThingWith xt ty@(L _ (unqualIEWrapName -> nam)) wild cons docs))
+#else
   killLie (L lieL (IEThingWith xt ty@(L _ (unqualIEWrapName -> nam)) wild cons))
+#endif
     | nam == symbol = Nothing
     | otherwise =
       Just $
@@ -557,4 +638,7 @@ deleteFromImport (T.pack -> symbol) (L l idecl) (L lieLoc lies) _ = do
             ty
             wild
             (filter ((/= symbol) . unqualIEWrapName . unLoc) cons)
+#if MIN_VERSION_ghc(9,9,0)
+            docs
+#endif
   killLie v = Just v
