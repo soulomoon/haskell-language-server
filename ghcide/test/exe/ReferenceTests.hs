@@ -26,7 +26,6 @@ import qualified Data.Aeson                      as A
 import           Data.Default                    (def)
 import           Data.Tuple.Extra
 import           GHC.TypeLits                    (symbolVal)
-import           Ide.PluginUtils                 (toAbsolute)
 import           Ide.Types
 import           System.FilePath                 (isAbsolute, (</>))
 import           Test.Hls                        (FromServerMessage' (..),
@@ -214,7 +213,7 @@ expectSameLocations rootDir actual expected = do
             $ Set.fromList actual
     expected' <- Set.fromList <$>
         (forM expected $ \(file, l, c) -> do
-                              fp <- canonicalizePath $ toAbsolute rootDir file
+                              fp <- canonicalizePath $ file
                               return (filePathToUri fp, l, c))
     actual' @?= expected'
 

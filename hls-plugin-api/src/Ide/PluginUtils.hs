@@ -32,8 +32,6 @@ module Ide.PluginUtils
     usePropertyLsp,
     -- * Escape
     unescape,
-    -- * toAbsolute
-    toAbsolute
   )
 where
 
@@ -52,7 +50,6 @@ import           Ide.Types
 import qualified Language.LSP.Protocol.Lens  as L
 import           Language.LSP.Protocol.Types
 import           Language.LSP.Server
-import           System.FilePath             (isAbsolute, (</>))
 import qualified Text.Megaparsec             as P
 import qualified Text.Megaparsec.Char        as P
 import qualified Text.Megaparsec.Char.Lexer  as P
@@ -319,10 +316,3 @@ escapedTextParser = concat <$> P.many (outsideStringLiteral P.<|> stringLiteral)
           inside' = concatMap f inside
 
       pure $ "\"" <> inside' <> "\""
-
--- ---------------------------------------------------------------------
-
-toAbsolute :: FilePath -> FilePath -> FilePath
-toAbsolute dir file
-    | isAbsolute file = file
-    | otherwise = dir </> file

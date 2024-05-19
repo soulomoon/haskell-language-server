@@ -473,7 +473,7 @@ runSessionWithServer config plugin fp act =
 instance Default (TestConfig b) where
   def = TestConfig {
     testDirLocation = Right $ VirtualFileTree [] "",
-    testShiftRoot = False,
+    testShiftRoot = True,
     testDisableKick = False,
     testDisableDefaultPlugin = False,
     testPluginDescriptor = mempty,
@@ -682,7 +682,7 @@ runSessionWithTestConfig TestConfig{..} session =
 
     let plugins = testPluginDescriptor recorder <> lspRecorderPlugin
     let sconf' = testConfigSession { lspConfig = hlsConfigToClientConfig testLspConfig }
-        arguments = testingArgs root recorderIde plugins
+        arguments = testingArgs (Just root) recorderIde plugins
     server <- async $
         IDEMain.defaultMain (cmapWithPrio LogIDEMain recorderIde)
             arguments { argsHandleIn = pure inR , argsHandleOut = pure outW }
@@ -707,7 +707,7 @@ runSessionWithTestConfig TestConfig{..} session =
         runSessionInVFS (Right vfs) act = runWithLockInTempDir vfs $ \fs -> act (fsRoot fs)
         testingArgs prjRoot recorderIde plugins =
             let
-                arguments@Arguments{ argsHlsPlugins, argsIdeOptions } = defaultArguments (cmapWithPrio LogIDEMain recorderIde) prjRoot plugins
+                arguments@Arguments{ argsHlsPlugins, argsIdeOptions } = defaultArguments (cmapWithPrio LogIDEMain recorderIde) plugins
                 argsHlsPlugins' = if testDisableDefaultPlugin
                                 then plugins
                                 else argsHlsPlugins

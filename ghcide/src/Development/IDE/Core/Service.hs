@@ -67,9 +67,8 @@ initialise :: Recorder (WithPriority Log)
            -> WithHieDb
            -> IndexQueue
            -> Monitoring
-           -> FilePath
            -> IO IdeState
-initialise recorder defaultConfig plugins mainRule lspEnv debouncer options withHieDb hiedbChan metrics rootDir = do
+initialise recorder defaultConfig plugins mainRule lspEnv debouncer options withHieDb hiedbChan metrics = do
     shakeProfiling <- do
         let fromConf = optShakeProfiling options
         fromEnv <- lookupEnv "GHCIDE_BUILD_PROFILING"
@@ -87,12 +86,11 @@ initialise recorder defaultConfig plugins mainRule lspEnv debouncer options with
         hiedbChan
         (optShakeOptions options)
         metrics
-        (do
+          $ do
             addIdeGlobal $ GlobalIdeOptions options
             ofInterestRules (cmapWithPrio LogOfInterest recorder)
             fileExistsRules (cmapWithPrio LogFileExists recorder) lspEnv
-            mainRule)
-        rootDir
+            mainRule
 
 -- | Shutdown the Compiler Service.
 shutdown :: IdeState -> IO ()

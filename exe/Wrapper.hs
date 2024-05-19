@@ -269,8 +269,7 @@ newtype ErrorLSPM c a = ErrorLSPM { unErrorLSPM :: (LspM c) a }
 -- to shut down the LSP.
 launchErrorLSP :: Recorder (WithPriority (Doc ())) -> T.Text -> IO ()
 launchErrorLSP recorder errorMsg = do
-  cwd <- getCurrentDirectory
-  let defaultArguments = Main.defaultArguments (cmapWithPrio pretty recorder) cwd (IdePlugins [])
+  let defaultArguments = Main.defaultArguments (cmapWithPrio pretty recorder) (IdePlugins [])
 
   inH <- Main.argsHandleIn defaultArguments
 

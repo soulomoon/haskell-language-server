@@ -208,7 +208,7 @@ commandP plugins =
 
 
 data Arguments = Arguments
-    { argsProjectRoot           :: FilePath
+    { argsProjectRoot           :: Maybe FilePath
     , argCommand                :: Command
     , argsRules                 :: Rules ()
     , argsHlsPlugins            :: IdePlugins IdeState
@@ -226,9 +226,9 @@ data Arguments = Arguments
     , argsDisableKick           :: Bool -- ^ flag to disable kick used for testing
     }
 
-defaultArguments :: Recorder (WithPriority Log) -> FilePath -> IdePlugins IdeState -> Arguments
-defaultArguments recorder fp plugins = Arguments
-        { argsProjectRoot = fp
+defaultArguments :: Recorder (WithPriority Log) -> IdePlugins IdeState -> Arguments
+defaultArguments recorder plugins = Arguments
+        { argsProjectRoot = Nothing
         , argCommand = LSP
         , argsRules = mainRule (cmapWithPrio LogRules recorder) def
         , argsGhcidePlugin = mempty
@@ -263,11 +263,11 @@ defaultArguments recorder fp plugins = Arguments
         }
 
 
-testing :: Recorder (WithPriority Log) -> FilePath -> IdePlugins IdeState -> Arguments
-testing recorder fp plugins =
+testing :: Recorder (WithPriority Log) -> IdePlugins IdeState -> Arguments
+testing recorder plugins =
   let
     arguments@Arguments{ argsHlsPlugins, argsIdeOptions } =
-        defaultArguments recorder fp plugins
+        defaultArguments recorder plugins
     hlsPlugins = pluginDescToIdePlugins $
       idePluginsToPluginDesc argsHlsPlugins
       ++ [Test.blockCommandDescriptor "block-command", Test.plugin]
@@ -316,18 +316,22 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
             logWith recorder Info $ LogLspStart (pluginId <$> ipMap argsHlsPlugins)
 
             ideStateVar <- newEmptyMVar
-            let getIdeState :: LSP.LanguageContextEnv Config -> FilePath -> WithHieDb -> IndexQueue -> IO IdeState
+            let getIdeState :: LSP.LanguageContextEnv Config -> Maybe FilePath -> WithHieDb -> IndexQueue -> IO IdeState
                 getIdeState env rootPath withHieDb hieChan = do
+                  traverse_ IO.setCurrentDirectory rootPath
                   t <- ioT
                   logWith recorder Info $ LogLspStartDuration t
+
+                  dir <- maybe IO.getCurrentDirectory return rootPath
+
                   -- We want to set the global DynFlags right now, so that we can use
                   -- `unsafeGlobalDynFlags` even before the project is configured
                   _mlibdir <-
-                      setInitialDynFlags (cmapWithPrio LogSession recorder) rootPath argsSessionLoadingOptions
+                      setInitialDynFlags (cmapWithPrio LogSession recorder) dir argsSessionLoadingOptions
                           -- TODO: should probably catch/log/rethrow at top level instead
                           `catchAny` (\e -> logWith recorder Error (LogSetInitialDynFlagsException e) >> pure Nothing)
 
-                  sessionLoader <- loadSessionWithOptions (cmapWithPrio LogSession recorder) argsSessionLoadingOptions rootPath
+                  sessionLoader <- loadSessionWithOptions (cmapWithPrio LogSession recorder) argsSessionLoadingOptions dir
                   config <- LSP.runLspT env LSP.getConfig
                   let def_options = argsIdeOptions config sessionLoader
 
@@ -353,11 +357,10 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
                       withHieDb
                       hieChan
                       monitoring
-                      rootPath
                   putMVar ideStateVar ide
                   pure ide
 
-            let setup = setupLSP (cmapWithPrio LogLanguageServer recorder) argsProjectRoot argsGetHieDbLoc (pluginHandlers plugins) getIdeState
+            let setup = setupLSP (cmapWithPrio LogLanguageServer recorder) argsGetHieDbLoc (pluginHandlers plugins) getIdeState
                 -- See Note [Client configuration in Rules]
                 onConfigChange cfg = do
                   -- TODO: this is nuts, we're converting back to JSON just to get a fingerprint
@@ -375,7 +378,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
             runLanguageServer (cmapWithPrio LogLanguageServer recorder) options inH outH argsDefaultHlsConfig argsParseConfig onConfigChange setup
             dumpSTMStats
         Check argFiles -> do
-          let dir = argsProjectRoot
+          dir <- maybe IO.getCurrentDirectory return argsProjectRoot
           dbLoc <- getHieDbLoc dir
           runWithDb (cmapWithPrio LogSession recorder) dbLoc $ \hiedb hieChan -> do
             -- GHC produces messages with UTF8 in them, so make sure the terminal doesn't error
@@ -405,7 +408,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
                         , optCheckProject = pure False
                         , optModifyDynFlags = optModifyDynFlags def_options <> pluginModifyDynflags plugins
                         }
-            ide <- initialise (cmapWithPrio LogService recorder) argsDefaultHlsConfig argsHlsPlugins rules Nothing debouncer ideOptions hiedb hieChan mempty dir
+            ide <- initialise (cmapWithPrio LogService recorder) argsDefaultHlsConfig argsHlsPlugins rules Nothing debouncer ideOptions hiedb hieChan mempty
             shakeSessionInit (cmapWithPrio LogShake recorder) ide
             registerIdeConfiguration (shakeExtras ide) $ IdeConfiguration mempty (hashed Nothing)
 
@@ -423,7 +426,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
 
             unless (null failed) (exitWith $ ExitFailure (length failed))
         Db opts cmd -> do
-            let root = argsProjectRoot
+            root <-  maybe IO.getCurrentDirectory return argsProjectRoot
             dbLoc <- getHieDbLoc root
             hPutStrLn stderr $ "Using hiedb at: " ++ dbLoc
             mlibdir <- setInitialDynFlags (cmapWithPrio LogSession recorder) root def
@@ -433,7 +436,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
                 Just libdir -> retryOnSqliteBusy (cmapWithPrio LogSession recorder) rng (HieDb.runCommand libdir opts{HieDb.database = dbLoc} cmd)
 
         Custom (IdeCommand c) -> do
-          let root = argsProjectRoot
+          root <-  maybe IO.getCurrentDirectory return argsProjectRoot
           dbLoc <- getHieDbLoc root
           runWithDb (cmapWithPrio LogSession recorder) dbLoc $ \hiedb hieChan -> do
             sessionLoader <- loadSessionWithOptions (cmapWithPrio LogSession recorder) argsSessionLoadingOptions "."
@@ -443,7 +446,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
                     , optCheckProject = pure False
                     , optModifyDynFlags = optModifyDynFlags def_options <> pluginModifyDynflags plugins
                     }
-            ide <- initialise (cmapWithPrio LogService recorder) argsDefaultHlsConfig argsHlsPlugins rules Nothing debouncer ideOptions hiedb hieChan mempty root
+            ide <- initialise (cmapWithPrio LogService recorder) argsDefaultHlsConfig argsHlsPlugins rules Nothing debouncer ideOptions hiedb hieChan mempty
             shakeSessionInit (cmapWithPrio LogShake recorder) ide
             registerIdeConfiguration (shakeExtras ide) $ IdeConfiguration mempty (hashed Nothing)
             c ide

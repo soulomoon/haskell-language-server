@@ -111,7 +111,6 @@ import           Development.IDE.Types.Shake          (WithHieDb, toNoFileKey)
 import           HieDb.Create
 import           HieDb.Types
 import           HieDb.Utils
-import           Ide.PluginUtils                      (toAbsolute)
 import qualified System.Random                        as Random
 import           System.Random                        (RandomGen)
 
@@ -439,8 +438,7 @@ loadSession :: Recorder (WithPriority Log) -> FilePath -> IO (Action IdeGhcSessi
 loadSession recorder = loadSessionWithOptions recorder def
 
 loadSessionWithOptions :: Recorder (WithPriority Log) -> SessionLoadingOptions -> FilePath -> IO (Action IdeGhcSession)
-loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
-  let toAbsolutePath = toAbsolute rootDir
+loadSessionWithOptions recorder SessionLoadingOptions{..} dir = do
   cradle_files <- newIORef []
   -- Mapping from hie.yaml file to HscEnv, one per hie.yaml file
   hscEnvs <- newVar Map.empty :: IO (Var HieMap)
@@ -461,7 +459,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
       -- Sometimes we get C:, sometimes we get c:, and sometimes we get a relative path
       -- try and normalise that
       -- e.g. see https://github.com/haskell/ghcide/issues/126
-      let res' = toAbsolutePath <$> res
+      res' <- traverse makeAbsolute res
       return $ normalise <$> res'
 
   dummyAs <- async $ return (error "Uninitialised")
@@ -523,7 +521,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
         packageSetup (hieYaml, cfp, opts, libDir) = do
           -- Parse DynFlags for the newly discovered component
           hscEnv <- emptyHscEnv ideNc libDir
-          newTargetDfs <- evalGhcEnv hscEnv $ setOptions cfp opts (hsc_dflags hscEnv) rootDir
+          newTargetDfs <- evalGhcEnv hscEnv $ setOptions cfp opts (hsc_dflags hscEnv)
           let deps = componentDependencies opts ++ maybeToList hieYaml
           dep_info <- getDependencyInfo deps
           -- Now lookup to see whether we are combining with an existing HscEnv
@@ -590,7 +588,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           -- HscEnv but set the active component accordingly
           hscEnv <- emptyHscEnv ideNc _libDir
           let new_cache = newComponentCache recorder optExtensions hieYaml _cfp hscEnv
-          all_target_details <- new_cache old_deps new_deps rootDir
+          all_target_details <- new_cache old_deps new_deps
 
           this_dep_info <- getDependencyInfo $ maybeToList hieYaml
           let (all_targets, this_flags_map, this_options)
@@ -634,20 +632,25 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 
     let consultCradle :: Maybe FilePath -> FilePath -> IO (IdeResult HscEnvEq, [FilePath])
         consultCradle hieYaml cfp = do
-           let lfpLog = makeRelative rootDir cfp
+           lfpLog <- flip makeRelative cfp <$> getCurrentDirectory
            logWith recorder Info $ LogCradlePath lfpLog
+
            when (isNothing hieYaml) $
              logWith recorder Warning $ LogCradleNotFound lfpLog
-           cradle <- loadCradle recorder hieYaml rootDir
+
+           cradle <- loadCradle recorder hieYaml dir
+           -- TODO: Why are we repeating the same command we have on line 646?
+           lfp <- flip makeRelative cfp <$> getCurrentDirectory
+
            when optTesting $ mRunLspT lspEnv $
             sendNotification (SMethod_CustomMethod (Proxy @"ghcide/cradle/loaded")) (toJSON cfp)
 
            -- Display a user friendly progress message here: They probably don't know what a cradle is
            let progMsg = "Setting up " <> T.pack (takeBaseName (cradleRootDir cradle))
-                         <> " (for " <> T.pack lfpLog <> ")"
+                         <> " (for " <> T.pack lfp <> ")"
            eopts <- mRunLspTCallback lspEnv (\act -> withIndefiniteProgress progMsg Nothing NotCancellable (const act)) $
               withTrace "Load cradle" $ \addTag -> do
-                  addTag "file" lfpLog
+                  addTag "file" lfp
                   old_files <- readIORef cradle_files
                   res <- cradleToOptsAndLibDir recorder (sessionLoading clientConfig) cradle cfp old_files
                   addTag "result" (show res)
@@ -710,7 +713,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
             modifyVar_ hscEnvs (const (return Map.empty))
 
           v <- Map.findWithDefault HM.empty hieYaml <$> readVar fileToFlags
-          let cfp = toAbsolutePath file
+          cfp <- makeAbsolute file
           case HM.lookup (toNormalizedFilePath' cfp) v of
             Just (opts, old_di) -> do
               deps_ok <- checkDependencyInfo old_di
@@ -732,7 +735,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
     -- before attempting to do so.
     let getOptions :: FilePath -> IO (IdeResult HscEnvEq, [FilePath])
         getOptions file = do
-            let ncfp = toNormalizedFilePath' (toAbsolutePath file)
+            ncfp <- toNormalizedFilePath' <$> makeAbsolute file
             cachedHieYamlLocation <- HM.lookup ncfp <$> readVar filesMap
             hieYaml <- cradleLoc file
             sessionOpts (join cachedHieYamlLocation <|> hieYaml, file) `Safe.catch` \e ->
@@ -744,7 +747,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
         void $ wait as
         asyncRes <- async $ getOptions file
         return (asyncRes, wait asyncRes)
-      pure $ (fmap . fmap) toAbsolutePath opts
+      pure opts
 
 -- | Run the specific cradle on a specific FilePath via hie-bios.
 -- This then builds dependencies or whatever based on the cradle, gets the
@@ -811,20 +814,19 @@ fromTargetId :: [FilePath]          -- ^ import paths
              -> TargetId
              -> IdeResult HscEnvEq
              -> DependencyInfo
-             -> FilePath
              -> IO [TargetDetails]
 -- For a target module we consider all the import paths
-fromTargetId is exts (GHC.TargetModule modName) env dep dir = do
+fromTargetId is exts (GHC.TargetModule modName) env dep = do
     let fps = [i </> moduleNameSlashes modName -<.> ext <> boot
               | ext <- exts
               , i <- is
               , boot <- ["", "-boot"]
               ]
-    let locs = fmap (toNormalizedFilePath' . toAbsolute dir) fps
+    locs <- mapM (fmap toNormalizedFilePath' . makeAbsolute) fps
     return [TargetDetails (TargetModule modName) env dep locs]
 -- For a 'TargetFile' we consider all the possible module names
-fromTargetId _ _ (GHC.TargetFile f _) env deps dir = do
-    let nf = toNormalizedFilePath' $ toAbsolute dir f
+fromTargetId _ _ (GHC.TargetFile f _) env deps = do
+    nf <- toNormalizedFilePath' <$> makeAbsolute f
     let other
           | "-boot" `isSuffixOf` f = toNormalizedFilePath' (L.dropEnd 5 $ fromNormalizedFilePath nf)
           | otherwise = toNormalizedFilePath' (fromNormalizedFilePath nf ++ "-boot")
@@ -913,9 +915,8 @@ newComponentCache
          -> HscEnv             -- ^ An empty HscEnv
          -> [ComponentInfo]    -- ^ New components to be loaded
          -> [ComponentInfo]    -- ^ old, already existing components
-         -> FilePath           -- ^ root dir
          -> IO [ [TargetDetails] ]
-newComponentCache recorder exts cradlePath _cfp hsc_env old_cis new_cis dir = do
+newComponentCache recorder exts cradlePath _cfp hsc_env old_cis new_cis = do
     let cis = Map.unionWith unionCIs (mkMap new_cis) (mkMap old_cis)
         -- When we have multiple components with the same uid,
         -- prefer the new one over the old.
@@ -960,7 +961,7 @@ newComponentCache recorder exts cradlePath _cfp hsc_env old_cis new_cis dir = do
 
     forM (Map.elems cis) $ \ci -> do
       let df = componentDynFlags ci
-      let createHscEnvEq = maybe newHscEnvEqPreserveImportPaths (newHscEnvEq dir) cradlePath
+      let createHscEnvEq = maybe newHscEnvEqPreserveImportPaths newHscEnvEq cradlePath
       thisEnv <- do
 #if MIN_VERSION_ghc(9,3,0)
             -- In GHC 9.4 we have multi component support, and we have initialised all the units
@@ -985,7 +986,7 @@ newComponentCache recorder exts cradlePath _cfp hsc_env old_cis new_cis dir = do
       logWith recorder Debug $ LogNewComponentCache (targetEnv, targetDepends)
       evaluate $ liftRnf rwhnf $ componentTargets ci
 
-      let mk t = fromTargetId (importPaths df) exts (targetId t) targetEnv targetDepends dir
+      let mk t = fromTargetId (importPaths df) exts (targetId t) targetEnv targetDepends
       ctargets <- concatMapM mk (componentTargets ci)
 
       return (L.nubOrdOn targetTarget ctargets)
@@ -1170,8 +1171,8 @@ addUnit unit_str = liftEwM $ do
   putCmdLineState (unit_str : units)
 
 -- | Throws if package flags are unsatisfiable
-setOptions :: GhcMonad m => NormalizedFilePath -> ComponentOptions -> DynFlags -> FilePath -> m (NonEmpty (DynFlags, [GHC.Target]))
-setOptions cfp (ComponentOptions theOpts compRoot _) dflags dir = do
+setOptions :: GhcMonad m => NormalizedFilePath -> ComponentOptions -> DynFlags -> m (NonEmpty (DynFlags, [GHC.Target]))
+setOptions cfp (ComponentOptions theOpts compRoot _) dflags = do
     ((theOpts',_errs,_warns),units) <- processCmdLineP unit_flags [] (map noLoc theOpts)
     case NE.nonEmpty units of
       Just us -> initMulti us
@@ -1194,7 +1195,7 @@ setOptions cfp (ComponentOptions theOpts compRoot _) dflags dir = do
         --
         -- If we don't end up with a target for the current file in the end, then
         -- we will report it as an error for that file
-        let abs_fp = toAbsolute dir (fromNormalizedFilePath cfp)
+        abs_fp <- liftIO $ makeAbsolute (fromNormalizedFilePath cfp)
         let special_target = Compat.mkSimpleTarget df abs_fp
         pure $ (df, special_target : targets) :| []
     where
