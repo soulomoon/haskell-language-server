@@ -466,8 +466,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
       let res' = toAbsolutePath <$> res
       return $ normalise <$> res'
 
---   dummyAs <- async $ return (error "Uninitialised")
---   runningCradle <- newVar dummyAs :: IO (Var (Async (IdeResult HscEnvEq,[FilePath])))
+  dummyAs <- async $ return (error "Uninitialised")
+  runningCradle <- newVar dummyAs :: IO (Var (Async (IdeResult HscEnvEq,[FilePath])))
 
   return $ do
     clientConfig <- getClientConfigAction
@@ -735,8 +735,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
     -- to get some more options then we wait for the currently running action to finish
     -- before attempting to do so.
 
-    let getOptions :: FilePath -> Action (IdeResult HscEnvEq, [FilePath])
-        getOptions file = liftIO $ do
+    let getOptions :: FilePath -> IO (IdeResult HscEnvEq, [FilePath])
+        getOptions file = do
             let ncfp = toNormalizedFilePath' (toAbsolutePath file)
             cachedHieYamlLocation <- HM.lookup ncfp <$> readVar filesMap
             hieYaml <- cradleLoc file
@@ -744,12 +744,11 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                 return (([renderPackageSetupException file e], Nothing), maybe [] pure hieYaml)
 
     returnWithVersion $ \file -> do
-    --   opts <- liftIO $ join $ mask_ $ modifyVar runningCradle $ \as -> do
-    --     -- If the cradle is not finished, then wait for it to finish.
-    --     void $ wait as
-    --     asyncRes <- async $ getOptions file
-    --     return (asyncRes, wait asyncRes)
-      opts <- UnlifIO.withMVar cradleLock $ \_ -> getOptions file
+      opts <- liftIO $ join $ mask_ $ modifyVar runningCradle $ \as -> do
+        -- If the cradle is not finished, then wait for it to finish.
+        asyncRes <- async $ wait as >>  getOptions file
+        return (asyncRes, wait asyncRes)
+    --   opts <- UnlifIO.withMVar cradleLock $ \_ -> getOptions file
       pure $ (fmap . fmap) toAbsolutePath opts
 
 
