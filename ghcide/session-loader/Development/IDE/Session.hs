@@ -462,14 +462,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 --   putMVar cradleLock ()
   biosSessionLoadingVar <- newVar Nothing :: IO (Var (Maybe SessionLoadingPreferenceConfig))
   let returnWithVersion fun = IdeGhcSession fun <$> liftIO (readVar version)
-  -- This caches the mapping from Mod.hs -> hie.yaml
---   cradleLoc <- liftIO $ memoIO $ \v -> do
---       res <- findCradle v
---       -- Sometimes we get C:, sometimes we get c:, and sometimes we get a relative path
---       -- try and normalise that
---       -- e.g. see https://github.com/haskell/ghcide/issues/126
---       let res' = toAbsolutePath <$> res
---       return $ normalise <$> res'
 
   return $ do
     clientConfig <- getClientConfigAction
@@ -647,7 +639,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
              logWith recorder Warning $ LogCradleNotFound lfpLog
            cradle <- liftIO $ loadCradle recorder hieYaml rootDir
            when optTesting $ mRunLspT lspEnv $
-            sendNotification (SMethod_CustomMethod (Proxy @"ghcide/cradle/loaded")) (toJSON cfp)
+            sendNotification (SMethod_CustomMethod (Proxy @"ghcide/cradle/loaded")) (toJSON $ fromNormalizedFilePath cfp)
 
            -- Display a user friendly progress message here: They probably don't know what a cradle is
            let progMsg = "Setting up " <> T.pack (takeBaseName (cradleRootDir cradle))
@@ -656,7 +648,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
               withTrace "Load cradle" $ \addTag -> do
                   addTag "file" lfpLog
                   old_files <- liftIO $ readIORef cradle_files
-                  res <- liftIO $ cradleToOptsAndLibDir recorder (sessionLoading clientConfig) cradle cfp old_files
+                  res <- liftIO $ cradleToOptsAndLibDir recorder (sessionLoading clientConfig) cradle (fromNormalizedFilePath cfp) old_files
                   addTag "result" (show res)
                   return res
 
@@ -672,7 +664,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                  InstallationMismatch{..} ->
                      return (([renderPackageSetupException cfp GhcVersionMismatch{..}], Nothing),[])
                  InstallationChecked _compileTime _ghcLibCheck -> do
-                  liftIO $ atomicModifyIORef' cradle_files (\xs -> (cfp:xs,()))
+                  liftIO $ atomicModifyIORef' cradle_files (\xs -> (fromNormalizedFilePath cfp:xs,()))
                   liftIO $ session (hieYaml, cfp, opts, libDir)
              -- Failure case, either a cradle error or the none cradle
              Left err -> do
@@ -748,7 +740,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                 return (([renderPackageSetupException file e], Nothing), maybe [] pure hieYaml)
 
     returnWithVersion $ \file -> do
-      let ncfp = toNormalizedFilePath' (toAbsolutePath file)
       aopts <- UnlifIO.async $ UnlifIO.withMVar cradleLock $ const $ getOptions file
       opts <- UnlifIO.wait aopts
       pure $ (fmap . fmap) toAbsolutePath opts
