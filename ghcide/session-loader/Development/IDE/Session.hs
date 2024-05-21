@@ -611,9 +611,11 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           keys2 <- invalidateShakeCache
 
           -- todo this should be moving out of the session function
-          restartShakeSession VFSUnmodified "new component" [] $ do
+          restart <- async $ restartShakeSession VFSUnmodified "new component" [] $ do
             keys1 <- extendKnownTargets all_targets
             return [keys1, keys2]
+          wait restart
+
 
           -- Typecheck all files in the project on startup
           checkProject <- getCheckProject
@@ -740,8 +742,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                 return (([renderPackageSetupException file e], Nothing), maybe [] pure hieYaml)
 
     returnWithVersion $ \file -> do
-      aopts <- UnlifIO.async $ UnlifIO.withMVar cradleLock $ const $ getOptions file
-      opts <- UnlifIO.wait aopts
+      opts <- UnlifIO.withMVar cradleLock $ const $ getOptions file
       pure $ (fmap . fmap) toAbsolutePath opts
 
 
