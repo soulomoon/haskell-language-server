@@ -128,6 +128,7 @@ import           GHC.Driver.Errors.Types
 import           GHC.Types.Error                      (errMsgDiagnostic,
                                                        singleMessage)
 import           GHC.Unit.State
+import qualified UnliftIO                             as UnlifIO
 #endif
 
 data Log
@@ -453,6 +454,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
   filesMap <- newVar HM.empty :: IO (Var FilesMap)
   -- Version of the mappings above
   version <- newVar 0
+  cradleLock <- newMVar ()
   biosSessionLoadingVar <- newVar Nothing :: IO (Var (Maybe SessionLoadingPreferenceConfig))
   let returnWithVersion fun = IdeGhcSession fun <$> liftIO (readVar version)
   -- This caches the mapping from Mod.hs -> hie.yaml
@@ -700,6 +702,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
     let sessionOpts :: (Maybe FilePath, FilePath)
                     -> IO (IdeResult HscEnvEq, [FilePath])
         sessionOpts (hieYaml, file) = do
+          --  this cased a recompilation of the whole project
+          --  this can be turned in to shake
           Extra.whenM didSessionLoadingPreferenceConfigChange $ do
             logWith recorder Info LogSessionLoadingChanged
             -- If the dependencies are out of date then clear both caches and start
@@ -730,8 +734,9 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
     -- at a time. Therefore the IORef contains the currently running cradle, if we try
     -- to get some more options then we wait for the currently running action to finish
     -- before attempting to do so.
-    let getOptions :: FilePath -> IO (IdeResult HscEnvEq, [FilePath])
-        getOptions file = do
+
+    let getOptions :: FilePath -> Action (IdeResult HscEnvEq, [FilePath])
+        getOptions file = liftIO $ do
             let ncfp = toNormalizedFilePath' (toAbsolutePath file)
             cachedHieYamlLocation <- HM.lookup ncfp <$> readVar filesMap
             hieYaml <- cradleLoc file
@@ -739,12 +744,14 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                 return (([renderPackageSetupException file e], Nothing), maybe [] pure hieYaml)
 
     returnWithVersion $ \file -> do
-      opts <- join $ mask_ $ modifyVar runningCradle $ \as -> do
-        -- If the cradle is not finished, then wait for it to finish.
-        void $ wait as
-        asyncRes <- async $ getOptions file
-        return (asyncRes, wait asyncRes)
+    --   opts <- liftIO $ join $ mask_ $ modifyVar runningCradle $ \as -> do
+    --     -- If the cradle is not finished, then wait for it to finish.
+    --     void $ wait as
+    --     asyncRes <- async $ getOptions file
+    --     return (asyncRes, wait asyncRes)
+      opts <- UnlifIO.withMVar cradleLock $ \_ -> getOptions file
       pure $ (fmap . fmap) toAbsolutePath opts
+
 
 -- | Run the specific cradle on a specific FilePath via hie-bios.
 -- This then builds dependencies or whatever based on the cradle, gets the
@@ -1053,6 +1060,10 @@ setCacheDirs recorder CacheDirs{..} dflags = do
           & maybe id setHieDir hieCacheDir
           & maybe id setODir oCacheDir
 
+-- tug this into shake later
+-- we can make rule to build all the map
+-- we can then make a rule to build each entry in the map
+
 -- See Note [Multi Cradle Dependency Info]
 type DependencyInfo = Map.Map FilePath (Maybe UTCTime)
 type HieMap = Map.Map (Maybe FilePath) [RawComponentInfo]
@@ -1101,6 +1112,7 @@ data ComponentInfo = ComponentInfo
   }
 
 -- | Check if any dependency has been modified lately.
+--  it depend on the last result
 checkDependencyInfo :: DependencyInfo -> IO Bool
 checkDependencyInfo old_di = do
   di <- getDependencyInfo (Map.keys old_di)
