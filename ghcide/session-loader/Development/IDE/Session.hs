@@ -668,7 +668,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                      return (([renderPackageSetupException cfp GhcVersionMismatch{..}], Nothing),[])
                  InstallationChecked _compileTime _ghcLibCheck -> do
                   liftIO $ atomicModifyIORef' cradle_files (\xs -> (fromNormalizedFilePath cfp:xs,()))
-                  liftIO $ session (hieYaml, cfp, opts, libDir)
+                  session (hieYaml, cfp, opts, libDir)
              -- Failure case, either a cradle error or the none cradle
              Left err -> do
                dep_info <- liftIO $ getDependencyInfo (maybeToList hieYaml)
