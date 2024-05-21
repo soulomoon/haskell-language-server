@@ -749,7 +749,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
     --     void $ wait as
     --     asyncRes <- async $ getOptions file
     --     return (asyncRes, wait asyncRes)
-      opts <- UnlifIO.withMVarMasked cradleLock $ \_ -> getOptions file
+      opts <- UnlifIO.withMVar cradleLock $ \_ -> getOptions file
       pure $ (fmap . fmap) toAbsolutePath opts
 
 
