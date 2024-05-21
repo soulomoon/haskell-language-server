@@ -115,6 +115,7 @@ import           HieDb.Utils
 import           Ide.PluginUtils                      (toAbsolute)
 import qualified System.Random                        as Random
 import           System.Random                        (RandomGen)
+import qualified UnliftIO                             as UnlifIO
 
 -- See Note [Guidelines For Using CPP In GHCIDE Import Statements]
 
@@ -132,7 +133,6 @@ import           GHC.Types.Error                      (errMsgDiagnostic,
 import           GHC.Unit.State
 import           Language.LSP.Protocol.Types          (NormalizedUri (NormalizedUri),
                                                        toNormalizedFilePath)
-import qualified UnliftIO                             as UnlifIO
 #endif
 
 data Log
@@ -736,7 +736,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 
     let getOptions :: NormalizedFilePath -> Action (IdeResult HscEnvEq, [FilePath])
         getOptions file = do
-            -- cachedHieYamlLocation <- liftIO $ HM.lookup ncfp <$> readVar filesMap
+            -- cachedHieYamlLocation <- liftIO $ HM.lookup file <$> readVar filesMap
+            -- CradleLoc already cached
             hieYaml <- use_ CradleLoc file
             sessionOpts file `Safe.catch` \e ->
                 return (([renderPackageSetupException file e], Nothing), maybe [] pure hieYaml)
