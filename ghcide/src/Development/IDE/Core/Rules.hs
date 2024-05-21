@@ -199,6 +199,7 @@ cradleLocRule recorder = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ 
       -- Sometimes we get C:, sometimes we get c:, and sometimes we get a relative path
       -- try and normalise that
       -- e.g. see https://github.com/haskell/ghcide/issues/126
+      -- todo make it absolute
       return $ Just $ normalise <$>  res
 
 instance Pretty Log where

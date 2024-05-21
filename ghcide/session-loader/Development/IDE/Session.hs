@@ -130,7 +130,8 @@ import           GHC.Driver.Errors.Types
 import           GHC.Types.Error                      (errMsgDiagnostic,
                                                        singleMessage)
 import           GHC.Unit.State
-import           Language.LSP.Protocol.Types          (toNormalizedFilePath)
+import           Language.LSP.Protocol.Types          (NormalizedUri (NormalizedUri),
+                                                       toNormalizedFilePath)
 import qualified UnliftIO                             as UnlifIO
 #endif
 
@@ -637,13 +638,14 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 
           return $ second Map.keys this_options
 
-    let consultCradle :: Maybe FilePath -> FilePath -> IO (IdeResult HscEnvEq, [FilePath])
-        consultCradle hieYaml cfp = do
-           let lfpLog = makeRelative rootDir cfp
+    let consultCradle :: NormalizedFilePath -> Action (IdeResult HscEnvEq, [FilePath])
+        consultCradle cfp = do
+           hieYaml <- use_ CradleLoc cfp
+           let lfpLog = makeRelative rootDir (fromNormalizedFilePath cfp)
            logWith recorder Info $ LogCradlePath lfpLog
            when (isNothing hieYaml) $
              logWith recorder Warning $ LogCradleNotFound lfpLog
-           cradle <- loadCradle recorder hieYaml rootDir
+           cradle <- liftIO $ loadCradle recorder hieYaml rootDir
            when optTesting $ mRunLspT lspEnv $
             sendNotification (SMethod_CustomMethod (Proxy @"ghcide/cradle/loaded")) (toJSON cfp)
 
@@ -653,8 +655,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
            eopts <- mRunLspTCallback lspEnv (\act -> withIndefiniteProgress progMsg Nothing NotCancellable (const act)) $
               withTrace "Load cradle" $ \addTag -> do
                   addTag "file" lfpLog
-                  old_files <- readIORef cradle_files
-                  res <- cradleToOptsAndLibDir recorder (sessionLoading clientConfig) cradle cfp old_files
+                  old_files <- liftIO $ readIORef cradle_files
+                  res <- liftIO $ cradleToOptsAndLibDir recorder (sessionLoading clientConfig) cradle cfp old_files
                   addTag "result" (show res)
                   return res
 
@@ -663,23 +665,22 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
              -- The cradle gave us some options so get to work turning them
              -- into and HscEnv.
              Right (opts, libDir) -> do
-               installationCheck <- ghcVersionChecker libDir
+               installationCheck <- liftIO $ ghcVersionChecker libDir
                case installationCheck of
                  InstallationNotFound{..} ->
                      error $ "GHC installation not found in libdir: " <> libdir
                  InstallationMismatch{..} ->
                      return (([renderPackageSetupException cfp GhcVersionMismatch{..}], Nothing),[])
                  InstallationChecked _compileTime _ghcLibCheck -> do
-                   atomicModifyIORef' cradle_files (\xs -> (cfp:xs,()))
-                   session (hieYaml, toNormalizedFilePath' cfp, opts, libDir)
+                  liftIO $ atomicModifyIORef' cradle_files (\xs -> (cfp:xs,()))
+                  liftIO $ session (hieYaml, cfp, opts, libDir)
              -- Failure case, either a cradle error or the none cradle
              Left err -> do
-               dep_info <- getDependencyInfo (maybeToList hieYaml)
-               let ncfp = toNormalizedFilePath' cfp
-               let res = (map (\err' -> renderCradleError err' cradle ncfp) err, Nothing)
-               void $ modifyVar' fileToFlags $
-                    Map.insertWith HM.union hieYaml (HM.singleton ncfp (res, dep_info))
-               void $ modifyVar' filesMap $ HM.insert ncfp hieYaml
+               dep_info <- liftIO $ getDependencyInfo (maybeToList hieYaml)
+               let res = (map (\err' -> renderCradleError err' cradle cfp) err, Nothing)
+               liftIO $ void $ modifyVar' fileToFlags $
+                    Map.insertWith HM.union hieYaml (HM.singleton cfp (res, dep_info))
+               liftIO $ void $ modifyVar' filesMap $ HM.insert cfp hieYaml
                return (res, maybe [] pure hieYaml ++ concatMap cradleErrorDependencies err)
 
     let
@@ -702,9 +703,10 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 
     -- This caches the mapping from hie.yaml + Mod.hs -> [String]
     -- Returns the Ghc session and the cradle dependencies
-    let sessionOpts :: (Maybe FilePath, FilePath)
+    let sessionOpts :: NormalizedFilePath
                     -> Action (IdeResult HscEnvEq, [FilePath])
-        sessionOpts (hieYaml, file) = do
+        sessionOpts file = do
+          hieYaml <- use_ CradleLoc file
           --  this cased a recompilation of the whole project
           --  this can be turned in to shake
           liftIO$Extra.whenM didSessionLoadingPreferenceConfigChange $ do
@@ -718,8 +720,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 
           -- fileToFlags is caching
           v <- Map.findWithDefault HM.empty hieYaml <$> (liftIO$readVar fileToFlags)
-          let cfp = toAbsolutePath file
-          case HM.lookup (toNormalizedFilePath' cfp) v of
+          case HM.lookup file v of
             Just (opts, old_di) -> do
               deps_ok <- liftIO$checkDependencyInfo old_di
               if not deps_ok
@@ -730,24 +731,24 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                   liftIO$modifyVar_ filesMap (const (return HM.empty))
                   -- Keep the same name cache
                   liftIO$modifyVar_ hscEnvs (return . Map.adjust (const []) hieYaml )
-                  liftIO$consultCradle hieYaml cfp
+                  consultCradle file
                 else return (opts, Map.keys old_di)
-            Nothing -> liftIO$consultCradle hieYaml cfp
+            Nothing -> consultCradle file
 
     -- The main function which gets options for a file. We only want one of these running
     -- at a time. Therefore the IORef contains the currently running cradle, if we try
     -- to get some more options then we wait for the currently running action to finish
     -- before attempting to do so.
 
-    let getOptions :: FilePath -> Action (IdeResult HscEnvEq, [FilePath])
+    let getOptions :: NormalizedFilePath -> Action (IdeResult HscEnvEq, [FilePath])
         getOptions file = do
-            let ncfp = toNormalizedFilePath' (toAbsolutePath file)
-            cachedHieYamlLocation <- liftIO $ HM.lookup ncfp <$> readVar filesMap
-            hieYaml <- use_ CradleLoc $ toNormalizedFilePath file
-            sessionOpts (join cachedHieYamlLocation <|> hieYaml, file) `Safe.catch` \e ->
+            -- cachedHieYamlLocation <- liftIO $ HM.lookup ncfp <$> readVar filesMap
+            hieYaml <- use_ CradleLoc file
+            sessionOpts file `Safe.catch` \e ->
                 return (([renderPackageSetupException file e], Nothing), maybe [] pure hieYaml)
 
     returnWithVersion $ \file -> do
+      let ncfp = toNormalizedFilePath' (toAbsolutePath file)
       aopts <- UnlifIO.async $ UnlifIO.withMVar cradleLock $ const $ getOptions file
       opts <- UnlifIO.wait aopts
       pure $ (fmap . fmap) toAbsolutePath opts
@@ -1320,6 +1321,6 @@ showPackageSetupException (PackageCheckFailed BasePackageAbiMismatch{..}) = unwo
     ,"\nThis is unsupported, ghcide must be compiled with the same GHC installation as the project."
     ]
 
-renderPackageSetupException :: FilePath -> PackageSetupException -> (NormalizedFilePath, ShowDiagnostic, Diagnostic)
+renderPackageSetupException :: NormalizedFilePath -> PackageSetupException -> (NormalizedFilePath, ShowDiagnostic, Diagnostic)
 renderPackageSetupException fp e =
-    ideErrorWithSource (Just "cradle") (Just DiagnosticSeverity_Error) (toNormalizedFilePath' fp) (T.pack $ showPackageSetupException e)
+    ideErrorWithSource (Just "cradle") (Just DiagnosticSeverity_Error) fp (T.pack $ showPackageSetupException e)
