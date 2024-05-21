@@ -61,7 +61,7 @@ import qualified Development.IDE.GHC.Compat.Core      as GHC
 import           Development.IDE.GHC.Compat.Env       hiding (Logger)
 import           Development.IDE.GHC.Compat.Units     (UnitId)
 import           Development.IDE.GHC.Util
-import           Development.IDE.Graph                (Action)
+import           Development.IDE.Graph                (Action, alwaysRerun)
 import qualified Development.IDE.Session.Implicit     as GhcIde
 import           Development.IDE.Session.VersionCheck
 import           Development.IDE.Types.Diagnostics
@@ -134,6 +134,7 @@ import           GHC.Unit.State
 import           Language.LSP.Protocol.Types          (NormalizedUri (NormalizedUri),
                                                        toNormalizedFilePath)
 #endif
+import           Development.IDE                      (RuleResult)
 import qualified Development.IDE.Core.Shake           as SHake
 
 data Log
@@ -448,6 +449,9 @@ getHieDbLoc dir = do
 loadSession :: Recorder (WithPriority Log) -> FilePath -> IO (Rules (), Action IdeGhcSession)
 loadSession recorder = loadSessionWithOptions recorder def
 
+type instance RuleResult HieYaml = (HashMap
+                         NormalizedFilePath (IdeResult HscEnvEq, DependencyInfo))
+
 loadSessionWithOptions :: Recorder (WithPriority Log) -> SessionLoadingOptions -> FilePath -> IO (Rules (), Action IdeGhcSession)
 loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
   let toAbsolutePath = toAbsolute rootDir
@@ -461,12 +465,24 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
   -- they are inconsistent. So, everywhere you modify 'fileToFlags',
   -- you have to modify 'filesMap' as well.
   filesMap <- newVar HM.empty :: IO (Var FilesMap)
+
+  let clearCache = do
+        modifyVar_ hscEnvs $ \_ -> pure Map.empty
+        modifyVar_ fileToFlags $ \_ -> pure Map.empty
+        modifyVar_ filesMap $ \_ -> pure HM.empty
+
   -- Version of the mappings above
   version <- newVar 0
   cradleLock <- newMVar ()
 --   putMVar cradleLock ()
   biosSessionLoadingVar <- newVar Nothing :: IO (Var (Maybe SessionLoadingPreferenceConfig))
   let returnWithVersion fun = IdeGhcSession fun <$> liftIO (readVar version)
+
+  let hieYamlRule :: Rules ()
+      hieYamlRule = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \HieYaml hieYaml -> do
+            alwaysRerun
+            v <- Map.findWithDefault HM.empty (Just $ fromNormalizedFilePath hieYaml) <$> (liftIO $ readVar fileToFlags)
+            return $ Just v
 
   let cradleLocRule :: Rules ()
       cradleLocRule = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \CradleLoc file -> do
@@ -477,19 +493,21 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
             -- todo make it absolute
             return $ Just (normalise . toAbsolutePath  <$> res)
 
-  return $ (cradleLocRule, do
-    clientConfig <- getClientConfigAction
-    extras@ShakeExtras{restartShakeSession, ideNc, knownTargetsVar, lspEnv
-                      } <- getShakeExtras
-    let invalidateShakeCache = do
+  let invalidateShakeCache = do
             void $ modifyVar' version succ
             return $ toNoFileKey GhcSessionIO
+
+  return $ (cradleLocRule <> hieYamlRule, do
+    clientConfig <- getClientConfigAction
+    ShakeExtras{restartShakeSession, ideNc, knownTargetsVar, lspEnv
+                      } <- getShakeExtras
 
     IdeOptions{ optTesting = IdeTesting optTesting
               , optCheckProject = getCheckProject
               , optExtensions
               } <- getIdeOptions
 
+    -- relatively stand alone
         -- populate the knownTargetsVar with all the
         -- files in the project so that `knownFiles` can learn about them and
         -- we can generate a complete module graph
@@ -722,28 +740,21 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           let hieYaml =  fromMaybe cachedHieYamlLocation (Just hieYamlOld)
           --  this cased a recompilation of the whole project
           --  this can be turned in to shake
-          liftIO$Extra.whenM didSessionLoadingPreferenceConfigChange $ do
+          liftIO $ Extra.whenM didSessionLoadingPreferenceConfigChange $ do
             logWith recorder Info LogSessionLoadingChanged
             -- If the dependencies are out of date then clear both caches and start
             -- again.
-            liftIO$ modifyVar_ fileToFlags (const (return Map.empty))
-            liftIO$modifyVar_ filesMap (const (return HM.empty))
-            -- Don't even keep the name cache, we start from scratch here!
-            liftIO$modifyVar_ hscEnvs (const (return Map.empty))
-
+            clearCache
           -- fileToFlags is caching
           v <- Map.findWithDefault HM.empty hieYaml <$> (liftIO$readVar fileToFlags)
           case HM.lookup file v of
             Just (opts, old_di) -> do
-              deps_ok <- liftIO$checkDependencyInfo old_di
+              deps_ok <- liftIO $ checkDependencyInfo old_di
               if not deps_ok
                 then do
                   -- If the dependencies are out of date then clear both caches and start
                   -- again.
-                  liftIO$modifyVar_ fileToFlags (const (return Map.empty))
-                  liftIO$modifyVar_ filesMap (const (return HM.empty))
-                  -- Keep the same name cache
-                  liftIO$modifyVar_ hscEnvs (return . Map.adjust (const []) hieYaml )
+                  liftIO $ clearCache
                   consultCradle file
                 else return (opts, Map.keys old_di)
             Nothing -> consultCradle file

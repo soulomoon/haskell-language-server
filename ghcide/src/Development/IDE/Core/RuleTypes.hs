@@ -497,6 +497,11 @@ instance Hashable CradleLoc
 instance NFData   CradleLoc
 type instance RuleResult CradleLoc = Maybe FilePath
 
+data HieYaml = HieYaml deriving (Eq, Show, Typeable, Generic)
+instance Hashable HieYaml
+instance NFData   HieYaml
+
+
 -- A local rule type to get caching. We want to use newCache, but it has
 -- thread killed exception issues, so we lift it to a full rule.
 -- https://github.com/digital-asset/daml/pull/2808#issuecomment-529639547
