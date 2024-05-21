@@ -466,8 +466,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
       let res' = toAbsolutePath <$> res
       return $ normalise <$> res'
 
-  dummyAs <- async $ return (error "Uninitialised")
-  runningCradle <- newVar dummyAs :: IO (Var (Async (IdeResult HscEnvEq,[FilePath])))
+--   dummyAs <- async $ return (error "Uninitialised")
+--   runningCradle <- newVar dummyAs :: IO (Var (Async (IdeResult HscEnvEq,[FilePath])))
 
   return $ do
     clientConfig <- getClientConfigAction
@@ -749,7 +749,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
     --     void $ wait as
     --     asyncRes <- async $ getOptions file
     --     return (asyncRes, wait asyncRes)
-      opts <- UnlifIO.withMVar cradleLock $ \_ -> getOptions file
+      opts <- UnlifIO.withMVarMasked cradleLock $ \_ -> getOptions file
       pure $ (fmap . fmap) toAbsolutePath opts
 
 
