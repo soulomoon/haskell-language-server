@@ -492,6 +492,10 @@ data AddWatchedFile = AddWatchedFile deriving (Eq, Show, Typeable, Generic)
 instance Hashable AddWatchedFile
 instance NFData   AddWatchedFile
 
+data CradleLoc = CradleLoc deriving (Eq, Show, Typeable, Generic)
+instance Hashable CradleLoc
+instance NFData   CradleLoc
+type instance RuleResult CradleLoc = Maybe FilePath
 
 -- A local rule type to get caching. We want to use newCache, but it has
 -- thread killed exception issues, so we lift it to a full rule.

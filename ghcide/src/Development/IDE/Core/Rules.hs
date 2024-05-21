@@ -178,6 +178,8 @@ import           GHC                                          (mgModSummaries)
 
 #if MIN_VERSION_ghc(9,3,0)
 import qualified Data.IntMap                                  as IM
+import HIE.Bios (findCradle)
+import System.FilePath (normalise)
 #endif
 
 
@@ -190,6 +192,14 @@ data Log
   | LogLoadingHieFileSuccess !FilePath
   | LogTypecheckedFOI !NormalizedFilePath
   deriving Show
+
+cradleLocRule :: Recorder (WithPriority Log) -> Rules ()
+cradleLocRule recorder = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \CradleLoc file -> do
+      res <- liftIO $ findCradle $ fromNormalizedFilePath file
+      -- Sometimes we get C:, sometimes we get c:, and sometimes we get a relative path
+      -- try and normalise that
+      -- e.g. see https://github.com/haskell/ghcide/issues/126
+      return $ Just $ normalise <$>  res
 
 instance Pretty Log where
   pretty = \case
@@ -1218,6 +1228,7 @@ mainRule recorder RulesConfig{..} = do
     addIdeGlobal $ CompiledLinkables linkables
     rebuildCountVar <- liftIO $ newTVarIO 0
     addIdeGlobal $ RebuildCounter rebuildCountVar
+    cradleLocRule recorder
     getParsedModuleRule recorder
     getParsedModuleWithCommentsRule recorder
     getLocatedImportsRule recorder

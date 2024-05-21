@@ -123,12 +123,14 @@ import qualified Data.Set                             as OS
 import qualified Development.IDE.GHC.Compat.Util      as Compat
 import           GHC.Data.Graph.Directed
 
+import           Development.IDE                      (Rules)
 import           GHC.Data.Bag
 import           GHC.Driver.Env                       (hsc_all_home_unit_ids)
 import           GHC.Driver.Errors.Types
 import           GHC.Types.Error                      (errMsgDiagnostic,
                                                        singleMessage)
 import           GHC.Unit.State
+import           Language.LSP.Protocol.Types          (toNormalizedFilePath)
 import qualified UnliftIO                             as UnlifIO
 #endif
 
@@ -460,13 +462,13 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
   biosSessionLoadingVar <- newVar Nothing :: IO (Var (Maybe SessionLoadingPreferenceConfig))
   let returnWithVersion fun = IdeGhcSession fun <$> liftIO (readVar version)
   -- This caches the mapping from Mod.hs -> hie.yaml
-  cradleLoc <- liftIO $ memoIO $ \v -> do
-      res <- findCradle v
-      -- Sometimes we get C:, sometimes we get c:, and sometimes we get a relative path
-      -- try and normalise that
-      -- e.g. see https://github.com/haskell/ghcide/issues/126
-      let res' = toAbsolutePath <$> res
-      return $ normalise <$> res'
+--   cradleLoc <- liftIO $ memoIO $ \v -> do
+--       res <- findCradle v
+--       -- Sometimes we get C:, sometimes we get c:, and sometimes we get a relative path
+--       -- try and normalise that
+--       -- e.g. see https://github.com/haskell/ghcide/issues/126
+--       let res' = toAbsolutePath <$> res
+--       return $ normalise <$> res'
 
   return $ do
     clientConfig <- getClientConfigAction
@@ -701,35 +703,36 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
     -- This caches the mapping from hie.yaml + Mod.hs -> [String]
     -- Returns the Ghc session and the cradle dependencies
     let sessionOpts :: (Maybe FilePath, FilePath)
-                    -> IO (IdeResult HscEnvEq, [FilePath])
+                    -> Action (IdeResult HscEnvEq, [FilePath])
         sessionOpts (hieYaml, file) = do
           --  this cased a recompilation of the whole project
           --  this can be turned in to shake
-          Extra.whenM didSessionLoadingPreferenceConfigChange $ do
+          liftIO$Extra.whenM didSessionLoadingPreferenceConfigChange $ do
             logWith recorder Info LogSessionLoadingChanged
             -- If the dependencies are out of date then clear both caches and start
             -- again.
-            modifyVar_ fileToFlags (const (return Map.empty))
-            modifyVar_ filesMap (const (return HM.empty))
+            liftIO$ modifyVar_ fileToFlags (const (return Map.empty))
+            liftIO$modifyVar_ filesMap (const (return HM.empty))
             -- Don't even keep the name cache, we start from scratch here!
-            modifyVar_ hscEnvs (const (return Map.empty))
+            liftIO$modifyVar_ hscEnvs (const (return Map.empty))
 
-          v <- Map.findWithDefault HM.empty hieYaml <$> readVar fileToFlags
+          -- fileToFlags is caching
+          v <- Map.findWithDefault HM.empty hieYaml <$> (liftIO$readVar fileToFlags)
           let cfp = toAbsolutePath file
           case HM.lookup (toNormalizedFilePath' cfp) v of
             Just (opts, old_di) -> do
-              deps_ok <- checkDependencyInfo old_di
+              deps_ok <- liftIO$checkDependencyInfo old_di
               if not deps_ok
                 then do
                   -- If the dependencies are out of date then clear both caches and start
                   -- again.
-                  modifyVar_ fileToFlags (const (return Map.empty))
-                  modifyVar_ filesMap (const (return HM.empty))
+                  liftIO$modifyVar_ fileToFlags (const (return Map.empty))
+                  liftIO$modifyVar_ filesMap (const (return HM.empty))
                   -- Keep the same name cache
-                  modifyVar_ hscEnvs (return . Map.adjust (const []) hieYaml )
-                  consultCradle hieYaml cfp
+                  liftIO$modifyVar_ hscEnvs (return . Map.adjust (const []) hieYaml )
+                  liftIO$consultCradle hieYaml cfp
                 else return (opts, Map.keys old_di)
-            Nothing -> consultCradle hieYaml cfp
+            Nothing -> liftIO$consultCradle hieYaml cfp
 
     -- The main function which gets options for a file. We only want one of these running
     -- at a time. Therefore the IORef contains the currently running cradle, if we try
@@ -737,16 +740,15 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
     -- before attempting to do so.
 
     let getOptions :: FilePath -> Action (IdeResult HscEnvEq, [FilePath])
-        getOptions file = liftIO $ do
+        getOptions file = do
             let ncfp = toNormalizedFilePath' (toAbsolutePath file)
-            cachedHieYamlLocation <- HM.lookup ncfp <$> readVar filesMap
-            hieYaml <- cradleLoc file
+            cachedHieYamlLocation <- liftIO $ HM.lookup ncfp <$> readVar filesMap
+            hieYaml <- use_ CradleLoc $ toNormalizedFilePath file
             sessionOpts (join cachedHieYamlLocation <|> hieYaml, file) `Safe.catch` \e ->
                 return (([renderPackageSetupException file e], Nothing), maybe [] pure hieYaml)
 
     returnWithVersion $ \file -> do
-      aopts <- UnlifIO.async $ UnlifIO.withMVar cradleLock $ \_ -> do
-        getOptions file
+      aopts <- UnlifIO.async $ UnlifIO.withMVar cradleLock $ const $ getOptions file
       opts <- UnlifIO.wait aopts
       pure $ (fmap . fmap) toAbsolutePath opts
 
@@ -1153,23 +1155,6 @@ _removeInplacePackages fake_uid us df = (setHomeUnitId_ fake_uid $
                                        df { packageFlags = ps }, uids)
   where
     (uids, ps) = Compat.filterInplaceUnits us (packageFlags df)
-
--- | Memoize an IO function, with the characteristics:
---
---   * If multiple people ask for a result simultaneously, make sure you only compute it once.
---
---   * If there are exceptions, repeatedly reraise them.
---
---   * If the caller is aborted (async exception) finish computing it anyway.
-memoIO :: Ord a => (a -> IO b) -> IO (a -> IO b)
-memoIO op = do
-    ref <- newVar Map.empty
-    return $ \k -> join $ mask_ $ modifyVar ref $ \mp ->
-        case Map.lookup k mp of
-            Nothing -> do
-                res <- onceFork $ op k
-                return (Map.insert k res mp, res)
-            Just res -> return (mp, res)
 
 unit_flags :: [Flag (CmdLineP [String])]
 unit_flags = [defFlag "unit"  (SepArg addUnit)]
