@@ -48,6 +48,7 @@ import           Data.Proxy
 import qualified Data.Text                            as T
 import           Data.Time.Clock
 import           Data.Version
+import           Debug.Trace                          (traceM)
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Core.Shake           hiding (Log, knownTargets,
                                                        withHieDb)
@@ -455,6 +456,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
   -- Version of the mappings above
   version <- newVar 0
   cradleLock <- newMVar ()
+--   putMVar cradleLock ()
   biosSessionLoadingVar <- newVar Nothing :: IO (Var (Maybe SessionLoadingPreferenceConfig))
   let returnWithVersion fun = IdeGhcSession fun <$> liftIO (readVar version)
   -- This caches the mapping from Mod.hs -> hie.yaml
@@ -465,9 +467,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
       -- e.g. see https://github.com/haskell/ghcide/issues/126
       let res' = toAbsolutePath <$> res
       return $ normalise <$> res'
-
-  dummyAs <- async $ return (error "Uninitialised")
-  runningCradle <- newVar dummyAs :: IO (Var (Async (IdeResult HscEnvEq,[FilePath])))
 
   return $ do
     clientConfig <- getClientConfigAction
@@ -615,6 +614,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           -- The VFS doesn't change on cradle edits, re-use the old one.
           -- Invalidate all the existing GhcSession build nodes by restarting the Shake session
           keys2 <- invalidateShakeCache
+
+          -- todo this should be moving out of the session function
           restartShakeSession VFSUnmodified "new component" [] $ do
             keys1 <- extendKnownTargets all_targets
             return [keys1, keys2]
@@ -735,8 +736,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
     -- to get some more options then we wait for the currently running action to finish
     -- before attempting to do so.
 
-    let getOptions :: FilePath -> IO (IdeResult HscEnvEq, [FilePath])
-        getOptions file = do
+    let getOptions :: FilePath -> Action (IdeResult HscEnvEq, [FilePath])
+        getOptions file = liftIO $ do
             let ncfp = toNormalizedFilePath' (toAbsolutePath file)
             cachedHieYamlLocation <- HM.lookup ncfp <$> readVar filesMap
             hieYaml <- cradleLoc file
@@ -744,11 +745,9 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                 return (([renderPackageSetupException file e], Nothing), maybe [] pure hieYaml)
 
     returnWithVersion $ \file -> do
-      opts <- liftIO $ join $ mask_ $ modifyVar runningCradle $ \as -> do
-        -- If the cradle is not finished, then wait for it to finish.
-        asyncRes <- async $ wait as >>  getOptions file
-        return (asyncRes, wait asyncRes)
-    --   opts <- UnlifIO.withMVar cradleLock $ \_ -> getOptions file
+      aopts <- UnlifIO.async $ UnlifIO.withMVar cradleLock $ \_ -> do
+        getOptions file
+      opts <- UnlifIO.wait aopts
       pure $ (fmap . fmap) toAbsolutePath opts
 
 
