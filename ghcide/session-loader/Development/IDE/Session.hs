@@ -115,7 +115,7 @@ import           HieDb.Utils
 import           Ide.PluginUtils                      (toAbsolute)
 import qualified System.Random                        as Random
 import           System.Random                        (RandomGen)
-import qualified UnliftIO                             as UnlifIO
+import qualified UnliftIO                             as UnliftIO
 
 -- See Note [Guidelines For Using CPP In GHCIDE Import Statements]
 
@@ -576,19 +576,20 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 
 
     let session :: (Maybe FilePath, NormalizedFilePath, ComponentOptions, FilePath)
-                -> IO (IdeResult HscEnvEq,[FilePath])
+                -> Action (IdeResult HscEnvEq,[FilePath])
         session args@(hieYaml, _cfp, _opts, _libDir) = do
-          (new_deps, old_deps) <- packageSetup args
+          (new_deps, old_deps) <- liftIO $ packageSetup args
 
           -- For each component, now make a new HscEnvEq which contains the
           -- HscEnv for the hie.yaml file but the DynFlags for that component
           -- For GHC's supporting multi component sessions, we create a shared
           -- HscEnv but set the active component accordingly
-          hscEnv <- emptyHscEnv ideNc _libDir
+          hscEnv <- liftIO $ emptyHscEnv ideNc _libDir
           let new_cache = newComponentCache recorder optExtensions hieYaml _cfp hscEnv
-          all_target_details <- new_cache old_deps new_deps rootDir
+          all_target_details <- liftIO $ new_cache old_deps new_deps rootDir
 
-          this_dep_info <- getDependencyInfo $ maybeToList hieYaml
+          this_dep_info <- liftIO $ getDependencyInfo $ maybeToList hieYaml
+          -- this should be added to deps
           let (all_targets, this_flags_map, this_options)
                 = case HM.lookup _cfp flags_map' of
                     Just this -> (all_targets', flags_map', this)
@@ -604,22 +605,22 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                                        , "If you are using a .cabal file, please ensure that this module is listed in either the exposed-modules or other-modules section"
                                        ]
 
-          void $ modifyVar' fileToFlags $ Map.insert hieYaml this_flags_map
-          void $ modifyVar' filesMap $ flip HM.union (HM.fromList (map ((,hieYaml) . fst) $ concatMap toFlagsMap all_targets))
+          liftIO $ void $ modifyVar' fileToFlags $ Map.insert hieYaml this_flags_map
+          liftIO $ void $ modifyVar' filesMap $ flip HM.union (HM.fromList (map ((,hieYaml) . fst) $ concatMap toFlagsMap all_targets))
           -- The VFS doesn't change on cradle edits, re-use the old one.
           -- Invalidate all the existing GhcSession build nodes by restarting the Shake session
-          keys2 <- invalidateShakeCache
+          keys2 <- liftIO $ invalidateShakeCache
 
           -- todo this should be moving out of the session function
-          restart <- async $ restartShakeSession VFSUnmodified "new component" [] $ do
+          restart <- liftIO $ async $ restartShakeSession VFSUnmodified "new component" [] $ do
             keys1 <- extendKnownTargets all_targets
             return [keys1, keys2]
-          wait restart
+          UnliftIO.wait restart
 
 
           -- Typecheck all files in the project on startup
-          checkProject <- getCheckProject
-          unless (null new_deps || not checkProject) $ do
+          checkProject <- liftIO $ getCheckProject
+          liftIO $ unless (null new_deps || not checkProject) $ do
                 cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
                 void $ shakeEnqueue extras $ mkDelayedAction "InitialLoad" Debug $ void $ do
                     mmt <- uses GetModificationTime cfps'
@@ -743,7 +744,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                 return (([renderPackageSetupException file e], Nothing), maybe [] pure hieYaml)
 
     returnWithVersion $ \file -> do
-      opts <- UnlifIO.withMVar cradleLock $ const $ getOptions file
+      opts <- UnliftIO.withMVar cradleLock $ const $ getOptions file
       pure $ (fmap . fmap) toAbsolutePath opts
 
 
@@ -1066,6 +1067,14 @@ type FlagsMap = Map.Map (Maybe FilePath) (HM.HashMap NormalizedFilePath (IdeResu
 -- | Maps a Filepath to its respective "hie.yaml" location.
 -- It aims to be the reverse of 'FlagsMap'.
 type FilesMap = HM.HashMap NormalizedFilePath (Maybe FilePath)
+
+-- file1 -> hie1.yaml -> (opts, deps)
+-- file2 -> hie1.yaml -> (opts, deps)
+-- file3 -> hie1.yaml -> (opts, deps)
+-- if some new file4 should be in hie1.yaml,
+    -- we need to recompute the hie1.yaml
+
+
 
 -- This is pristine information about a component
 data RawComponentInfo = RawComponentInfo
