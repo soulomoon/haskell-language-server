@@ -625,23 +625,25 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           -- Invalidate all the existing GhcSession build nodes by restarting the Shake session
           keys2 <- liftIO $ invalidateShakeCache
 
+          -- Typecheck all files in the project on startup
+          checkProject <- liftIO $ getCheckProject
+          cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
+          let typeCheckAll = if null new_deps || not checkProject
+                then []
+                else return $
+                        mkDelayedAction "InitialLoad" Debug $ void $ do
+                            mmt <- uses GetModificationTime cfps'
+                            let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
+                            modIfaces <- uses GetModIface cs_exist
+                            -- update exports map
+                            shakeExtras <- getShakeExtras
+                            let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
+                            liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
           -- todo this should be moving out of the session function
           restart <- liftIO $ async $ do
-            restartShakeSession VFSUnmodified "new component" [] $ do
+            restartShakeSession VFSUnmodified "new component" typeCheckAll $ do
                 keys1 <- extendKnownTargets all_targets
                 return [keys1, keys2]
-            -- Typecheck all files in the project on startup
-            checkProject <- liftIO $ getCheckProject
-            liftIO $ unless (null new_deps || not checkProject) $ do
-                    cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
-                    void $ shakeEnqueue extras $ mkDelayedAction "InitialLoad" Debug $ void $ do
-                        mmt <- uses GetModificationTime cfps'
-                        let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
-                        modIfaces <- uses GetModIface cs_exist
-                        -- update exports map
-                        shakeExtras <- getShakeExtras
-                        let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
-                        liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
           UnliftIO.wait restart
           return $ second Map.keys this_options
 
