@@ -607,8 +607,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                             _inplace = map rawComponentUnitId $ NE.toList all_deps
 
                         let all_deps' = flip fmap all_deps $ \RawComponentInfo{..} ->
-                                    -- Remove all inplace dependencies from package flags for
-                                    -- components in this HscEnv
+                            -- Remove all inplace dependencies from package flags for
+                            -- components in this HscEnv
                                     let (df2, uids) = splitRawComponentDynFlags rawComponentDynFlags
                                         prefix = show rawComponentUnitId
                                     -- See Note [Avoiding bad interface files]
@@ -710,8 +710,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                         return (([renderPackageSetupException cfp GhcVersionMismatch{..}], Nothing),[], [], [])
                     InstallationChecked _compileTime _ghcLibCheck -> do
                         liftIO $ atomicModifyIORef' cradle_files (\xs -> (fromNormalizedFilePath cfp:xs,()))
-                        async <- UnliftIO.async $ UnliftIO.withMVar cradleLock $ const $ session (hieYaml, cfp, opts, libDir)
-                        UnliftIO.wait async
+                        session (hieYaml, cfp, opts, libDir)
               -- Failure case, either a cradle error or the none cradle
               Left err -> do
                 dep_info <- liftIO $ getDependencyInfo (maybeToList hieYaml)
@@ -799,11 +798,10 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
     returnWithVersion $ \file -> do
         -- do
         -- only one cradle consult at a time
-
-            -- we need to find a way to get rid of the (files, keys)
-        _opts@(a, b, _files, _keys) <- use_ HieYaml file
         async <-
-            UnliftIO.async $ do
+            UnliftIO.async $ UnliftIO.withMVar cradleLock $ const $ do
+                    -- we need to find a way to get rid of the (files, keys)
+                _opts@(a, b, _files, _keys) <- use_ HieYaml file
                 -- _opts@(a, b, _files, _keys) <- getOptions file
                 files <- liftIO $ atomically $ swapTVar targetFiles []
                 keys <- liftIO $ atomically $ swapTVar restartKeys []
