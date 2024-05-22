@@ -481,7 +481,14 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
   let hieYamlRule :: Rules ()
       hieYamlRule = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \HieYaml hieYaml -> do
             alwaysRerun
+            -- v :: HashMap NormalizedFilePath (IdeResult HscEnvEq, DependencyInfo)
             v <- Map.findWithDefault HM.empty (Just $ fromNormalizedFilePath hieYaml) <$> (liftIO $ readVar fileToFlags)
+            let deps = snd <$> HM.elems v
+            let files = concatMap Map.keys deps
+            -- use time for for deps files
+
+
+            -- check if all dep is up to date, if not clear the cache
             return $ Just v
 
   let cradleLocRule :: Rules ()
@@ -641,7 +648,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           liftIO $ void $ modifyVar' filesMap $ flip HM.union (HM.fromList (map ((,hieYaml) . fst) $ concatMap toFlagsMap all_targets))
           -- The VFS doesn't change on cradle edits, re-use the old one.
           -- Invalidate all the existing GhcSession build nodes by restarting the Shake session
-          keys2 <- liftIO $ invalidateShakeCache
+          keys2 <- liftIO invalidateShakeCache
+          keys1 <- liftIO $ extendKnownTargets all_targets
 
           -- Typecheck all files in the project on startup
           checkProject <- liftIO $ getCheckProject
@@ -660,7 +668,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           -- todo this should be moving out of the session function
           restart <- liftIO $ async $ do
             restartShakeSession VFSUnmodified "new component" typeCheckAll $ do
-                keys1 <- extendKnownTargets all_targets
                 return [keys1, keys2]
           UnliftIO.wait restart
           return $ second Map.keys this_options
@@ -745,17 +752,15 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
             -- If the dependencies are out of date then clear both caches and start
             -- again.
             clearCache
-          -- fileToFlags is caching
           v <- Map.findWithDefault HM.empty hieYaml <$> (liftIO$readVar fileToFlags)
           case HM.lookup file v of
             Just (opts, old_di) -> do
               deps_ok <- liftIO $ checkDependencyInfo old_di
               if not deps_ok
                 then do
-                  -- If the dependencies are out of date then clear both caches and start
-                  -- again.
-                  liftIO $ clearCache
+                  liftIO clearCache
                   consultCradle file
+                  -- add the dependency info to the cache
                 else return (opts, Map.keys old_di)
             Nothing -> consultCradle file
 
