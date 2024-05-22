@@ -722,21 +722,21 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
       hieYamlRule :: Rules ()
       hieYamlRule = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \HieYaml file ->
         -- only one cradle consult at a time
-         UnliftIO.withMVar cradleLock $  const  $ do
+         UnliftIO.withMVar cradleLock $ const $ do
           hieYaml <- use_ CradleLoc file
           --   check the reason we are called
           v <- Map.findWithDefault HM.empty hieYaml <$> (liftIO$readVar fileToFlags)
+          case HM.lookup file v of
+                      -- we already have the cache but it is still called, it must be deps changed
+                      -- clear the cache and reconsult
+                      -- we bump the version of the cache to inform others
+                      Just _ -> do
+                          liftIO clearCache
+                      -- we don't have the cache, consult
+                      Nothing -> pure ()
+          --   install cache version check to avoid recompilation
+          _ <- useNoFile_ SessionCacheVersion
           catchError file hieYaml $ do
-            case HM.lookup file v of
-                        -- we already have the cache but it is still called, it must be deps changed
-                        -- clear the cache and reconsult
-                        -- we bump the version of the cache to inform others
-                        Just _ -> do
-                            liftIO clearCache
-                        -- we don't have the cache, consult
-                        Nothing -> pure ()
-            --   install cache version check to avoid recompilation
-            _ <- useNoFile_ SessionCacheVersion
             result@(_, deps) <- consultCradle file
             -- add the deps to the Shake graph
             let addDependency fp = do
