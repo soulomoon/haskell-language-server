@@ -739,17 +739,19 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           catchError file hieYaml $ do
             result@(_, deps) <- consultCradle file
             -- add the deps to the Shake graph
-            let addDependency fp = do
-                    -- VSCode uses absolute paths in its filewatch notifications
-                    let nfp = toNormalizedFilePath' fp
-                    itExists <- getFileExists nfp
-                    when itExists $ void $ do use_ GetModificationTime nfp
             mapM_ addDependency deps
             return $ Just result
             where
                 catchError file hieYaml f  =
-                    f `Safe.catch` \e ->
+                    f `Safe.catch` \e -> do
+                        -- install dep so it can be recorvered
+                        mapM_ addDependency hieYaml
                         return $ Just (([renderPackageSetupException file e], Nothing), maybe [] pure hieYaml)
+                addDependency fp = do
+                    -- VSCode uses absolute paths in its filewatch notifications
+                    let nfp = toNormalizedFilePath' fp
+                    itExists <- getFileExists nfp
+                    when itExists $ void $ do use_ GetModificationTime nfp
 
       cradleLocRule :: Rules ()
       cradleLocRule = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \CradleLoc file -> do
