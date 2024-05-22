@@ -95,8 +95,11 @@ import           System.Info
 import           Control.Applicative                  (Alternative ((<|>)))
 import           Data.Void
 
-import           Control.Concurrent.STM.Stats         (atomically, modifyTVar',
-                                                       readTVar, writeTVar)
+import           Control.Concurrent.STM.Stats         (TVar, atomically,
+                                                       modifyTVar', newTVar,
+                                                       newTVarIO, readTVar,
+                                                       readTVarIO, stateTVar,
+                                                       swapTVar, writeTVar)
 import           Control.Concurrent.STM.TQueue
 import           Control.DeepSeq
 import           Control.Exception                    (evaluate)
@@ -161,11 +164,15 @@ data Log
   | LogNewComponentCache !(([FileDiagnostic], Maybe HscEnvEq), DependencyInfo)
   | LogHieBios HieBios.Log
   | LogSessionLoadingChanged
+  | LogCacheVersion NormalizedFilePath !Int
+  | LogClearingCache !NormalizedFilePath
 deriving instance Show Log
 
 
 instance Pretty Log where
   pretty = \case
+    LogClearingCache path ->
+      "Clearing cache for" <+> pretty (fromNormalizedFilePath path)
     LogNoneCradleFound path ->
       "None cradle found for" <+> pretty path <+> ", ignoring the file"
     LogSettingInitialDynFlags ->
@@ -235,6 +242,8 @@ instance Pretty Log where
     LogSessionLoadingChanged ->
       "Session Loading config changed, reloading the full session."
     LogShake msg -> pretty msg
+    LogCacheVersion path version ->
+      "Cache version for" <+> pretty (fromNormalizedFilePath path) <+> "is" <+> pretty version
 
 -- | Bump this version number when making changes to the format of the data stored in hiedb
 hiedbDataVersion :: String
@@ -460,31 +469,34 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
   -- Mapping from hie.yaml file to HscEnv, one per hie.yaml file
   hscEnvs <- newVar Map.empty :: IO (Var HieMap)
   -- Mapping from a Filepath to HscEnv
-  fileToFlags <- newVar Map.empty :: IO (Var FlagsMap)
+  fileToFlags <- newTVarIO Map.empty :: IO (TVar FlagsMap)
   -- Mapping from a Filepath to its 'hie.yaml' location.
   -- Should hold the same Filepaths as 'fileToFlags', otherwise
   -- they are inconsistent. So, everywhere you modify 'fileToFlags',
   -- you have to modify 'filesMap' as well.
-  filesMap <- newVar HM.empty :: IO (Var FilesMap)
+  filesMap <- newTVarIO HM.empty :: IO (TVar FilesMap)
 
   -- Version of the mappings above
   version <- newVar 0
 
+
+  restartKeys <- newTVarIO []
+  targetFiles <- newTVarIO []
   -- version of the whole rebuild
-  cacheVersion <- newVar 0
-  lastRestartVersion <- newVar 0
+  cacheVersion <- newTVarIO 0
   cradleLock <- newMVar ()
---   putMVar cradleLock ()
   biosSessionLoadingVar <- newVar Nothing :: IO (Var (Maybe SessionLoadingPreferenceConfig))
 
   let returnWithVersion fun = IdeGhcSession fun <$> liftIO (readVar version)
 
 
   let clearCache = do
-        modifyVar_ cacheVersion $ pure . succ
-        modifyVar_ hscEnvs $ \_ -> pure Map.empty
-        modifyVar_ fileToFlags $ \_ -> pure Map.empty
-        modifyVar_ filesMap $ \_ -> pure HM.empty
+        atomically $ modifyTVar' restartKeys ([toNoFileKey SessionCacheVersion] ++)
+        atomically $ modifyTVar' cacheVersion succ
+        void $ modifyVar' hscEnvs $ \_ -> Map.empty
+        -- modifyTVar' hscEnvs $ \_ -> Map.empty
+        atomically $ modifyTVar' fileToFlags $ \_ -> Map.empty
+        atomically $ modifyTVar' filesMap $ \_ -> HM.empty
   let
         -- | We allow users to specify a loading strategy.
         -- Check whether this config was changed since the last time we have loaded
@@ -546,8 +558,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                                        , "If you are using a .cabal file, please ensure that this module is listed in either the exposed-modules or other-modules section"
                                        ]
 
-          liftIO $ void $ modifyVar' fileToFlags $ Map.insert hieYaml this_flags_map
-          liftIO $ void $ modifyVar' filesMap $ flip HM.union (HM.fromList (map ((,hieYaml) . fst) $ concatMap toFlagsMap all_targets))
+          liftIO $ void $ atomically $ modifyTVar' fileToFlags $ Map.insert hieYaml this_flags_map
+          liftIO $ void $ atomically $ modifyTVar' filesMap $ flip HM.union (HM.fromList (map ((,hieYaml) . fst) $ concatMap toFlagsMap all_targets))
           -- The VFS doesn't change on cradle edits, re-use the old one.
           -- Invalidate all the existing GhcSession build nodes by restarting the Shake session
           keys2 <- liftIO invalidateShakeCache
@@ -667,7 +679,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           ShakeExtras{lspEnv } <- getShakeExtras
           IdeOptions{ optTesting = IdeTesting optTesting } <- getIdeOptions
           hieYamlOld <- use_ CradleLoc cfp
-          cachedHieYamlLocation <- join <$> liftIO (HM.lookup cfp <$> readVar filesMap)
+          cachedHieYamlLocation <- join <$> liftIO (HM.lookup cfp <$> readTVarIO filesMap)
           let hieYaml =  fromMaybe cachedHieYamlLocation (Just hieYamlOld)
           let lfpLog = makeRelative rootDir (fromNormalizedFilePath cfp)
           logWith recorder Info $ LogCradlePath lfpLog
@@ -706,49 +718,66 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
               Left err -> do
                 dep_info <- liftIO $ getDependencyInfo (maybeToList hieYaml)
                 let res = (map (\err' -> renderCradleError err' cradle cfp) err, Nothing)
-                liftIO $ void $ modifyVar' fileToFlags $
+                liftIO $ atomically $ modifyTVar' fileToFlags $
                     Map.insertWith HM.union hieYaml (HM.singleton cfp (res, dep_info))
-                liftIO $ void $ modifyVar' filesMap $ HM.insert cfp hieYaml
+                liftIO $ atomically $ modifyTVar' filesMap $ HM.insert cfp hieYaml
                 return (res, maybe [] pure hieYaml ++ concatMap cradleErrorDependencies err,[],[])
 
       sessionCacheVersionRule :: Rules ()
       sessionCacheVersionRule = defineNoFile (cmapWithPrio LogShake recorder) $ \SessionCacheVersion -> do
-            v <- liftIO $ readVar cacheVersion
+            alwaysRerun
+            v <- liftIO $ readTVarIO cacheVersion
             pure v
 
       hieYamlRule :: Rules ()
-      hieYamlRule = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \HieYaml file ->
-        -- only one cradle consult at a time
-         UnliftIO.withMVar cradleLock $ const $ do
+      hieYamlRule = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \HieYaml file -> do
           hieYaml <- use_ CradleLoc file
           --   check the reason we are called
-          v <- Map.findWithDefault HM.empty hieYaml <$> (liftIO$readVar fileToFlags)
-          case HM.lookup file v of
+          v <- Map.findWithDefault HM.empty hieYaml <$> (liftIO$readTVarIO fileToFlags)
+          someThing <- case HM.lookup file v of
                       -- we already have the cache but it is still called, it must be deps changed
                       -- clear the cache and reconsult
                       -- we bump the version of the cache to inform others
-                      Just _ -> do
-                          liftIO clearCache
-                      -- we don't have the cache, consult
-                      Nothing -> pure ()
-          --   install cache version check to avoid recompilation
-          _ <- useNoFile_ SessionCacheVersion
-          catchError file hieYaml $ do
-            result@(_, deps, _, _) <- consultCradle file
-            -- add the deps to the Shake graph
-            mapM_ addDependency deps
-            return $ Just result
-            where
-                catchError file hieYaml f  =
-                    f `Safe.catch` \e -> do
-                        -- install dep so it can be recorvered
-                        mapM_ addDependency hieYaml
-                        return $ Just (([renderPackageSetupException file e], Nothing), maybe [] pure hieYaml, [], [])
-                addDependency fp = do
-                    -- VSCode uses absolute paths in its filewatch notifications
-                    let nfp = toNormalizedFilePath' fp
-                    itExists <- getFileExists nfp
-                    when itExists $ void $ do use_ GetModificationTime nfp
+                      Just (opts, old_di) -> do
+                            -- need to differ two kinds of invocation, one is the file is changed
+                            -- other is the cache version bumped
+                            deps_ok <- liftIO $ checkDependencyInfo old_di
+                            if not deps_ok
+                              then do
+                                logWith recorder Debug $ LogClearingCache file
+                                liftIO clearCache
+                                return Nothing
+                              else return $ Just (opts, Map.keys old_di, [], [])
+                      Nothing -> return Nothing
+          --   install cache version check to get notified when the cache is changed
+          -- todo but some how it is informing other, then other inform us, causing a loop
+          case someThing of
+            Just result@(_, deps, _files, _keys) -> do
+                mapM_ addDependency deps
+                return $ Just result
+            Nothing -> do
+                v <- useNoFile_ SessionCacheVersion
+                logWith recorder Debug $ LogCacheVersion file v
+
+                catchError file hieYaml $ do
+                    result@(_, deps, files, keys) <- consultCradle file
+                    -- add the deps to the Shake graph
+                    liftIO $ atomically $ do
+                        modifyTVar' targetFiles (files ++ )
+                        modifyTVar' restartKeys (keys ++)
+                    mapM_ addDependency deps
+                    return $ Just result
+        where
+            catchError file hieYaml f  =
+                f `Safe.catch` \e -> do
+                    -- install dep so it can be recorvered
+                    mapM_ addDependency hieYaml
+                    return $ Just (([renderPackageSetupException file e], Nothing), maybe [] pure hieYaml, [], [])
+            addDependency fp = do
+                -- VSCode uses absolute paths in its filewatch notifications
+                let nfp = toNormalizedFilePath' fp
+                itExists <- getFileExists nfp
+                when itExists $ void $ do use_ GetModificationTime nfp
 
       cradleLocRule :: Rules ()
       cradleLocRule = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \CradleLoc file -> do
@@ -769,18 +798,22 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
     -- before attempting to do so.
     ShakeExtras{restartShakeSession } <- getShakeExtras
     IdeOptions{ optCheckProject = getCheckProject} <- getIdeOptions
-    returnWithVersion $ \file -> do
-      _opts@(a, b, files, keys) <- use_ HieYaml file
-    --   wait for the restart
-      lastRestartVersion' <- liftIO $ readVar lastRestartVersion
-      cacheVersion' <- liftIO $ readVar cacheVersion
-      liftIO $ when ((notNull files || notNull keys) && lastRestartVersion' /= cacheVersion') $ do
-        liftIO $ writeVar lastRestartVersion cacheVersion'
-        checkProject <- getCheckProject
-        -- think of not to restart a second time
-        async <- UnliftIO.async $ restartShakeSession VFSUnmodified "new component" (if checkProject then return (typecheckAll files) else mempty) $ pure keys
+    returnWithVersion $ \file ->
+        -- only one cradle consult at a time
+        UnliftIO.withMVar cradleLock $ const $ do
+            -- we need to find a way to get rid of the (files, keys)
+        _opts@(a, b, _files, _keys) <- use_ HieYaml file
+        -- _opts@(a, b, _files, _keys) <- getOptions file
+        async <- UnliftIO.async $ do
+            files <- liftIO $ atomically $ swapTVar targetFiles []
+            keys <- liftIO $ atomically $ swapTVar restartKeys []
+            _ <- useNoFile_ SessionCacheVersion
+            liftIO $ when (notNull files || notNull keys) $ do
+                checkProject <- getCheckProject
+                -- think of not to restart a second time
+                restartShakeSession VFSUnmodified "new component" (if checkProject then return (typecheckAll files) else mempty) $ pure keys
         UnliftIO.wait async
-      pure $ (fmap . fmap) toAbsolutePath (a, b))
+        pure $ (fmap . fmap) toAbsolutePath (a, b))
 
 
 -- | Run the specific cradle on a specific FilePath via hie-bios.
