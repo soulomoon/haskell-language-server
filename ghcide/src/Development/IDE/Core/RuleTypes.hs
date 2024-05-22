@@ -501,6 +501,10 @@ data HieYaml = HieYaml deriving (Eq, Show, Typeable, Generic)
 instance Hashable HieYaml
 instance NFData   HieYaml
 
+data SessionCacheVersion = SessionCacheVersion deriving (Eq, Show, Typeable, Generic)
+instance Hashable SessionCacheVersion
+instance NFData   SessionCacheVersion
+type instance RuleResult SessionCacheVersion = Int
 
 -- A local rule type to get caching. We want to use newCache, but it has
 -- thread killed exception issues, so we lift it to a full rule.
