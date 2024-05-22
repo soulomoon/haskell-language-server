@@ -138,7 +138,9 @@ import           GHC.Unit.State
 import           Language.LSP.Protocol.Types          (NormalizedUri (NormalizedUri),
                                                        toNormalizedFilePath)
 #endif
+import           Control.Concurrent.STM               (STM)
 import           Data.Aeson                           (ToJSON (toJSON))
+import           Data.Traversable                     (for)
 import           Development.IDE                      (RuleResult)
 import qualified Development.IDE.Core.Shake           as SHake
 
@@ -467,7 +469,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
   let toAbsolutePath = toAbsolute rootDir
   cradle_files <- newIORef []
   -- Mapping from hie.yaml file to HscEnv, one per hie.yaml file
-  hscEnvs <- newVar Map.empty :: IO (Var HieMap)
+  hscEnvs <- newTVarIO Map.empty :: IO (TVar HieMap)
   -- Mapping from a Filepath to HscEnv
   fileToFlags <- newTVarIO Map.empty :: IO (TVar FlagsMap)
   -- Mapping from a Filepath to its 'hie.yaml' location.
@@ -477,7 +479,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
   filesMap <- newTVarIO HM.empty :: IO (TVar FilesMap)
 
   -- Version of the mappings above
-  version <- newVar 0
+  version <- newTVarIO 0
 
 
   restartKeys <- newTVarIO []
@@ -487,14 +489,13 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
   cradleLock <- newMVar ()
   biosSessionLoadingVar <- newVar Nothing :: IO (Var (Maybe SessionLoadingPreferenceConfig))
 
-  let returnWithVersion fun = IdeGhcSession fun <$> liftIO (readVar version)
+  let returnWithVersion fun = IdeGhcSession fun <$> liftIO (readTVarIO version)
 
 
   let clearCache = do
         atomically $ modifyTVar' restartKeys ([toNoFileKey SessionCacheVersion] ++)
         atomically $ modifyTVar' cacheVersion succ
-        void $ modifyVar' hscEnvs $ \_ -> Map.empty
-        -- modifyTVar' hscEnvs $ \_ -> Map.empty
+        atomically $ modifyTVar' hscEnvs $ \_ -> Map.empty
         atomically $ modifyTVar' fileToFlags $ \_ -> Map.empty
         atomically $ modifyTVar' filesMap $ \_ -> HM.empty
   let
@@ -530,50 +531,55 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 --   let session :: (Maybe FilePath, NormalizedFilePath, ComponentOptions, FilePath)
 --                 -> Action (IdeResult HscEnvEq,[FilePath])
   let session args@(hieYaml, _cfp, _opts, _libDir) = do
-          ShakeExtras{ideNc} <- getShakeExtras
-          IdeOptions{ optCheckProject = getCheckProject , optExtensions } <- getIdeOptions
-          (new_deps, old_deps) <- packageSetup args
-
+          ShakeExtras{knownTargetsVar, ideNc} <- getShakeExtras
+          IdeOptions{optExtensions } <- getIdeOptions
+          hscEnv <- liftIO $ emptyHscEnv ideNc _libDir
+          (new_deps, old_deps) <- packageSetup args $ const (return ())
           -- For each component, now make a new HscEnvEq which contains the
           -- HscEnv for the hie.yaml file but the DynFlags for that component
           -- For GHC's supporting multi component sessions, we create a shared
           -- HscEnv but set the active component accordingly
-          hscEnv <- liftIO $ emptyHscEnv ideNc _libDir
           all_target_details <- liftIO $ newComponentCache recorder optExtensions hieYaml _cfp hscEnv old_deps new_deps rootDir
-
           this_dep_info <- liftIO $ getDependencyInfo $ maybeToList hieYaml
-          -- this should be added to deps
+            -- this should be added to deps
           let (all_targets, this_flags_map, this_options)
-                = case HM.lookup _cfp flags_map' of
-                    Just this -> (all_targets', flags_map', this)
-                    Nothing -> (this_target_details : all_targets', HM.insert _cfp this_flags flags_map', this_flags)
-                  where all_targets' = concat all_target_details
-                        flags_map' = HM.fromList (concatMap toFlagsMap all_targets')
-                        this_target_details = TargetDetails (TargetFile _cfp) this_error_env this_dep_info [_cfp]
-                        this_flags = (this_error_env, this_dep_info)
-                        this_error_env = ([this_error], Nothing)
-                        this_error = ideErrorWithSource (Just "cradle") (Just DiagnosticSeverity_Error) _cfp
-                                       $ T.unlines
-                                       [ "No cradle target found. Is this file listed in the targets of your cradle?"
-                                       , "If you are using a .cabal file, please ensure that this module is listed in either the exposed-modules or other-modules section"
-                                       ]
-
-          liftIO $ void $ atomically $ modifyTVar' fileToFlags $ Map.insert hieYaml this_flags_map
-          liftIO $ void $ atomically $ modifyTVar' filesMap $ flip HM.union (HM.fromList (map ((,hieYaml) . fst) $ concatMap toFlagsMap all_targets))
+                  = case HM.lookup _cfp flags_map' of
+                      Just this -> (all_targets', flags_map', this)
+                      Nothing -> (this_target_details : all_targets', HM.insert _cfp this_flags flags_map', this_flags)
+                    where all_targets' = concat all_target_details
+                          flags_map' = HM.fromList (concatMap toFlagsMap all_targets')
+                          this_target_details = TargetDetails (TargetFile _cfp) this_error_env this_dep_info [_cfp]
+                          this_flags = (this_error_env, this_dep_info)
+                          this_error_env = ([this_error], Nothing)
+                          this_error = ideErrorWithSource (Just "cradle") (Just DiagnosticSeverity_Error) _cfp
+                                      $ T.unlines
+                                      [ "No cradle target found. Is this file listed in the targets of your cradle?"
+                                      , "If you are using a .cabal file, please ensure that this module is listed in either the exposed-modules or other-modules section"
+                                      ]
+          (keys1, knownTargets) <- extendKnownTargets all_targets
+          (hasUpdate, keys2) <- liftIO $ atomically $ do
+            modifyTVar' fileToFlags $ Map.insert hieYaml this_flags_map
+            modifyTVar' filesMap $ flip HM.union (HM.fromList (map ((,hieYaml) . fst) $ concatMap toFlagsMap all_targets))
+            known <- readTVar knownTargetsVar
+            let known' = flip mapHashed known $ \k ->
+                            HM.unionWith (<>) k $ HM.fromList knownTargets
+                hasUpdate = if known /= known' then Just (unhashed known') else Nothing
+            writeTVar knownTargetsVar known'
+            keys2 <- invalidateShakeCache
+            pure (hasUpdate, keys2)
           -- The VFS doesn't change on cradle edits, re-use the old one.
           -- Invalidate all the existing GhcSession build nodes by restarting the Shake session
-          keys2 <- liftIO invalidateShakeCache
-          keys1 <- extendKnownTargets all_targets
-
+          for_ hasUpdate $ \x ->
+            logWith recorder Debug $ LogKnownFilesUpdated x
           -- Typecheck all files in the project on startup
           cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
           let (x, y)  = this_options
-          return $ (x, Map.keys y, cfps', [keys1, keys2])
+          return (x, Map.keys y, cfps', [keys1, keys2])
 
     -- Create a new HscEnv from a hieYaml root and a set of options
       packageSetup :: (Maybe FilePath, NormalizedFilePath, ComponentOptions, FilePath)
-                     -> Action ([ComponentInfo], [ComponentInfo])
-      packageSetup (hieYaml, cfp, opts, libDir) = do
+                     -> (([ComponentInfo], [ComponentInfo]) -> STM ()) -> Action ([ComponentInfo], [ComponentInfo])
+      packageSetup (hieYaml, cfp, opts, libDir) cont = do
           ShakeExtras{ideNc} <- getShakeExtras
           -- Parse DynFlags for the newly discovered component
           hscEnv <- liftIO $ emptyHscEnv ideNc libDir
@@ -584,60 +590,60 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           -- or making a new one. The lookup returns the HscEnv and a list of
           -- information about other components loaded into the HscEnv
           -- (unitId, DynFlag, Targets)
-          liftIO $ modifyVar hscEnvs $ \m -> do
-              -- Just deps if there's already an HscEnv
-              -- Nothing is it's the first time we are making an HscEnv
-              let oldDeps = Map.lookup hieYaml m
-              let -- Add the raw information about this component to the list
-                  -- We will modify the unitId and DynFlags used for
-                  -- compilation but these are the true source of
-                  -- information.
-                  new_deps = fmap (\(df, targets) -> RawComponentInfo (homeUnitId_ df) df targets cfp opts dep_info) newTargetDfs
-                  all_deps = new_deps `NE.appendList` fromMaybe [] oldDeps
-                  -- Get all the unit-ids for things in this component
-                  _inplace = map rawComponentUnitId $ NE.toList all_deps
+        --   move hscEnvs
+          hieDirRoot <- liftIO $ getCacheDirsRoot
+          liftIO $ atomically $ do
+            result <- stateTVar hscEnvs $ \m -> do
+                        -- Just deps if there's already an HscEnv
+                        -- Nothing is it's the first time we are making an HscEnv
+                        let oldDeps = Map.lookup hieYaml m
+                        let -- Add the raw information about this component to the list
+                            -- We will modify the unitId and DynFlags used for
+                            -- compilation but these are the true source of
+                            -- information.
+                            new_deps = fmap (\(df, targets) -> RawComponentInfo (homeUnitId_ df) df targets cfp opts dep_info) newTargetDfs
+                            all_deps = new_deps `NE.appendList` fromMaybe [] oldDeps
+                            -- Get all the unit-ids for things in this component
+                            _inplace = map rawComponentUnitId $ NE.toList all_deps
 
-              all_deps' <- forM all_deps $ \RawComponentInfo{..} -> do
-                  -- Remove all inplace dependencies from package flags for
-                  -- components in this HscEnv
-#if MIN_VERSION_ghc(9,3,0)
-                  let (df2, uids) = (rawComponentDynFlags, [])
-#else
-                  let (df2, uids) = _removeInplacePackages fakeUid _inplace rawComponentDynFlags
-#endif
-                  let prefix = show rawComponentUnitId
-                  -- See Note [Avoiding bad interface files]
-                  let hscComponents = sort $ map show uids
-                      cacheDirOpts = hscComponents ++ componentOptions opts
-                  cacheDirs <- liftIO $ getCacheDirs prefix cacheDirOpts
-                  processed_df <- setCacheDirs recorder cacheDirs df2
-                  -- The final component information, mostly the same but the DynFlags don't
-                  -- contain any packages which are also loaded
-                  -- into the same component.
-                  pure $ ComponentInfo
-                           { componentUnitId = rawComponentUnitId
-                           , componentDynFlags = processed_df
-                           , componentInternalUnits = uids
-                           , componentTargets = rawComponentTargets
-                           , componentFP = rawComponentFP
-                           , componentCOptions = rawComponentCOptions
-                           , componentDependencyInfo = rawComponentDependencyInfo
-                           }
-              -- Modify the map so the hieYaml now maps to the newly updated
-              -- ComponentInfos
-              -- Returns
-              -- . The information for the new component which caused this cache miss
-              -- . The modified information (without -inplace flags) for
-              --   existing packages
-              let (new,old) = NE.splitAt (NE.length new_deps) all_deps'
-              pure (Map.insert hieYaml (NE.toList all_deps) m, (new,old))
+                        let all_deps' = flip fmap all_deps $ \RawComponentInfo{..} ->
+                            -- Remove all inplace dependencies from package flags for
+                            -- components in this HscEnv
+                                    let (df2, uids) = splitRawComponentDynFlags rawComponentCOptions
+                                        prefix = show rawComponentUnitId
+                                    -- See Note [Avoiding bad interface files]
+                                        hscComponents = sort $ map show uids
+                                        cacheDirOpts = hscComponents ++ componentOptions opts
+                                        cacheDirs = getCacheDirsWithRoot hieDirRoot prefix cacheDirOpts
+                                        processed_df = setCacheDirs cacheDirs df2
+                                    -- The final component information, mostly the same but the DynFlags don't
+                                    -- contain any packages which are also loaded
+                                    -- into the same component.
+                                    in ComponentInfo
+                                            { componentUnitId = rawComponentUnitId
+                                            , componentDynFlags = processed_df
+                                            , componentInternalUnits = uids
+                                            , componentTargets = rawComponentTargets
+                                            , componentFP = rawComponentFP
+                                            , componentCOptions = rawComponentCOptions
+                                            , componentDependencyInfo = rawComponentDependencyInfo
+                                            }
+                        -- Modify the map so the hieYaml now maps to the newly updated
+                        -- ComponentInfos
+                        -- Returns
+                        -- . The information for the new component which caused this cache miss
+                        -- . The modified information (without -inplace flags) for
+                        --   existing packages
+                        let (new,old) = NE.splitAt (NE.length new_deps) all_deps'
+                        ((new,old), Map.insert hieYaml (NE.toList all_deps) m)
+            cont result
+            return result
 
         -- populate the knownTargetsVar with all the
         -- files in the project so that `knownFiles` can learn about them and
         -- we can generate a complete module graph
       extendKnownTargets newTargets = do
-          ShakeExtras{knownTargetsVar } <- getShakeExtras
-          knownTargets <- concatForM  newTargets $ \TargetDetails{..} ->
+          knownTargets <- concatForM newTargets $ \TargetDetails{..} ->
             case targetTarget of
               TargetFile f -> do
                 -- If a target file has multiple possible locations, then we
@@ -659,16 +665,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
               TargetModule _ -> do
                 found <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) targetLocations
                 return [(targetTarget, Set.fromList found)]
-          hasUpdate <- liftIO $ atomically $ do
-            known <- readTVar knownTargetsVar
-            let known' = flip mapHashed known $ \k ->
-                            HM.unionWith (<>) k $ HM.fromList knownTargets
-                hasUpdate = if known /= known' then Just (unhashed known') else Nothing
-            writeTVar knownTargetsVar known'
-            pure hasUpdate
-          for_ hasUpdate $ \x ->
-            logWith recorder Debug $ LogKnownFilesUpdated x
-          return $ toNoFileKey GetKnownTargets
+          return (toNoFileKey GetKnownTargets, knownTargets)
 
 
       -- -- This caches the mapping from hie.yaml + Mod.hs -> [String]
@@ -789,7 +786,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
             return $ Just (normalise . toAbsolutePath  <$> res)
 
       invalidateShakeCache = do
-            void $ modifyVar' version succ
+            void $ modifyTVar' version succ
             return $ toNoFileKey GhcSessionIO
   return (cradleLocRule <> hieYamlRule <> sessionCacheVersionRule, do
     -- The main function which gets options for a file. We only want one of these running
@@ -798,23 +795,30 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
     -- before attempting to do so.
     ShakeExtras{restartShakeSession } <- getShakeExtras
     IdeOptions{ optCheckProject = getCheckProject} <- getIdeOptions
-    returnWithVersion $ \file ->
+    returnWithVersion $ \file -> do
+        -- do
         -- only one cradle consult at a time
-        UnliftIO.withMVar cradleLock $ const $ do
-            -- we need to find a way to get rid of the (files, keys)
-        _opts@(a, b, _files, _keys) <- use_ HieYaml file
-        -- _opts@(a, b, _files, _keys) <- getOptions file
-        async <- UnliftIO.async $ do
-            files <- liftIO $ atomically $ swapTVar targetFiles []
-            keys <- liftIO $ atomically $ swapTVar restartKeys []
-            _ <- useNoFile_ SessionCacheVersion
-            liftIO $ when (notNull files || notNull keys) $ do
-                checkProject <- getCheckProject
-                -- think of not to restart a second time
-                restartShakeSession VFSUnmodified "new component" (if checkProject then return (typecheckAll files) else mempty) $ pure keys
-        UnliftIO.wait async
-        pure $ (fmap . fmap) toAbsolutePath (a, b))
+        async <-
+            UnliftIO.async $ UnliftIO.withMVar cradleLock $ const $ do
+                    -- we need to find a way to get rid of the (files, keys)
+                _opts@(a, b, _files, _keys) <- use_ HieYaml file
+                -- _opts@(a, b, _files, _keys) <- getOptions file
+                files <- liftIO $ atomically $ swapTVar targetFiles []
+                keys <- liftIO $ atomically $ swapTVar restartKeys []
+                _ <- useNoFile_ SessionCacheVersion
+                liftIO $ when (notNull files || notNull keys) $ do
+                    checkProject <- getCheckProject
+                    -- think of not to restart a second time
+                    restartShakeSession VFSUnmodified "new component" (if checkProject then return (typecheckAll files) else mempty) $ pure keys
+                pure $ (a, fmap toAbsolutePath b)
+        UnliftIO.wait async)
 
+splitRawComponentDynFlags rawComponentDynFlags =
+#if MIN_VERSION_ghc(9,3,0)
+                                    (rawComponentDynFlags, [])
+#else
+                                    _removeInplacePackages fakeUid _inplace rawComponentDynFlags
+#endif
 
 -- | Run the specific cradle on a specific FilePath via hie-bios.
 -- This then builds dependencies or whatever based on the cradle, gets the
@@ -1115,10 +1119,9 @@ should be filtered out, such that we dont have to re-compile everything.
 -- | Set the cache-directory based on the ComponentOptions and a list of
 -- internal packages.
 -- For the exact reason, see Note [Avoiding bad interface files].
-setCacheDirs :: MonadUnliftIO m => Recorder (WithPriority Log) -> CacheDirs -> DynFlags -> m DynFlags
-setCacheDirs recorder CacheDirs{..} dflags = do
-    logWith recorder Info $ LogInterfaceFilesCacheDir (fromMaybe cacheDir hiCacheDir)
-    pure $ dflags
+setCacheDirs :: CacheDirs -> DynFlags -> DynFlags
+setCacheDirs CacheDirs{..} dflags = do
+    dflags
           & maybe id setHiDir hiCacheDir
           & maybe id setHieDir hieCacheDir
           & maybe id setODir oCacheDir
@@ -1343,6 +1346,19 @@ getCacheDirsDefault prefix opts = do
         -- Create a unique folder per set of different GHC options, assuming that each different set of
         -- GHC options will create incompatible interface files.
         opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
+
+getCacheDirsRoot :: IO String
+getCacheDirsRoot = getXdgDirectory XdgCache cacheDir
+
+getCacheDirsWithRoot :: String -> String -> [String] -> CacheDirs
+getCacheDirsWithRoot root prefix opts = do
+    let dir = Just (root </> prefix ++ "-" ++ opts_hash)
+    CacheDirs dir dir dir
+    where
+        -- Create a unique folder per set of different GHC options, assuming that each different set of
+        -- GHC options will create incompatible interface files.
+        opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
+
 
 -- | Sub directory for the cache path
 cacheDir :: String
