@@ -28,7 +28,7 @@ import           Control.Monad
 import           Control.Monad.Extra                  as Extra
 import           Control.Monad.IO.Class
 import qualified Crypto.Hash.SHA1                     as H
-import           Data.Aeson                           hiding (Error)
+-- import           Data.Aeson                           hiding (Error)
 import           Data.Bifunctor
 import qualified Data.ByteString.Base16               as B16
 import qualified Data.ByteString.Char8                as B
@@ -108,7 +108,8 @@ import qualified Data.HashSet                         as Set
 import           Database.SQLite.Simple
 import           Development.IDE.Core.Tracing         (withTrace)
 import           Development.IDE.Session.Diagnostics  (renderCradleError)
-import           Development.IDE.Types.Shake          (WithHieDb, toNoFileKey)
+import           Development.IDE.Types.Shake          (Key, WithHieDb,
+                                                       toNoFileKey)
 import           HieDb.Create
 import           HieDb.Types
 import           HieDb.Utils
@@ -134,6 +135,7 @@ import           GHC.Unit.State
 import           Language.LSP.Protocol.Types          (NormalizedUri (NormalizedUri),
                                                        toNormalizedFilePath)
 #endif
+import           Data.Aeson                           (ToJSON (toJSON))
 import           Development.IDE                      (RuleResult)
 import qualified Development.IDE.Core.Shake           as SHake
 
@@ -449,7 +451,7 @@ getHieDbLoc dir = do
 loadSession :: Recorder (WithPriority Log) -> FilePath -> IO (Rules (), Action IdeGhcSession)
 loadSession recorder = loadSessionWithOptions recorder def
 
-type instance RuleResult HieYaml = (IdeResult HscEnvEq, [FilePath])
+type instance RuleResult HieYaml = (IdeResult HscEnvEq, [FilePath], [NormalizedFilePath], [Key])
 
 loadSessionWithOptions :: Recorder (WithPriority Log) -> SessionLoadingOptions -> FilePath -> IO (Rules (), Action IdeGhcSession)
 loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
@@ -470,6 +472,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 
   -- version of the whole rebuild
   cacheVersion <- newVar 0
+  lastRestartVersion <- newVar 0
   cradleLock <- newMVar ()
 --   putMVar cradleLock ()
   biosSessionLoadingVar <- newVar Nothing :: IO (Var (Maybe SessionLoadingPreferenceConfig))
@@ -502,11 +505,20 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
               liftIO $ writeVar biosSessionLoadingVar (Just (sessionLoading clientConfig))
               pure (loadingConfig /= sessionLoading clientConfig)
 
+  let typecheckAll cfps' =
+                        mkDelayedAction "InitialLoad" Debug $ void $ do
+                            mmt <- uses GetModificationTime cfps'
+                            let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
+                            modIfaces <- uses GetModIface cs_exist
+                            -- update exports map
+                            shakeExtras <- getShakeExtras
+                            let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
+                            liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
 
-  let session :: (Maybe FilePath, NormalizedFilePath, ComponentOptions, FilePath)
-                -> Action (IdeResult HscEnvEq,[FilePath])
-      session args@(hieYaml, _cfp, _opts, _libDir) = do
-          ShakeExtras{restartShakeSession, ideNc} <- getShakeExtras
+--   let session :: (Maybe FilePath, NormalizedFilePath, ComponentOptions, FilePath)
+--                 -> Action (IdeResult HscEnvEq,[FilePath])
+  let session args@(hieYaml, _cfp, _opts, _libDir) = do
+          ShakeExtras{ideNc} <- getShakeExtras
           IdeOptions{ optCheckProject = getCheckProject , optExtensions } <- getIdeOptions
           (new_deps, old_deps) <- packageSetup args
 
@@ -542,24 +554,9 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           keys1 <- extendKnownTargets all_targets
 
           -- Typecheck all files in the project on startup
-          checkProject <- liftIO getCheckProject
           cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
-          let typeCheckAll = if null new_deps || not checkProject
-                then []
-                else return $
-                        mkDelayedAction "InitialLoad" Debug $ void $ do
-                            mmt <- uses GetModificationTime cfps'
-                            let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
-                            modIfaces <- uses GetModIface cs_exist
-                            -- update exports map
-                            shakeExtras <- getShakeExtras
-                            let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
-                            liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
-          -- todo this should be moving out of the session function
-          restart <- liftIO $ async $ do
-            restartShakeSession VFSUnmodified "new component" typeCheckAll $ pure [keys1, keys2]
-          UnliftIO.wait restart
-          return $ second Map.keys this_options
+          let (x, y)  = this_options
+          return $ (x, Map.keys y, cfps', [keys1, keys2])
 
     -- Create a new HscEnv from a hieYaml root and a set of options
       packageSetup :: (Maybe FilePath, NormalizedFilePath, ComponentOptions, FilePath)
@@ -664,7 +661,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 
       -- -- This caches the mapping from hie.yaml + Mod.hs -> [String]
       -- -- Returns the Ghc session and the cradle dependencies
-      consultCradle :: NormalizedFilePath -> Action (IdeResult HscEnvEq, [FilePath])
+    --   consultCradle :: NormalizedFilePath -> Action (IdeResult HscEnvEq, [FilePath])
       consultCradle cfp = do
           clientConfig <- getClientConfigAction
           ShakeExtras{lspEnv } <- getShakeExtras
@@ -701,7 +698,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                     InstallationNotFound{..} ->
                         error $ "GHC installation not found in libdir: " <> libdir
                     InstallationMismatch{..} ->
-                        return (([renderPackageSetupException cfp GhcVersionMismatch{..}], Nothing),[])
+                        return (([renderPackageSetupException cfp GhcVersionMismatch{..}], Nothing),[], [], [])
                     InstallationChecked _compileTime _ghcLibCheck -> do
                         liftIO $ atomicModifyIORef' cradle_files (\xs -> (fromNormalizedFilePath cfp:xs,()))
                         session (hieYaml, cfp, opts, libDir)
@@ -712,7 +709,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                 liftIO $ void $ modifyVar' fileToFlags $
                     Map.insertWith HM.union hieYaml (HM.singleton cfp (res, dep_info))
                 liftIO $ void $ modifyVar' filesMap $ HM.insert cfp hieYaml
-                return (res, maybe [] pure hieYaml ++ concatMap cradleErrorDependencies err)
+                return (res, maybe [] pure hieYaml ++ concatMap cradleErrorDependencies err,[],[])
 
       sessionCacheVersionRule :: Rules ()
       sessionCacheVersionRule = defineNoFile (cmapWithPrio LogShake recorder) $ \SessionCacheVersion -> do
@@ -737,7 +734,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           --   install cache version check to avoid recompilation
           _ <- useNoFile_ SessionCacheVersion
           catchError file hieYaml $ do
-            result@(_, deps) <- consultCradle file
+            result@(_, deps, _, _) <- consultCradle file
             -- add the deps to the Shake graph
             mapM_ addDependency deps
             return $ Just result
@@ -746,7 +743,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                     f `Safe.catch` \e -> do
                         -- install dep so it can be recorvered
                         mapM_ addDependency hieYaml
-                        return $ Just (([renderPackageSetupException file e], Nothing), maybe [] pure hieYaml)
+                        return $ Just (([renderPackageSetupException file e], Nothing), maybe [] pure hieYaml, [], [])
                 addDependency fp = do
                     -- VSCode uses absolute paths in its filewatch notifications
                     let nfp = toNormalizedFilePath' fp
@@ -770,9 +767,20 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
     -- at a time. Therefore the IORef contains the currently running cradle, if we try
     -- to get some more options then we wait for the currently running action to finish
     -- before attempting to do so.
+    ShakeExtras{restartShakeSession } <- getShakeExtras
+    IdeOptions{ optCheckProject = getCheckProject} <- getIdeOptions
     returnWithVersion $ \file -> do
-      opts <- use_ HieYaml file
-      pure $ (fmap . fmap) toAbsolutePath opts)
+      _opts@(a, b, files, keys) <- use_ HieYaml file
+    --   wait for the restart
+      lastRestartVersion' <- liftIO $ readVar lastRestartVersion
+      cacheVersion' <- liftIO $ readVar cacheVersion
+      liftIO $ when ((notNull files || notNull keys) && lastRestartVersion' /= cacheVersion') $ do
+        liftIO $ writeVar lastRestartVersion cacheVersion'
+        checkProject <- getCheckProject
+        -- think of not to restart a second time
+        async <- UnliftIO.async $ restartShakeSession VFSUnmodified "new component" (if checkProject then return (typecheckAll files) else mempty) $ pure keys
+        UnliftIO.wait async
+      pure $ (fmap . fmap) toAbsolutePath (a, b))
 
 
 -- | Run the specific cradle on a specific FilePath via hie-bios.
