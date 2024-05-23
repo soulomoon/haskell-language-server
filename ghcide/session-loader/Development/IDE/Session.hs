@@ -703,9 +703,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           logWith recorder Debug $ LogSessionLoadingResult eopts
 
           result <- UnliftIO.withMVar cradleLock $ const $ UnliftIO.async $ do
-                    when clearFlag $ do
-                        liftIO $ clearCache
-                        logWith recorder Info LogSessionLoadingChanged
                     case eopts of
                         -- The cradle gave us some options so get to work turning them
                         -- into and HscEnv.
@@ -761,7 +758,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                             if not deps_ok
                               then do
                                 logWith recorder Debug $ LogClearingCache file
-                                -- liftIO clearCache
+                                liftIO clearCache
                                 consultCradle file True
                               else return (opts, Map.keys old_di, [], [])
                       Nothing -> consultCradle file False
