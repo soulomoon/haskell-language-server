@@ -702,7 +702,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 
           logWith recorder Debug $ LogSessionLoadingResult eopts
 
-          result <- UnliftIO.withMVar cradleLock $ const $ UnliftIO.async $ do
+          result <-UnliftIO.async $  UnliftIO.withMVar cradleLock $ const $ do
                     -- clear cache if the cradle is changed
                     checkCache cfp $
                         case eopts of
@@ -799,8 +799,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
             -- Sometimes we get C:, sometimes we get c:, and sometimes we get a relative path
             -- try and normalise that
             -- e.g. see https://github.com/haskell/ghcide/issues/126
-            -- todo make it absolute
-            return $ Just (normalise . toAbsolutePath  <$> res)
+            return $ Just (normalise . toAbsolutePath <$> res)
 
       invalidateShakeCache = do
             void $ modifyTVar' version succ
@@ -820,12 +819,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
         pure (a, fmap toAbsolutePath b)
         )
 
-splitRawComponentDynFlags rawComponentDynFlags _inplace =
-#if MIN_VERSION_ghc(9,3,0)
-                                    (rawComponentDynFlags, [])
-#else
-                                    _removeInplacePackages fakeUid _inplace rawComponentDynFlags
-#endif
 
 -- | Run the specific cradle on a specific FilePath via hie-bios.
 -- This then builds dependencies or whatever based on the cradle, gets the
