@@ -674,7 +674,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
       -- -- This caches the mapping from hie.yaml + Mod.hs -> [String]
       -- -- Returns the Ghc session and the cradle dependencies
     --   consultCradle :: NormalizedFilePath -> Action (IdeResult HscEnvEq, [FilePath])
-      consultCradle cfp clearFlag = do
+      consultCradle cfp = do
           clientConfig <- getClientConfigAction
           ShakeExtras{lspEnv, restartShakeSession } <- getShakeExtras
           IdeOptions{ optTesting = IdeTesting optTesting,  optCheckProject = getCheckProject } <- getIdeOptions
@@ -703,34 +703,36 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           logWith recorder Debug $ LogSessionLoadingResult eopts
 
           result <- UnliftIO.withMVar cradleLock $ const $ UnliftIO.async $ do
-                    case eopts of
-                        -- The cradle gave us some options so get to work turning them
-                        -- into and HscEnv.
-                        Right (opts, libDir) -> do
-                            installationCheck <- liftIO $ ghcVersionChecker libDir
-                            case installationCheck of
-                                InstallationNotFound{..} ->
-                                    error $ "GHC installation not found in libdir: " <> libdir
-                                InstallationMismatch{..} ->
-                                    return (([renderPackageSetupException cfp GhcVersionMismatch{..}], Nothing),[], [], [])
-                                InstallationChecked _compileTime _ghcLibCheck -> do
-                                    liftIO $ atomicModifyIORef' cradle_files (\xs -> (fromNormalizedFilePath cfp:xs,()))
-                                    result@(_, _, files, keys) <- session (hieYaml, cfp, opts, libDir)
-                                    liftIO $ when (notNull files || notNull keys) $ do
-                                        checkProject <- getCheckProject
-                                        -- think of not to restart a second time
-                                        restartShakeSession VFSUnmodified "new component"
-                                            (if checkProject then return (typecheckAll files) else mempty)
-                                            (pure keys)
-                                    return result
-                        -- Failure case, either a cradle error or the none cradle
-                        Left err -> do
-                            dep_info <- liftIO $ getDependencyInfo (maybeToList hieYaml)
-                            let res = (map (\err' -> renderCradleError err' cradle cfp) err, Nothing)
-                            liftIO $ atomically $ modifyTVar' fileToFlags $
-                                Map.insertWith HM.union hieYaml (HM.singleton cfp (res, dep_info))
-                            liftIO $ atomically $ modifyTVar' filesMap $ HM.insert cfp hieYaml
-                            return (res, maybe [] pure hieYaml ++ concatMap cradleErrorDependencies err,[],[])
+                    -- clear cache if the cradle is changed
+                    checkCache cfp $
+                        case eopts of
+                            -- The cradle gave us some options so get to work turning them
+                            -- into and HscEnv.
+                            Right (opts, libDir) -> do
+                                installationCheck <- liftIO $ ghcVersionChecker libDir
+                                case installationCheck of
+                                    InstallationNotFound{..} ->
+                                        error $ "GHC installation not found in libdir: " <> libdir
+                                    InstallationMismatch{..} ->
+                                        return (([renderPackageSetupException cfp GhcVersionMismatch{..}], Nothing),[], [], [])
+                                    InstallationChecked _compileTime _ghcLibCheck -> do
+                                        liftIO $ atomicModifyIORef' cradle_files (\xs -> (fromNormalizedFilePath cfp:xs,()))
+                                        result@(_, _, files, keys) <- session (hieYaml, cfp, opts, libDir)
+                                        liftIO $ when (notNull files || notNull keys) $ do
+                                            checkProject <- getCheckProject
+                                            -- think of not to restart a second time
+                                            restartShakeSession VFSUnmodified "new component"
+                                                (if checkProject then return (typecheckAll files) else mempty)
+                                                (pure keys)
+                                        return result
+                            -- Failure case, either a cradle error or the none cradle
+                            Left err -> do
+                                dep_info <- liftIO $ getDependencyInfo (maybeToList hieYaml)
+                                let res = (map (\err' -> renderCradleError err' cradle cfp) err, Nothing)
+                                liftIO $ atomically $ modifyTVar' fileToFlags $
+                                    Map.insertWith HM.union hieYaml (HM.singleton cfp (res, dep_info))
+                                liftIO $ atomically $ modifyTVar' filesMap $ HM.insert cfp hieYaml
+                                return (res, maybe [] pure hieYaml ++ concatMap cradleErrorDependencies err,[],[])
           UnliftIO.wait result
 
       sessionCacheVersionRule :: Rules ()
@@ -741,6 +743,26 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 
       hieYamlRule :: Rules ()
       hieYamlRule = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \HieYaml file -> Just <$> hieYamlRuleImpl file
+
+      checkCache file run  = do
+          hieYaml <- use_ CradleLoc file
+          --   check the reason we are called
+          v <- Map.findWithDefault HM.empty hieYaml <$> (liftIO$readTVarIO fileToFlags)
+          case HM.lookup file v of
+                      -- we already have the cache but it is still called, it must be deps changed
+                      -- clear the cache and reconsult
+                      -- we bump the version of the cache to inform others
+                      Just (opts, old_di) -> do
+                            -- need to differ two kinds of invocation, one is the file is changed
+                            -- other is the cache version bumped
+                            deps_ok <- liftIO $ checkDependencyInfo old_di
+                            if not deps_ok
+                              then do
+                                logWith recorder Debug $ LogClearingCache file
+                                liftIO clearCache
+                                run
+                              else return (opts, Map.keys old_di, [], [])
+                      Nothing -> run
 
       hieYamlRuleImpl file = do
           hieYaml <- use_ CradleLoc file
@@ -756,12 +778,9 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                             -- other is the cache version bumped
                             deps_ok <- liftIO $ checkDependencyInfo old_di
                             if not deps_ok
-                              then do
-                                logWith recorder Debug $ LogClearingCache file
-                                liftIO clearCache
-                                consultCradle file True
+                              then consultCradle file
                               else return (opts, Map.keys old_di, [], [])
-                      Nothing -> consultCradle file False
+                      Nothing -> consultCradle file
         where
             catchError file hieYaml f  =
                 f `Safe.catch` \e -> do
@@ -798,7 +817,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
         -- only one cradle consult at a time
         -- we need to find a way to get rid of the (files, keys)
         _opts@(a, b, _files, _keys) <- hieYamlRuleImpl file
-        -- _opts@(a, b, _files, _keys) <- getOptions file
         pure (a, fmap toAbsolutePath b)
         )
 
