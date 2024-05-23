@@ -95,6 +95,7 @@ import           System.Info
 import           Control.Applicative                  (Alternative ((<|>)))
 import           Data.Void
 
+import           Control.Concurrent.STM               (STM)
 import           Control.Concurrent.STM.Stats         (TVar, atomically,
                                                        modifyTVar', newTVar,
                                                        newTVarIO, readTVar,
@@ -104,11 +105,16 @@ import           Control.Concurrent.STM.TQueue
 import           Control.DeepSeq
 import           Control.Exception                    (evaluate)
 import           Control.Monad.IO.Unlift              (MonadUnliftIO)
+import           Data.Aeson                           (ToJSON (toJSON))
 import           Data.Foldable                        (for_)
 import           Data.HashMap.Strict                  (HashMap)
 import           Data.HashSet                         (HashSet)
 import qualified Data.HashSet                         as Set
+import           Data.Traversable                     (for)
 import           Database.SQLite.Simple
+import           Development.IDE                      (RuleResult, Rules,
+                                                       getFileExists)
+import qualified Development.IDE.Core.Shake           as Shake
 import           Development.IDE.Core.Tracing         (withTrace)
 import           Development.IDE.Session.Diagnostics  (renderCradleError)
 import           Development.IDE.Types.Shake          (Key, WithHieDb,
@@ -128,7 +134,6 @@ import qualified Data.Set                             as OS
 import qualified Development.IDE.GHC.Compat.Util      as Compat
 import           GHC.Data.Graph.Directed
 
-import           Development.IDE                      (Rules, getFileExists)
 import           GHC.Data.Bag
 import           GHC.Driver.Env                       (hsc_all_home_unit_ids)
 import           GHC.Driver.Errors.Types
@@ -138,16 +143,11 @@ import           GHC.Unit.State
 import           Language.LSP.Protocol.Types          (NormalizedUri (NormalizedUri),
                                                        toNormalizedFilePath)
 #endif
-import           Control.Concurrent.STM               (STM)
-import           Data.Aeson                           (ToJSON (toJSON))
-import           Data.Traversable                     (for)
-import           Development.IDE                      (RuleResult)
-import qualified Development.IDE.Core.Shake           as SHake
 
 data Log
 
   = LogSettingInitialDynFlags
-  | LogShake SHake.Log
+  | LogShake Shake.Log
   | LogGetInitialGhcLibDirDefaultCradleFail !CradleError !FilePath !(Maybe FilePath) !(Cradle Void)
   | LogGetInitialGhcLibDirDefaultCradleNone
   | LogHieDbRetry !Int !Int !Int !SomeException
