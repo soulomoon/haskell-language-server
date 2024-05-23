@@ -702,7 +702,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 
           logWith recorder Debug $ LogSessionLoadingResult eopts
 
-          result <-UnliftIO.async $  UnliftIO.withMVar cradleLock $ const $ do
+          result <-do
                     -- clear cache if the cradle is changed
                     checkCache cfp $
                         case eopts of
@@ -733,7 +733,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                                     Map.insertWith HM.union hieYaml (HM.singleton cfp (res, dep_info))
                                 liftIO $ atomically $ modifyTVar' filesMap $ HM.insert cfp hieYaml
                                 return (res, maybe [] pure hieYaml ++ concatMap cradleErrorDependencies err,[],[])
-          UnliftIO.wait result
+          return result
 
       sessionCacheVersionRule :: Rules ()
       sessionCacheVersionRule = defineNoFile (cmapWithPrio LogShake recorder) $ \SessionCacheVersion -> do
@@ -764,23 +764,24 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                               else return (opts, Map.keys old_di, [], [])
                       Nothing -> run
 
-      hieYamlRuleImpl file = do
-          hieYaml <- use_ CradleLoc file
-          --   check the reason we are called
-          v <- Map.findWithDefault HM.empty hieYaml <$> (liftIO$readTVarIO fileToFlags)
-          catchError file hieYaml $
-            case HM.lookup file v of
-                      -- we already have the cache but it is still called, it must be deps changed
-                      -- clear the cache and reconsult
-                      -- we bump the version of the cache to inform others
-                      Just (opts, old_di) -> do
-                            -- need to differ two kinds of invocation, one is the file is changed
-                            -- other is the cache version bumped
-                            deps_ok <- liftIO $ checkDependencyInfo old_di
-                            if not deps_ok
-                              then consultCradle file
-                              else return (opts, Map.keys old_di, [], [])
-                      Nothing -> consultCradle file
+
+      hieYamlRuleImpl file = checkCache file $ consultCradle file
+        --   hieYaml <- use_ CradleLoc file
+        --   --   check the reason we are called
+        --   v <- Map.findWithDefault HM.empty hieYaml <$> (liftIO$readTVarIO fileToFlags)
+        --   catchError file hieYaml $
+        --     case HM.lookup file v of
+        --               -- we already have the cache but it is still called, it must be deps changed
+        --               -- clear the cache and reconsult
+        --               -- we bump the version of the cache to inform others
+        --               Just (opts, old_di) -> do
+        --                     -- need to differ two kinds of invocation, one is the file is changed
+        --                     -- other is the cache version bumped
+        --                     deps_ok <- liftIO $ checkDependencyInfo old_di
+        --                     if not deps_ok
+        --                       then consultCradle file
+        --                       else return (opts, Map.keys old_di, [], [])
+        --               Nothing -> consultCradle file
         where
             catchError file hieYaml f  =
                 f `Safe.catch` \e -> do
@@ -809,13 +810,11 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
     -- at a time. Therefore the IORef contains the currently running cradle, if we try
     -- to get some more options then we wait for the currently running action to finish
     -- before attempting to do so.
-    ShakeExtras{restartShakeSession } <- getShakeExtras
-    IdeOptions{ optCheckProject = getCheckProject} <- getIdeOptions
     returnWithVersion $ \file -> do
         -- do
         -- only one cradle consult at a time
         -- we need to find a way to get rid of the (files, keys)
-        _opts@(a, b, _files, _keys) <- hieYamlRuleImpl file
+        _opts@(a, b, _files, _keys) <- UnliftIO.wait =<< UnliftIO.async (UnliftIO.withMVar cradleLock $ const $ hieYamlRuleImpl file)
         pure (a, fmap toAbsolutePath b)
         )
 
