@@ -478,10 +478,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 
   -- Version of the mappings above
   version <- newTVarIO 0
-
-
   restartKeys <- newTVarIO []
-  targetFiles <- newTVarIO []
   -- version of the whole rebuild
   cacheVersion <- newTVarIO 0
   cradleLock <- newMVar ()
@@ -716,7 +713,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                                     InstallationMismatch{..} ->
                                         return (([renderPackageSetupException cfp GhcVersionMismatch{..}], Nothing),[], [], [])
                                     InstallationChecked _compileTime _ghcLibCheck -> do
-                                        UnliftIO.wait =<< (UnliftIO.async $ UnliftIO.withMVar cradleLock $ const $ ( do
+                                        UnliftIO.wait =<< (UnliftIO.async $ ( do
                                             liftIO $ atomicModifyIORef' cradle_files (\xs -> (fromNormalizedFilePath cfp:xs,()))
                                             result@(_, _, files, keys) <- session (hieYaml, cfp, opts, libDir)
                                             liftIO $ when (notNull files || notNull keys) $ do
@@ -727,13 +724,13 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
                                                     (pure keys)
                                             return result))
                             -- Failure case, either a cradle error or the none cradle
-                            Left err -> UnliftIO.wait =<< (UnliftIO.async $ UnliftIO.withMVar cradleLock $ const $ do
+                            Left err -> do
                                 dep_info <- liftIO $ getDependencyInfo (maybeToList hieYaml)
                                 let res = (map (\err' -> renderCradleError err' cradle cfp) err, Nothing)
-                                liftIO $ atomically $ modifyTVar' fileToFlags $
-                                    Map.insertWith HM.union hieYaml (HM.singleton cfp (res, dep_info))
-                                liftIO $ atomically $ modifyTVar' filesMap $ HM.insert cfp hieYaml
-                                return (res, maybe [] pure hieYaml ++ concatMap cradleErrorDependencies err,[],[]))
+                                liftIO $ atomically $ do
+                                    modifyTVar' fileToFlags $ Map.insertWith HM.union hieYaml (HM.singleton cfp (res, dep_info))
+                                    modifyTVar' filesMap $ HM.insert cfp hieYaml
+                                return (res, maybe [] pure hieYaml ++ concatMap cradleErrorDependencies err,[],[])
           return result
 
       sessionCacheVersionRule :: Rules ()
