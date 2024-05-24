@@ -750,7 +750,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           hieYaml <- use_ CradleLoc file
           --   check the reason we are called
           v <- Map.findWithDefault HM.empty hieYaml <$> (liftIO$readTVarIO fileToFlags)
-          res <- UnliftIO.withMVar cradleLock $ const $ case HM.lookup file v of
+          res <- case HM.lookup file v of
                       -- we already have the cache but it is still called, it must be deps changed
                       -- clear the cache and reconsult
                       -- we bump the version of the cache to inform others
@@ -769,22 +769,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
           maybe run return res
 
       hieYamlRuleImpl file = checkCache file $ consultCradle file
-        --   hieYaml <- use_ CradleLoc file
-        --   --   check the reason we are called
-        --   v <- Map.findWithDefault HM.empty hieYaml <$> (liftIO$readTVarIO fileToFlags)
-        --   catchError file hieYaml $
-        --     case HM.lookup file v of
-        --               -- we already have the cache but it is still called, it must be deps changed
-        --               -- clear the cache and reconsult
-        --               -- we bump the version of the cache to inform others
-        --               Just (opts, old_di) -> do
-        --                     -- need to differ two kinds of invocation, one is the file is changed
-        --                     -- other is the cache version bumped
-        --                     deps_ok <- liftIO $ checkDependencyInfo old_di
-        --                     if not deps_ok
-        --                       then consultCradle file
-        --                       else return (opts, Map.keys old_di, [], [])
-        --               Nothing -> consultCradle file
         where
             catchError file hieYaml f  =
                 f `Safe.catch` \e -> do
