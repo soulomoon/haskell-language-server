@@ -704,7 +704,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
 
           result <-do
                     -- clear cache if the cradle is changed
-                    checkCacheNoLock cfp $
+                    checkCache cfp $
                         case eopts of
                             -- The cradle gave us some options so get to work turning them
                             -- into and HscEnv.
@@ -745,27 +745,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir = do
       hieYamlRule :: Rules ()
       hieYamlRule = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \HieYaml file -> Just <$> hieYamlRuleImpl file
 
-      checkCacheNoLock file run  = do
-          hieYaml <- use_ CradleLoc file
-          --   check the reason we are called
-          v <- Map.findWithDefault HM.empty hieYaml <$> (liftIO$readTVarIO fileToFlags)
-          res <- case HM.lookup file v of
-                      -- we already have the cache but it is still called, it must be deps changed
-                      -- clear the cache and reconsult
-                      -- we bump the version of the cache to inform others
-                      Just (opts, old_di) -> do
-                            -- need to differ two kinds of invocation, one is the file is changed
-                            -- other is the cache version bumped
-                            deps_ok <- liftIO $ checkDependencyInfo old_di
-                            if not deps_ok
-                              then do
-                                logWith recorder Debug $ LogClearingCache file
-                                liftIO clearCache
-                                return Nothing
-                              else do
-                                return $ Just (opts, Map.keys old_di, [], [])
-                      Nothing -> return Nothing
-          maybe run return res
 
       checkCache file run  = do
           hieYaml <- use_ CradleLoc file
