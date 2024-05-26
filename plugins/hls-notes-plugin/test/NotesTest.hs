@@ -16,19 +16,20 @@ main = defaultTestRunner $
 
 gotoNoteTests :: TestTree
 gotoNoteTests = testGroup "Goto Note Definition"
-    [ testCase "single_file" $ runSessionWithServer def plugin testDataDir $ do
+    [
+      testCase "single_file" $ runSessionWithServer def plugin testDataDir $ do
         doc <- openDoc "NoteDef.hs" "haskell"
         waitForKickDone
         defs <- getDefinitions doc (Position 3 41)
         liftIO $ do
-          fp <- canonicalizePath "NoteDef.hs"
+          fp <- canonicalizePath $ testDataDir </> "NoteDef.hs"
           defs @?= InL (Definition (InR [Location (filePathToUri fp) (Range (Position 8 9) (Position 8 9))]))
     , testCase "liberal_format" $ runSessionWithServer def plugin testDataDir $ do
         doc <- openDoc "NoteDef.hs" "haskell"
         waitForKickDone
         defs <- getDefinitions doc (Position 5 64)
         liftIO $ do
-          fp <- canonicalizePath "NoteDef.hs"
+          fp <- canonicalizePath $ testDataDir </> "NoteDef.hs"
           defs @?= InL (Definition (InR [Location (filePathToUri fp) (Range (Position 18 11) (Position 18 11))]))
 
     , testCase "invalid_note" $ runSessionWithServer def plugin testDataDir $ do
@@ -49,7 +50,7 @@ gotoNoteTests = testGroup "Goto Note Definition"
         waitForKickDone
         defs <- getDefinitions doc (Position 5 20)
         liftIO $ do
-          fp <- canonicalizePath "NoteDef.hs"
+          fp <- canonicalizePath $ testDataDir </> "NoteDef.hs"
           defs @?= InL (Definition (InR [Location (filePathToUri fp) (Range (Position 12 6) (Position 12 6))]))
     ]
 

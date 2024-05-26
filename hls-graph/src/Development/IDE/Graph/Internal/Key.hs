@@ -49,7 +49,7 @@ import           Development.IDE.Graph.Classes
 import           System.IO.Unsafe
 
 
-newtype Key = UnsafeMkKey Int
+newtype Key = UnsafeMkKey Int deriving (NFData)
 
 pattern Key :: () => (Typeable a, Hashable a, Show a) => a -> Key
 pattern Key a <- (lookupKeyValue -> KeyValue a _)

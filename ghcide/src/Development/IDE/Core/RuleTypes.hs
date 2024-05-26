@@ -492,6 +492,19 @@ data AddWatchedFile = AddWatchedFile deriving (Eq, Show, Typeable, Generic)
 instance Hashable AddWatchedFile
 instance NFData   AddWatchedFile
 
+data CradleLoc = CradleLoc deriving (Eq, Show, Typeable, Generic)
+instance Hashable CradleLoc
+instance NFData   CradleLoc
+type instance RuleResult CradleLoc = Maybe FilePath
+
+data HieYaml = HieYaml deriving (Eq, Show, Typeable, Generic)
+instance Hashable HieYaml
+instance NFData   HieYaml
+
+data SessionCacheVersion = SessionCacheVersion deriving (Eq, Show, Typeable, Generic)
+instance Hashable SessionCacheVersion
+instance NFData   SessionCacheVersion
+type instance RuleResult SessionCacheVersion = Int
 
 -- A local rule type to get caching. We want to use newCache, but it has
 -- thread killed exception issues, so we lift it to a full rule.
@@ -499,7 +512,7 @@ instance NFData   AddWatchedFile
 type instance RuleResult GhcSessionIO = IdeGhcSession
 
 data IdeGhcSession = IdeGhcSession
-  { loadSessionFun :: FilePath -> IO (IdeResult HscEnvEq, [FilePath])
+  { loadSessionFun :: NormalizedFilePath -> Action (IdeResult HscEnvEq, [FilePath])
   -- ^ Returns the Ghc session and the cradle dependencies
   , sessionVersion :: !Int
   -- ^ Used as Shake key, versions must be unique and not reused
