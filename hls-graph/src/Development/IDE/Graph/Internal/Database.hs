@@ -7,7 +7,7 @@
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TypeFamilies       #-}
 
-module Development.IDE.Graph.Internal.Database (newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge) where
+module Development.IDE.Graph.Internal.Database (newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, build1) where
 
 import           Prelude                              hiding (unzip)
 
@@ -41,6 +41,7 @@ import qualified ListT
 import qualified StmContainers.Map                    as SMap
 import           System.IO.Unsafe
 import           System.Time.Extra                    (duration, sleep)
+import Data.Kind (Type)
 
 
 newDatabase :: Dynamic -> TheRules -> IO Database
@@ -76,6 +77,10 @@ updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
                   | Clean x <- status = Dirty (Just x)
                   | otherwise = status
             in KeyDetails status' rdeps
+
+
+
+
 -- | Unwrap and build a list of keys in parallel
 build
     :: forall f key value . (Traversable f, RuleResult key ~ value, Typeable key, Show key, Hashable key, Eq key, Typeable value)
@@ -92,6 +97,40 @@ build db stack keys = do
     where
         asV :: Value -> value
         asV (Value x) = unwrapDynamic x
+
+
+-- build2 :: (HListKeys keys, HListValues values, values ~ RunResults keys) => Database -> Stack -> HList keys -> IO ([Key], HList values)
+-- build2 :: (Traversable f, Typeable a, Hashable a, Show a) => Database -> Stack -> f a -> AIO (f (Key, Result))
+
+build2
+    :: forall f key value . (Traversable f, RuleResult key ~ value, Typeable key, Show key, Hashable key, Eq key, Typeable value)
+    => Database -> Stack -> f key -> AIO (f Key, f value)
+build2 db stack keys = do
+    built <- builder db stack (fmap newKey keys)
+    built2 <- case built of
+                Left clean  -> return clean
+                Right dirty -> liftIO dirty
+    let (ids, vs) = unzip built2
+    pure (ids, fmap (asV . resultValue) vs)
+    where
+        asV :: Value -> value
+        asV (Value x) = unwrapDynamic x
+
+build1 :: (HListKeys keys, HListValues values, values ~ RunResults keys) => Database -> Stack -> HList keys -> IO ([Key], HList values)
+build1 db stack hKeys = do
+    built <- runAIO $ do
+        built <- builder db stack (fmap newKey keys)
+        case built of
+          Left clean  -> return clean
+          Right dirty -> liftIO dirty
+    let (ids, vs) = unzip built
+    pure (ids, listHList $ fmap (asV . resultValue) vs)
+    where
+        asV (Value x) = unwrapDynamic x
+        keys = hListList hKeys
+
+
+-- builder1 :: Traversable f => Database -> Stack -> f Key -> AIO (IO (f (Key, Result)))
 
 -- | Build a list of keys and return their results.
 --  If none of the keys are dirty, we can return the results immediately.
@@ -151,7 +190,7 @@ refreshDeps visited db stack key result = \case
         let newVisited = dep <> visited
         res <- builder db stack (toListKeySet (dep `differenceKeySet` visited))
         case res of
-            Left res ->  if isDirty result res
+            Left res -> if isDirty result res
                 -- restart the computation if any of the deps are dirty
                 then liftIO $ compute db stack key RunDependenciesChanged (Just result)
                 -- else kick the rest of the deps
