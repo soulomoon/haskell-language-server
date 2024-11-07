@@ -790,8 +790,12 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
             void $ getOptions absFile
             getOptionsLoop
 
-    let getSessionRetry :: FilePath -> IO (IdeResult HscEnvEq, DependencyInfo)
-        getSessionRetry absFile = do
+    -- | Given a file, this function will return the HscEnv and the dependencies
+    -- it would look up the cache first, if the cache is not available, it would
+    -- submit a request to the getOptionsLoop to get the options for the file
+    -- and wait until the options are available
+    let lookupOrWaitCache :: FilePath -> IO (IdeResult HscEnvEq, DependencyInfo)
+        lookupOrWaitCache absFile = do
             let ncfp = toNormalizedFilePath' absFile
             -- check if in the cache
             res <- atomically $ checkInCache ncfp
@@ -807,21 +811,17 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                 Just r -> return r
                 Nothing -> do
                         -- if not ok, we need to reload the session
-                        atomically $ do
-                            S.insert absFile pendingFileSet
-                        atomically $ do
-                            -- wait until pendingFiles is not in pendingFiles
-                            Extra.whenM (S.lookup absFile pendingFileSet) STM.retry
-                        getSessionRetry absFile
+                        atomically $ S.insert absFile pendingFileSet
+                        -- wait until pendingFiles is not in pendingFiles
+                        atomically $ Extra.whenM (S.lookup absFile pendingFileSet) STM.retry
+                        lookupOrWaitCache absFile
 
+    -- see Note [Serializing runs in separate thread]
     -- Start the getOptionsLoop if the queue is empty
     liftIO $ atomically $ Extra.whenM (isEmptyTQueue que) $ writeTQueue que getOptionsLoop
     returnWithVersion $ \file -> do
       let absFile = toAbsolutePath file
-      second Map.keys <$> getSessionRetry absFile
-    --   atomically $ writeTQueue pendingFiles absFile
-      -- see Note [Serializing runs in separate thread]
-    --   awaitRunInThread que $ second Map.keys <$> getOptions absFile
+      second Map.keys <$> lookupOrWaitCache absFile
 
 -- | Run the specific cradle on a specific FilePath via hie-bios.
 -- This then builds dependencies or whatever based on the cradle, gets the
