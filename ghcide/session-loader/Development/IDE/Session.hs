@@ -154,12 +154,12 @@ data Log
   | LogSessionNewLoadedFiles ![FilePath]
   | LogSessionReloadOnError FilePath ![FilePath]
   | LogGetOptionsLoop !FilePath
-  | LogGetSessionRetry !FilePath
+  | LogLookupSessionCache !FilePath
 deriving instance Show Log
 
 instance Pretty Log where
   pretty = \case
-    LogGetSessionRetry path -> "Retrying get session for" <+> pretty path
+    LogLookupSessionCache path -> "Looking up session cache for" <+> pretty path
     LogGetOptionsLoop fp -> "Loop: getOptions for" <+> pretty fp
     LogSessionReloadOnError path files ->
       "Reloading file due to error in" <+> pretty path <+> "with files:" <+> pretty files
@@ -799,7 +799,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
             let ncfp = toNormalizedFilePath' absFile
             -- check if in the cache
             res <- atomically $ checkInCache ncfp
-            logWith recorder Info $ LogGetSessionRetry absFile
+            logWith recorder Info $ LogLookupSessionCache absFile
             updateDateRes <-  case res of
                     Just r -> do
                         depOk <- checkDependencyInfo (snd r)
