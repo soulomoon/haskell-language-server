@@ -680,17 +680,19 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                     return (([renderPackageSetupException cfp GhcVersionMismatch{..}], Nothing),Map.empty)
              -- Failure case, either a cradle error or the none cradle
              Left err -> do
-                if (not $ null extraToLoads)
+                let attemptToLoadFiles = (Set.delete cfp $ Set.fromList $ concatMap cradleErrorLoadingFiles err)
+                                            `Set.difference` old_files
+                if (not $ null attemptToLoadFiles)
                 then do
                     -- mark as less loaded files as failedLoadingFiles as possible
                     -- limitation is that when we are loading files, and the dependencies of old_files
                     -- are changed, and old_files are not valid anymore.
                     -- but they will still be in the old_files, and will not move to error_loading_files.
                     -- And make other files failed to load in batch mode.
-                    let failedLoadingFiles = (Set.insert cfp extraToLoads) `Set.difference` old_files
+                    let failedLoadingFiles = (Set.insert cfp attemptToLoadFiles)
                     atomicModifyIORef' error_loading_files (\xs -> (failedLoadingFiles <> xs,()))
                     -- retry without other files
-                    logWith recorder Info $ LogSessionReloadOnError cfp (Set.toList pendingFiles)
+                    logWith recorder Info $ LogSessionReloadOnError cfp (Set.toList attemptToLoadFiles)
                     consultCradle hieYaml cfp
                 else do
                     dep_info <- getDependencyInfo ((maybeToList hieYaml) ++ concatMap cradleErrorDependencies err)

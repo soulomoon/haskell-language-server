@@ -46,3 +46,8 @@ constraints:
 if impl(ghc >= 9.9)
   -- https://github.com/haskell/haskell-language-server/issues/4324
   benchmarks: False
+
+source-repository-package
+  type: git
+  location: https://github.com/soulomoon/hie-bios.git
+  tag: 93582c21372af573e5103bad198777a3317a2df2
