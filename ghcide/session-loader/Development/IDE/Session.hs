@@ -799,8 +799,11 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
     let lookupOrWaitCache :: FilePath -> IO (IdeResult HscEnvEq, DependencyInfo)
         lookupOrWaitCache absFile = do
             let ncfp = toNormalizedFilePath' absFile
-            -- check if in the cache
-            res <- atomically $ checkInCache ncfp
+            res <- atomically $ do
+                -- wait until target file is not in pendingFiles
+                Extra.whenM (S.lookup absFile pendingFileSet) STM.retry
+                -- check if in the cache
+                checkInCache ncfp
             logWith recorder Info $ LogLookupSessionCache absFile
             updateDateRes <-  case res of
                     Just r -> do
@@ -814,8 +817,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                 Nothing -> do
                         -- if not ok, we need to reload the session
                         atomically $ S.insert absFile pendingFileSet
-                        -- wait until pendingFiles is not in pendingFiles
-                        atomically $ Extra.whenM (S.lookup absFile pendingFileSet) STM.retry
                         lookupOrWaitCache absFile
 
     -- see Note [Serializing runs in separate thread]

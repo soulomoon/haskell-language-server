@@ -2,7 +2,9 @@ module Development.IDE.Session.OrderedSet where
 
 import           Control.Concurrent.STM        (STM, TQueue, newTQueueIO)
 import           Control.Concurrent.STM.TQueue (readTQueue, writeTQueue)
+import           Control.Monad                 (when)
 import           Data.Hashable                 (Hashable)
+import qualified Focus
 import qualified ListT                         as LT
 import qualified StmContainers.Set             as S
 import           StmContainers.Set             (Set)
@@ -12,9 +14,8 @@ type OrderedSet a = (TQueue a, Set a)
 
 insert :: Hashable a => a -> OrderedSet a -> STM ()
 insert a (que, s) = do
-    S.insert a s
-    writeTQueue que a
-    return ()
+    (_, inserted) <- S.focus (Focus.testingIfInserts $ Focus.insert ()) a s
+    when inserted $ writeTQueue que a
 
 newIO :: Hashable a => IO (OrderedSet a)
 newIO = do
