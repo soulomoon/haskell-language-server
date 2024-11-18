@@ -155,10 +155,12 @@ data Log
   | LogSessionReloadOnError FilePath ![FilePath]
   | LogGetOptionsLoop !FilePath
   | LogLookupSessionCache !FilePath
+  | LogTime !String
 deriving instance Show Log
 
 instance Pretty Log where
   pretty = \case
+    LogTime s -> "Time:" <+> pretty s
     LogLookupSessionCache path -> "Looking up session cache for" <+> pretty path
     LogGetOptionsLoop fp -> "Loop: getOptions for" <+> pretty fp
     LogSessionReloadOnError path files ->
@@ -582,7 +584,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
 
           let flags_map' = HM.fromList (concatMap toFlagsMap all_targets')
               all_targets' = concat all_target_details
-              newLoaded = HM.keys flags_map'
           this_dep_info <- getDependencyInfo $ maybeToList hieYaml
           let (all_targets, this_flags_map, this_options)
                 = case HM.lookup _cfp flags_map' of
@@ -599,9 +600,11 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                                        ]
 
           let insertAll m xs = mapM_ (flip (uncurry STM.insert) m) xs
+              newLoaded = Set.fromList $ fromNormalizedFilePath <$> HM.keys this_flags_map
           atomically $ do
             STM.insert this_flags_map hieYaml fileToFlags
             insertAll filesMap $ map ((hieYaml,) . fst) $ concatMap toFlagsMap all_targets
+            forM_ newLoaded $ flip S.delete pendingFileSet
 
           -- Typecheck all files in the project on startup
           checkProject <- getCheckProject
@@ -621,9 +624,9 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                       let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
                       liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
             return [keys1, keys2]
-          return $ (this_options, Set.fromList $ fromNormalizedFilePath <$> newLoaded)
+          return $ (this_options, newLoaded)
 
-    let consultCradle :: Maybe FilePath -> FilePath -> IO (IdeResult HscEnvEq, DependencyInfo)
+    let consultCradle :: Maybe FilePath -> FilePath -> IO ()
         consultCradle hieYaml cfp = do
            let lfpLog = makeRelative rootDir cfp
            logWith recorder Info $ LogCradlePath lfpLog
@@ -658,32 +661,36 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
              -- The cradle gave us some options so get to work turning them
              -- into and HscEnv.
              Right (opts, libDir, version) -> do
+               let ncfp = toNormalizedFilePath' cfp
                let compileTime = fullCompilerVersion
                case reverse $ readP_to_S parseVersion version of
                  [] -> error $ "GHC version could not be parsed: " <> version
                  ((runTime, _):_)
                    | compileTime == runTime -> do
-                     (results, allNewLoaded) <- session (hieYaml, toNormalizedFilePath' cfp, opts, libDir)
-                     -- delete cfp even if we report No cradle target found for the cfp
+                     (_results, allNewLoaded) <- session (hieYaml, ncfp, opts, libDir)
                      let newLoaded = pendingFiles `Set.intersection` allNewLoaded
-                    --  delete all new loaded
-                     atomically $ forM_ allNewLoaded $ flip S.delete pendingFileSet
                      -- log new loaded files
                      logWith recorder Info $ LogSessionNewLoadedFiles $ Set.toList newLoaded
                      -- remove all new loaded file from error loading files
                      atomicModifyIORef' error_loading_files (\old -> (old `Set.difference` allNewLoaded, ()))
                      atomicModifyIORef' cradle_files (\xs -> (newLoaded <> xs,()))
-                     return results
                    | otherwise -> do
                     -- delete cfp from pending files
-                    atomically $ S.delete cfp pendingFileSet
-                    return (([renderPackageSetupException cfp GhcVersionMismatch{..}], Nothing),Map.empty)
+                    atomically $ do
+                        STM.focus (Focus.insertOrMerge HM.union
+                            (HM.singleton ncfp (([renderPackageSetupException cfp GhcVersionMismatch{..}], Nothing), mempty)))
+                            hieYaml fileToFlags
+                        STM.insert hieYaml ncfp filesMap
+                        S.delete cfp pendingFileSet
              -- Failure case, either a cradle error or the none cradle
              Left err -> do
                 let attemptToLoadFiles = (Set.delete cfp $ Set.fromList $ concatMap cradleErrorLoadingFiles err)
                                             `Set.difference` old_files
                 if (not $ null attemptToLoadFiles)
+
                 then do
+                    -- we are loading more files and failed, we need to retry
+
                     -- mark as less loaded files as failedLoadingFiles as possible
                     -- limitation is that when we are loading files, and the dependencies of old_files
                     -- are changed, and old_files are not valid anymore.
@@ -695,16 +702,16 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                     logWith recorder Info $ LogSessionReloadOnError cfp (Set.toList attemptToLoadFiles)
                     consultCradle hieYaml cfp
                 else do
+                    -- we are only loading this file and it failed
                     dep_info <- getDependencyInfo ((maybeToList hieYaml) ++ concatMap cradleErrorDependencies err)
                     let ncfp = toNormalizedFilePath' cfp
                     let res = (map (\err' -> renderCradleError err' cradle ncfp) err, Nothing)
                     -- remove cfp from pending files
-                    atomically $ S.delete cfp pendingFileSet
+                    atomicModifyIORef' error_loading_files (\xs -> (Set.insert cfp xs,()))
                     atomically $ do
                         STM.focus (Focus.insertOrMerge HM.union (HM.singleton ncfp (res, dep_info))) hieYaml fileToFlags
-                        STM.insert hieYaml  ncfp filesMap
-                    atomicModifyIORef' error_loading_files (\xs -> (Set.insert cfp xs,()))
-                    return (res, dep_info)
+                        STM.insert hieYaml ncfp filesMap
+                        S.delete cfp pendingFileSet
 
     let
         -- | We allow users to specify a loading strategy.
@@ -727,7 +734,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
     -- This caches the mapping from hie.yaml + Mod.hs -> [String]
     -- Returns the Ghc session and the cradle dependencies
     let sessionOpts :: (Maybe FilePath, FilePath)
-                    -> IO (IdeResult HscEnvEq, DependencyInfo)
+                    -> IO ()
         sessionOpts (hieYaml, file) = do
           Extra.whenM didSessionLoadingPreferenceConfigChange $ do
             logWith recorder Info LogSessionLoadingChanged
@@ -744,10 +751,9 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
 
           v <- atomically $ fromMaybe HM.empty <$>  STM.lookup hieYaml fileToFlags
           case HM.lookup (toNormalizedFilePath' file) v of
-            Just (opts, old_di) -> do
+            Just (_opts, old_di) -> do
               deps_ok <- checkDependencyInfo old_di
-              if not deps_ok
-                then do
+              when (not deps_ok) $ do
                   -- if deps are old, we can try to load the error files again
                   atomicModifyIORef' error_loading_files (\xs -> (Set.delete file xs,()))
                   atomicModifyIORef' cradle_files (\xs -> (Set.delete file xs,()))
@@ -759,7 +765,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                   -- Keep the same name cache
                   modifyVar_ hscEnvs (return . Map.adjust (const []) hieYaml )
                   consultCradle hieYaml file
-                else return (opts, old_di)
             Nothing -> consultCradle hieYaml file
 
     let checkInCache ::NormalizedFilePath -> STM (Maybe (IdeResult HscEnvEq, DependencyInfo))
@@ -772,24 +777,27 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
     -- at a time. Therefore the IORef contains the currently running cradle, if we try
     -- to get some more options then we wait for the currently running action to finish
     -- before attempting to do so.
-    let getOptions :: FilePath -> IO (IdeResult HscEnvEq, DependencyInfo)
+    let getOptions :: FilePath -> IO ()
         getOptions file = do
             let ncfp = toNormalizedFilePath' file
             cachedHieYamlLocation <- atomically $ STM.lookup ncfp filesMap
             hieYaml <- cradleLoc file
             let hieLoc = join cachedHieYamlLocation <|> hieYaml
-            result <- sessionOpts (hieLoc, file) `Safe.catch` \e -> do
+            sessionOpts (hieLoc, file) `Safe.catch` \e -> do
                         dep <- getDependencyInfo $ maybe [] pure hieYaml
-                        return (([renderPackageSetupException file e], Nothing), dep)
-            atomically $ STM.focus (Focus.insertOrMerge HM.union (HM.singleton ncfp result)) hieLoc fileToFlags
-            return result
+                        let errorResult = (([renderPackageSetupException file e], Nothing), dep)
+                        atomically $ do
+                          STM.focus (Focus.insertOrMerge HM.union (HM.singleton ncfp errorResult)) hieLoc fileToFlags
+                          STM.insert hieYaml ncfp filesMap
+                          -- delete file from pending files
+                          S.delete file pendingFileSet
 
     let getOptionsLoop :: IO ()
         getOptionsLoop = do
             -- Get the next file to load
             absFile <- atomically $ S.readQueue pendingFileSet
             logWith recorder Info (LogGetOptionsLoop absFile)
-            void $ getOptions absFile
+            getOptions absFile
             getOptionsLoop
 
     -- | Given a file, this function will return the HscEnv and the dependencies
