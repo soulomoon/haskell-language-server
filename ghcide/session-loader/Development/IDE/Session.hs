@@ -753,7 +753,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
           case HM.lookup (toNormalizedFilePath' file) v of
             Just (_opts, old_di) -> do
               deps_ok <- checkDependencyInfo old_di
-              when (not deps_ok) $ do
+              if (not deps_ok)
+                then do
                   -- if deps are old, we can try to load the error files again
                   atomicModifyIORef' error_loading_files (\xs -> (Set.delete file xs,()))
                   atomicModifyIORef' cradle_files (\xs -> (Set.delete file xs,()))
@@ -765,6 +766,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                   -- Keep the same name cache
                   modifyVar_ hscEnvs (return . Map.adjust (const []) hieYaml )
                   consultCradle hieYaml file
+                -- if deps are ok, we can just remove the file from pending files
+                else atomically $ S.delete file pendingFileSet
             Nothing -> consultCradle hieYaml file
 
     let checkInCache ::NormalizedFilePath -> STM (Maybe (IdeResult HscEnvEq, DependencyInfo))
