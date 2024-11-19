@@ -780,8 +780,9 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
     -- at a time. Therefore the IORef contains the currently running cradle, if we try
     -- to get some more options then we wait for the currently running action to finish
     -- before attempting to do so.
-    let getOptions :: FilePath -> IO ()
-        getOptions file = do
+    let getOptionsWorker :: FilePath -> IO ()
+        getOptionsWorker file = do
+            logWith recorder Info (LogGetOptionsLoop file)
             let ncfp = toNormalizedFilePath' file
             cachedHieYamlLocation <- atomically $ STM.lookup ncfp filesMap
             hieYaml <- cradleLoc file
@@ -794,14 +795,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                           STM.insert hieYaml ncfp filesMap
                           -- delete file from pending files
                           S.delete file pendingFileSet
-
-    let getOptionsLoop :: IO ()
-        getOptionsLoop = do
-            -- Get the next file to load
-            absFile <- atomically $ S.readQueue pendingFileSet
-            logWith recorder Info (LogGetOptionsLoop absFile)
-            getOptions absFile
-            getOptionsLoop
 
     -- | Given a file, this function will return the HscEnv and the dependencies
     -- it would look up the cache first, if the cache is not available, it would
@@ -828,11 +821,12 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                 Nothing -> do
                         -- if not ok, we need to reload the session
                         atomically $ S.insert absFile pendingFileSet
+                        -- line up the session to load
+                        atomically $ writeTQueue que (getOptionsWorker absFile)
                         lookupOrWaitCache absFile
 
     -- see Note [Serializing runs in separate thread]
     -- Start the getOptionsLoop if the queue is empty
-    liftIO $ atomically $ Extra.whenM (isEmptyTQueue que) $ writeTQueue que getOptionsLoop
     returnWithVersion $ \file -> do
       let absFile = toAbsolutePath file
       second Map.keys <$> lookupOrWaitCache absFile
