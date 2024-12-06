@@ -570,7 +570,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
 
 
     let session :: (Maybe FilePath, NormalizedFilePath, ComponentOptions, FilePath)
-                -> IO ((IdeResult HscEnvEq,DependencyInfo), HashSet FilePath)
+                -> IO ((IdeResult HscEnvEq,DependencyInfo), HashSet FilePath, IO ())
         session args@(hieYaml, _cfp, _opts, _libDir) = do
           (new_deps, old_deps) <- packageSetup args
 
@@ -610,21 +610,21 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
           checkProject <- getCheckProject
           -- The VFS doesn't change on cradle edits, re-use the old one.
           -- Invalidate all the existing GhcSession build nodes by restarting the Shake session
-          restartShakeSession VFSUnmodified "new component" [] $ do
-            keys2 <- invalidateShakeCache
-            keys1 <- extendKnownTargets all_targets
-            unless (null new_deps || not checkProject) $ do
-                  cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
-                  void $ shakeEnqueue extras $ mkDelayedAction "InitialLoad" Debug $ void $ do
-                      mmt <- uses GetModificationTime cfps'
-                      let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
-                      modIfaces <- uses GetModIface cs_exist
-                      -- update exports map
-                      shakeExtras <- getShakeExtras
-                      let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
-                      liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
-            return [keys1, keys2]
-          return $ (this_options, newLoaded)
+          let restart = restartShakeSession VFSUnmodified "new component" [] $ do
+                keys2 <- invalidateShakeCache
+                keys1 <- extendKnownTargets all_targets
+                unless (null new_deps || not checkProject) $ do
+                    cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
+                    void $ shakeEnqueue extras $ mkDelayedAction "InitialLoad" Debug $ void $ do
+                        mmt <- uses GetModificationTime cfps'
+                        let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
+                        modIfaces <- uses GetModIface cs_exist
+                        -- update exports map
+                        shakeExtras <- getShakeExtras
+                        let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
+                        liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
+                return [keys1, keys2]
+          return (this_options, newLoaded, restart)
 
     let consultCradle :: Maybe FilePath -> FilePath -> IO ()
         consultCradle hieYaml cfp = do
@@ -667,13 +667,14 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                  [] -> error $ "GHC version could not be parsed: " <> version
                  ((runTime, _):_)
                    | compileTime == runTime -> do
-                     (_results, allNewLoaded) <- session (hieYaml, ncfp, opts, libDir)
+                     (_results, allNewLoaded, restart) <- session (hieYaml, ncfp, opts, libDir)
                      let newLoaded = pendingFiles `Set.intersection` allNewLoaded
                      -- log new loaded files
                      logWith recorder Info $ LogSessionNewLoadedFiles $ Set.toList newLoaded
                      -- remove all new loaded file from error loading files
                      atomicModifyIORef' error_loading_files (\old -> (old `Set.difference` allNewLoaded, ()))
                      atomicModifyIORef' cradle_files (\xs -> (newLoaded <> xs,()))
+                     restart
                    | otherwise -> do
                     -- delete cfp from pending files
                     atomically $ do
@@ -782,7 +783,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
     -- before attempting to do so.
     let getOptionsWorker :: FilePath -> IO ()
         getOptionsWorker file = do
-            logWith recorder Info (LogGetOptionsLoop file)
+            logWith recorder Debug (LogGetOptionsLoop file)
             let ncfp = toNormalizedFilePath' file
             cachedHieYamlLocation <- atomically $ STM.lookup ncfp filesMap
             hieYaml <- cradleLoc file
@@ -808,7 +809,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                 Extra.whenM (S.lookup absFile pendingFileSet) STM.retry
                 -- check if in the cache
                 checkInCache ncfp
-            logWith recorder Info $ LogLookupSessionCache absFile
+            logWith recorder Debug $ LogLookupSessionCache absFile
             updateDateRes <-  case res of
                     Just r -> do
                         depOk <- checkDependencyInfo (snd r)
