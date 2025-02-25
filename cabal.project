@@ -66,4 +66,4 @@ if impl(ghc >= 9.8.4) && impl(ghc < 9.8.5)
 source-repository-package
   type: git
   location: https://github.com/soulomoon/hie-bios.git
-  tag: 93582c21372af573e5103bad198777a3317a2df2
+  tag: 84febb04ba152b03fd42b551ffb2ea6e7506cf9b
