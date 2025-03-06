@@ -111,7 +111,6 @@ library
     , unliftio-core
     , unordered-containers         >=0.2.10.0
     , vector
-    , ListT
 
   if os(windows)
     build-depends: Win32
