@@ -63,6 +63,8 @@ if impl(ghc >= 9.8.4) && impl(ghc < 9.8.5)
   constraints:
     ghc-lib-parser==9.8.4.20241130
 
+allow-newer:
+  Cabal-syntax
 source-repository-package
   type: git
   location: https://github.com/haskell/hie-bios
