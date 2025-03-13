@@ -17,7 +17,6 @@ on:
 jobs:
   pre_job:
     runs-on: ubuntu-latest
-    if: contains(github.event.pull_request.labels.*.name, 'performance')
     outputs:
       should_skip: ${{ steps.skip_check.outputs.should_skip }}
     steps:
@@ -53,8 +52,8 @@ jobs:
         # see discussion https://github.com/haskell/haskell-language-server/pull/4118
         # also possible to add more GHCs if we performs better in the future.
         ghc:
-          - '9.6'
           - '9.8'
+          - '9.10'
         os:
           - ubuntu-latest
 
@@ -115,13 +114,14 @@ jobs:
         path: ~/.cabal/cabal.tar.gz
 
   bench_example:
+    if: contains(github.event.pull_request.labels.*.name, 'performance')
     needs: [bench_init, pre_job]
     runs-on: ${{ matrix.os }}
 
     strategy:
       fail-fast: false
       matrix:
-        ghc: ['9.6', '9.8']
+        ghc: ['9.8', '9.10']
         os: [ubuntu-latest]
         cabal: ['3.10']
         example: ['cabal', 'lsp-types']
