@@ -56,6 +56,7 @@ import           Development.IDE.GHC.Compat           (FieldLabel (flSelector),
                                                        HsExpr (HsApp, HsVar, XExpr),
                                                        HsFieldBind (hfbLHS),
                                                        HsRecFields (..),
+                                                       HsWrap (HsWrap),
                                                        Identifier, LPat,
                                                        Located,
                                                        NamedThing (getName),
@@ -505,7 +506,11 @@ showRecordPatFlds (ConPat _ _ args) = do
   where
     processRecCon (RecCon flds) = Just $ processRecordFlds flds
     processRecCon _             = Nothing
+#if __GLASGOW_HASKELL__ < 911
     getOccName (FieldOcc x _) = Just $ getName x
+#else
+    getOccName (FieldOcc _ x) = Just $ getName (unLoc x)
+#endif
     getOccName _              = Nothing
     getFieldName = getOccName . unLoc . hfbLHS . unLoc
 showRecordPatFlds _ = Nothing
@@ -577,13 +582,23 @@ getRecCons expr@(unLoc -> app@(HsApp _ _ _)) =
       [ RecordInfoApp realSpan' appExpr | RealSrcSpan realSpan' _ <- [ getLoc expr ] ]
 
     getFields :: HsExpr GhcTc -> [LHsExpr GhcTc] -> Maybe RecordAppExpr
-    getFields (HsApp _ constr@(unLoc -> (XExpr (ConLikeTc (conLikeFieldLabels -> fls) _ _))) arg) args
+    getFields (HsApp _ constr@(unLoc -> expr) arg) args
       | not (null fls)
       = Just (RecordAppExpr constr labelWithArgs)
-      where labelWithArgs = zipWith mkLabelWithArg fls (arg : args)
+      where fls = getExprFields expr
+            labelWithArgs = zipWith mkLabelWithArg fls (arg : args)
             mkLabelWithArg label arg = (L (getLoc arg) label, unLoc arg)
     getFields (HsApp _ constr arg) args = getFields (unLoc constr) (arg : args)
     getFields _ _ = Nothing
+
+    getExprFields :: HsExpr GhcTc -> [FieldLabel]
+    getExprFields (XExpr (ConLikeTc (conLikeFieldLabels -> fls) _ _)) = fls
+#if __GLASGOW_HASKELL__ >= 911
+    getExprFields (XExpr (WrapExpr _ expr)) = getExprFields expr
+#else
+    getExprFields (XExpr (WrapExpr (HsWrap _ expr))) = getExprFields expr
+#endif
+    getExprFields _ = []
 getRecCons _ = ([], False)
 
 getRecPatterns :: LPat GhcTc -> ([RecordInfo], Bool)
