@@ -91,13 +91,6 @@
             },
             "globalOn": true
         },
-        "hlint": {
-            "codeActionsOn": true,
-            "config": {
-                "flags": []
-            },
-            "diagnosticsOn": true
-        },
         "importLens": {
             "codeActionsOn": true,
             "codeLensOn": true,
@@ -148,6 +141,9 @@
                 "typeVariableToken": "typeParameter",
                 "variableToken": "variable"
             },
+            "globalOn": false
+        },
+        "stan": {
             "globalOn": false
         }
     },

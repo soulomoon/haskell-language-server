@@ -8,7 +8,7 @@ packages:
          ./hls-test-utils
 
 
-index-state:  2025-04-08T01:30:37Z
+index-state: 2025-04-19T07:34:07Z
 
 tests: True
 test-show-details: direct
@@ -63,9 +63,6 @@ allow-older: hie-bios:optparse-applicative
 if impl(ghc >= 9.11)
   benchmarks: False
   allow-newer:
-    hie-bios:ghc,
-    ghc-trace-events:base,
-    tasty-hspec:base,
     cabal-install-parsers:base,
     cabal-install-parsers:time,
 

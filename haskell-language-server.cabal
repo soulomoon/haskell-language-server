@@ -460,9 +460,9 @@ library hls-eval-plugin
   hs-source-dirs:     plugins/hls-eval-plugin/src
   other-modules:
     Ide.Plugin.Eval.Code
-    Ide.Plugin.Eval.CodeLens
     Ide.Plugin.Eval.Config
     Ide.Plugin.Eval.GHC
+    Ide.Plugin.Eval.Handlers
     Ide.Plugin.Eval.Parse.Comments
     Ide.Plugin.Eval.Parse.Option
     Ide.Plugin.Eval.Rules
@@ -703,14 +703,14 @@ flag hlint
   manual:      True
 
 common hlint
-  if flag(hlint) && (impl(ghc < 9.10) || flag(ignore-plugins-ghc-bounds))
+  if flag(hlint) && ((impl(ghc < 9.10) || impl(ghc > 9.11)) || flag(ignore-plugins-ghc-bounds))
     build-depends: haskell-language-server:hls-hlint-plugin
     cpp-options: -Dhls_hlint
 
 library hls-hlint-plugin
   import:           defaults, pedantic, warnings
   -- https://github.com/ndmitchell/hlint/pull/1594
-  if !(flag(hlint)) || (impl(ghc > 9.10) && !flag(ignore-plugins-ghc-bounds))
+  if !(flag(hlint)) || ((impl(ghc >= 9.10) && impl(ghc < 9.11)) && !flag(ignore-plugins-ghc-bounds))
     buildable: False
   exposed-modules:  Ide.Plugin.Hlint
   hs-source-dirs:   plugins/hls-hlint-plugin/src
@@ -722,7 +722,7 @@ library hls-hlint-plugin
     , filepath
     , ghcide                == 2.10.0.0
     , hashable
-    , hlint                 >= 3.5 && < 3.9
+    , hlint                 >= 3.5 && < 3.11
     , hls-plugin-api        == 2.10.0.0
     , lens
     , mtl
@@ -753,7 +753,7 @@ library hls-hlint-plugin
 
 test-suite hls-hlint-plugin-tests
   import:           defaults, pedantic, test-defaults, warnings
-  if (!flag(hlint)) || (impl(ghc > 9.10) && !flag(ignore-plugins-ghc-bounds))
+  if !flag(hlint) || ((impl(ghc >= 9.10) && impl(ghc < 9.11)) && !flag(ignore-plugins-ghc-bounds))
     buildable: False
   type:             exitcode-stdio-1.0
   hs-source-dirs:   plugins/hls-hlint-plugin/test
@@ -1208,13 +1208,13 @@ flag gadt
   manual:      True
 
 common gadt
-  if flag(gadt) && (impl(ghc < 9.11) || flag(ignore-plugins-ghc-bounds))
+  if flag(gadt)
     build-depends: haskell-language-server:hls-gadt-plugin
     cpp-options: -Dhls_gadt
 
 library hls-gadt-plugin
   import:           defaults, pedantic, warnings
-  if !flag(gadt) || (impl(ghc > 9.11) && !flag(ignore-plugins-ghc-bounds))
+  if !flag(gadt)
     buildable: False
   exposed-modules:  Ide.Plugin.GADT
   other-modules:    Ide.Plugin.GHC
@@ -1238,7 +1238,7 @@ library hls-gadt-plugin
 
 test-suite hls-gadt-plugin-tests
   import:           defaults, pedantic, test-defaults, warnings
-  if !flag(gadt) || (impl(ghc > 9.11) && !flag(ignore-plugins-ghc-bounds))
+  if !flag(gadt)
     buildable: False
   type:             exitcode-stdio-1.0
   hs-source-dirs:   plugins/hls-gadt-plugin/test
@@ -1551,14 +1551,14 @@ flag stylishHaskell
   manual:      True
 
 common stylishHaskell
-  if flag(stylishHaskell) && (impl(ghc < 9.10) || flag(ignore-plugins-ghc-bounds))
+  if flag(stylishHaskell)
     build-depends: haskell-language-server:hls-stylish-haskell-plugin
     cpp-options: -Dhls_stylishHaskell
 
 library hls-stylish-haskell-plugin
   import:           defaults, pedantic, warnings
   -- https://github.com/haskell/stylish-haskell/issues/479
-  if !(flag(stylishHaskell) && (impl(ghc < 9.10) || flag(ignore-plugins-ghc-bounds)))
+  if !flag(stylishHaskell)
     buildable: False
   exposed-modules:  Ide.Plugin.StylishHaskell
   hs-source-dirs:   plugins/hls-stylish-haskell-plugin/src
@@ -1570,13 +1570,13 @@ library hls-stylish-haskell-plugin
     , hls-plugin-api   == 2.10.0.0
     , lsp-types
     , mtl
-    , stylish-haskell  ^>=0.12 || ^>=0.13 || ^>=0.14
+    , stylish-haskell  >=0.12 && <0.16
     , text
 
 
 test-suite hls-stylish-haskell-plugin-tests
   import:           defaults, pedantic, test-defaults, warnings
-  if !(flag(stylishHaskell) && (impl(ghc < 9.10) || flag(ignore-plugins-ghc-bounds)))
+  if !flag(stylishHaskell)
     buildable: False
   type:             exitcode-stdio-1.0
   hs-source-dirs:   plugins/hls-stylish-haskell-plugin/test
