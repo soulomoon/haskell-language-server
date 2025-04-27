@@ -500,6 +500,23 @@ completeFileProcessing state hieYaml ncfp file flags = do
     insertFileMapping state hieYaml ncfp
     removeFromPending state file
 
+-- | Handle successful loading by updating session state with the new file maps
+updateSessionOnSuccess :: Recorder (WithPriority Log) -> SessionState -> Maybe FilePath -> HashMap NormalizedFilePath (IdeResult HscEnvEq, DependencyInfo) -> [TargetDetails] -> IO ()
+updateSessionOnSuccess recorder state hieYaml this_flags_map all_targets = do
+  let newLoaded = Set.fromList $ fromNormalizedFilePath <$> HM.keys this_flags_map
+  atomically $ do
+    STM.insert this_flags_map hieYaml (fileToFlags state)
+    insertAllFileMappings state $ map ((hieYaml,) . fst) $ concatMap toFlagsMap all_targets
+    forM_ newLoaded $ flip S.delete (pendingFileSet state)
+  pendingFiles <- getPendingFiles state
+  let newLoaded = pendingFiles `Set.intersection` newLoaded
+  -- log new loaded files
+  logWith recorder Info $ LogSessionNewLoadedFiles $ Set.toList newLoaded
+  -- remove all new loaded file from error loading files
+  mapM_ (removeErrorLoadingFile state) (Set.toList newLoaded)
+  addCradleFiles state newLoaded
+  return ()
+
 -- | Insert multiple file mappings at once
 insertAllFileMappings :: SessionState -> [(Maybe FilePath, NormalizedFilePath)] -> STM ()
 insertAllFileMappings state mappings =
@@ -711,11 +728,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                                        Nothing
 
           let newLoaded = Set.fromList $ fromNormalizedFilePath <$> HM.keys this_flags_map
-          atomically $ do
-            STM.insert this_flags_map hieYaml (fileToFlags sessionState)
-            insertAllFileMappings sessionState $ map ((hieYaml,) . fst) $ concatMap toFlagsMap all_targets
-            forM_ newLoaded $ flip S.delete (pendingFileSet sessionState)
-
+          updateSessionOnSuccess recorder sessionState hieYaml this_flags_map all_targets
           -- Typecheck all files in the project on startup
           checkProject <- getCheckProject
           -- The VFS doesn't change on cradle edits, re-use the old one.
@@ -769,14 +782,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                  [] -> error $ "GHC version could not be parsed: " <> version
                  ((runTime, _):_)
                    | compileTime == runTime -> do
-                     (_results, allNewLoaded, restart) <- session (hieYaml, ncfp, opts, libDir)
-                     pendingFiles <- getPendingFiles sessionState
-                     let newLoaded = pendingFiles `Set.intersection` allNewLoaded
-                     -- log new loaded files
-                     logWith recorder Info $ LogSessionNewLoadedFiles $ Set.toList newLoaded
-                     -- remove all new loaded file from error loading files
-                     mapM_ (removeErrorLoadingFile sessionState) (Set.toList allNewLoaded)
-                     addCradleFiles sessionState newLoaded
+                     (_results, _allNewLoaded, restart) <- session (hieYaml, ncfp, opts, libDir)
                      restart
                    | otherwise -> do
                     -- Use the common pattern here: updateFileState
