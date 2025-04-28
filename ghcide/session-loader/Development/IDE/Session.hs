@@ -122,7 +122,6 @@ import           Control.Concurrent.STM              (STM)
 import qualified Control.Monad.STM                   as STM
 import qualified Development.IDE.Session.OrderedSet  as S
 import qualified Focus
-import           GHC.Data.Bag
 import           GHC.Driver.Env                      (hsc_all_home_unit_ids)
 import           GHC.Driver.Errors.Types
 import           GHC.Types.Error                     (errMsgDiagnostic,
@@ -423,19 +422,36 @@ SessionState manages the state for batch loading files in the session loader.
 
 - When a new file needs to be loaded, it is added to the pendingFiles set.
 - The loader processes files from pendingFiles, attempting to load them in batches.
-- If a file is already in failedFiles, it is loaded individually (single-file mode).
-- Otherwise, the loader tries to load as many files as possible together (batch mode).
+- (SBL1) If a file is already in failedFiles, it is loaded individually (single-file mode).
+- (SBL2) Otherwise, the loader tries to load as many files as possible together (batch mode).
 
 On success:
-  - All successfully loaded files are removed from pendingFiles and failedFiles,
+  - (SBL3) All successfully loaded files are removed from pendingFiles and failedFiles,
     and added to loadedFiles.
 
 On failure:
-  - If loading a single file fails, it is added to failedFiles and removed from loadedFiles and pendingFiles.
-  - If batch loading fails, all files attempted are added to failedFiles.
+  - (SBL4) If loading a single file fails, it is added to failedFiles and removed from loadedFiles and pendingFiles.
+  - (SBL5) If batch loading fails, all files attempted are added to failedFiles.
 
 This approach ensures efficient batch loading while isolating problematic files for individual handling.
 -}
+
+handleLoadingSucc :: SessionState -> HashSet FilePath -> IO ()
+handleLoadingSucc sessionState files = do
+  atomically $ forM_ (Set.toList files) $ flip S.delete (pendingFiles sessionState)
+  mapM_ (removeErrorLoadingFile sessionState) (Set.toList files)
+  addCradleFiles sessionState files
+
+handleLoadingFailureBatch :: SessionState -> [FilePath] -> IO ()
+handleLoadingFailureBatch sessionState files = do
+  addErrorLoadingFiles sessionState files
+
+handleLoadingFailureSingle :: SessionState -> FilePath -> IO ()
+handleLoadingFailureSingle sessionState file = do
+  addErrorLoadingFile sessionState file
+  removeErrorLoadingFile sessionState file
+  atomically $ S.delete file (pendingFiles sessionState)
+  removeCradleFile sessionState file
 
 data SessionState = SessionState
   { loadedFiles :: !(IORef (HashSet FilePath)),
@@ -530,15 +546,13 @@ handleSessionError state hieYaml file e = do
 -- | Common pattern: Insert file flags, insert file mapping, and remove from pending
 handleFileProcessingError :: SessionState -> Maybe FilePath -> FilePath -> [FileDiagnostic] -> [FilePath] -> IO ()
 handleFileProcessingError state hieYaml file diags extraDepFiles = do
-  addErrorLoadingFile state file
-  removeCradleFile state file
   dep <- getDependencyInfo $ maybeToList hieYaml <> extraDepFiles
   let ncfp = toNormalizedFilePath' file
   let flags = ((diags, Nothing), dep)
+  handleLoadingFailureSingle state file
   atomically $ do
     insertFileFlags state hieYaml ncfp flags
     insertFileMapping state hieYaml ncfp
-    removeFromPending state file
 
 -- | Get the set of extra files to load based on the current file path
 -- If the current file is in error loading files, we fallback to single loading mode (empty set)
@@ -738,12 +752,9 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
           atomically $ do
             STM.insert this_flags_map hieYaml (fileToFlags sessionState)
             insertAllFileMappings sessionState $ map ((hieYaml,) . fst) $ concatMap toFlagsMap all_targets
-            forM_ newLoaded $ flip S.delete (pendingFiles sessionState)
 
           logWith recorder Info $ LogSessionNewLoadedFiles $ Set.toList newLoaded
-          -- remove all new loaded file from error loading files
-          mapM_ (removeErrorLoadingFile sessionState) (Set.toList newLoaded)
-          addCradleFiles sessionState newLoaded
+          handleLoadingSucc sessionState newLoaded
           -- Typecheck all files in the project on startup
           checkProject <- getCheckProject
 
@@ -814,7 +825,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                     -- are changed, and old_files are not valid anymore.
                     -- but they will still be in the old_files, and will not move to failedFiles.
                     -- And make other files failed to load in batch mode.
-                    addErrorLoadingFiles sessionState errorToLoadNewFiles
+                    handleLoadingFailureBatch sessionState errorToLoadNewFiles
                     -- retry without other files
                     logWith recorder Info $ LogSessionReloadOnError cfp (Set.toList attemptToLoadFiles)
                     consultCradle hieYaml cfp
