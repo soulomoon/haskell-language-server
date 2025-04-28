@@ -782,8 +782,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                 -- what if the error to load file is one of old_files ?
                 let attemptToLoadFiles = Set.delete cfp $ Set.fromList $ concatMap cradleErrorLoadingFiles err
                 old_files <- readIORef (cradle_files sessionState)
-                let errorToLoadNewFiles = attemptToLoadFiles `Set.difference` old_files
-                if not (null errorToLoadNewFiles)
+                let errorToLoadNewFiles = cfp : Set.toList (attemptToLoadFiles `Set.difference` old_files)
+                if length errorToLoadNewFiles > 1
                 then do
                     -- we are loading more files and failed, we need to retry
                     -- mark as less loaded files as failedLoadingFiles as possible
@@ -791,7 +791,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                     -- are changed, and old_files are not valid anymore.
                     -- but they will still be in the old_files, and will not move to error_loading_files.
                     -- And make other files failed to load in batch mode.
-                    addErrorLoadingFiles sessionState (Set.toList errorToLoadNewFiles)
+                    addErrorLoadingFiles sessionState errorToLoadNewFiles
                     -- retry without other files
                     logWith recorder Info $ LogSessionReloadOnError cfp (Set.toList attemptToLoadFiles)
                     consultCradle hieYaml cfp
