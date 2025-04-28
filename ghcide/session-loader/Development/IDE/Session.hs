@@ -840,6 +840,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
             -- cleanup error loading files and cradle files
             clearErrorLoadingFiles sessionState
             clearCradleFiles sessionState
+            cacheKey <- invalidateShakeCache
+            restartShakeSession VFSUnmodified "didSessionLoadingPreferenceConfigChange" [] (return [cacheKey])
 
           v <- atomically $ STM.lookup hieYaml (fileToFlags sessionState)
           case v >>= HM.lookup (toNormalizedFilePath' file) of
@@ -870,20 +872,17 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
     -- at a time. Therefore the IORef contains the currently running cradle, if we try
     -- to get some more options then we wait for the currently running action to finish
     -- before attempting to do so.
-    let getOptions :: FilePath -> IO ()
-        getOptions file = do
-            let ncfp = toNormalizedFilePath' file
-            cachedHieYamlLocation <- atomically $ STM.lookup ncfp (filesMap sessionState)
-            hieYaml <- cradleLoc file
-            let hieLoc = join cachedHieYamlLocation <|> hieYaml
-            sessionOpts (hieLoc, file) `Safe.catch` handleSessionError sessionState hieLoc file
 
     let getOptionsLoop :: IO ()
         getOptionsLoop = do
             -- Get the next file to load
-            absFile <- atomically $ S.readQueue (pendingFileSet sessionState)
-            logWith recorder Debug (LogGetOptionsLoop absFile)
-            getOptions absFile
+            file <- atomically $ S.readQueue (pendingFileSet sessionState)
+            logWith recorder Debug (LogGetOptionsLoop file)
+            let ncfp = toNormalizedFilePath' file
+            cachedHieYamlLocation <- join <$> atomically (STM.lookup ncfp (filesMap sessionState))
+            hieYaml <- cradleLoc file
+            let hieLoc = cachedHieYamlLocation <|> hieYaml
+            sessionOpts (hieLoc, file) `Safe.catch` handleSessionError sessionState hieLoc file
             getOptionsLoop
 
     -- | Given a file, this function will return the HscEnv and the dependencies
