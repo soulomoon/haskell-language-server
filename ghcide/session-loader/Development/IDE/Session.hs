@@ -418,14 +418,33 @@ getHieDbLoc dir = do
   createDirectoryIfMissing True cDir
   pure (cDir </> db)
 
+{- Note [SessionState and batch load]
+SessionState manages the state for batch loading files in the session loader.
+
+- When a new file needs to be loaded, it is added to the pendingFiles set.
+- The loader processes files from pendingFiles, attempting to load them in batches.
+- If a file is already in failedFiles, it is loaded individually (single-file mode).
+- Otherwise, the loader tries to load as many files as possible together (batch mode).
+
+On success:
+  - All successfully loaded files are removed from pendingFiles and failedFiles,
+    and added to loadedFiles.
+
+On failure:
+  - If loading a single file fails, it is added to failedFiles and removed from loadedFiles and pendingFiles.
+  - If batch loading fails, all files attempted are added to failedFiles.
+
+This approach ensures efficient batch loading while isolating problematic files for individual handling.
+-}
+
 data SessionState = SessionState
-  { cradle_files        :: !(IORef (HashSet FilePath))
-  , error_loading_files :: !(IORef (HashSet FilePath))
-  , hscEnvs             :: !(Var HieMap)
-  , fileToFlags         :: !(STM.Map (Maybe FilePath) (HashMap NormalizedFilePath (IdeResult HscEnvEq, DependencyInfo)))
-  , filesMap            :: !(STM.Map NormalizedFilePath (Maybe FilePath))
-  , pendingFileSet      :: !(S.OrderedSet FilePath)
-  , version             :: !(Var Int)
+  { loadedFiles :: !(IORef (HashSet FilePath)),
+    failedFiles :: !(IORef (HashSet FilePath)),
+    pendingFiles :: !(S.OrderedSet FilePath),
+    hscEnvs :: !(Var HieMap),
+    fileToFlags :: !(STM.Map (Maybe FilePath) (HashMap NormalizedFilePath (IdeResult HscEnvEq, DependencyInfo))),
+    filesMap :: !(STM.Map NormalizedFilePath (Maybe FilePath)),
+    version :: !(Var Int)
   }
 
 -- | Helper functions for SessionState management
@@ -434,7 +453,7 @@ data SessionState = SessionState
 -- | Add a file to the set of files with errors during loading
 addErrorLoadingFile :: SessionState -> FilePath -> IO ()
 addErrorLoadingFile state file =
-  atomicModifyIORef' (error_loading_files state) (\xs -> (Set.insert file xs, ()))
+  atomicModifyIORef' (failedFiles state) (\xs -> (Set.insert file xs, ()))
 
 addErrorLoadingFiles :: SessionState -> [FilePath] -> IO ()
 addErrorLoadingFiles = mapM_ . addErrorLoadingFile
@@ -442,26 +461,26 @@ addErrorLoadingFiles = mapM_ . addErrorLoadingFile
 -- | Remove a file from the set of files with errors during loading
 removeErrorLoadingFile :: SessionState -> FilePath -> IO ()
 removeErrorLoadingFile state file =
-  atomicModifyIORef' (error_loading_files state) (\xs -> (Set.delete file xs, ()))
+  atomicModifyIORef' (failedFiles state) (\xs -> (Set.delete file xs, ()))
 
 addCradleFiles :: SessionState -> HashSet FilePath -> IO ()
 addCradleFiles state files =
-  atomicModifyIORef' (cradle_files state) (\xs -> (files <> xs, ()))
+  atomicModifyIORef' (loadedFiles state) (\xs -> (files <> xs, ()))
 
 -- | Remove a file from the cradle files set
 removeCradleFile :: SessionState -> FilePath -> IO ()
 removeCradleFile state file =
-  atomicModifyIORef' (cradle_files state) (\xs -> (Set.delete file xs, ()))
+  atomicModifyIORef' (loadedFiles state) (\xs -> (Set.delete file xs, ()))
 
 -- | Clear error loading files and reset to empty set
 clearErrorLoadingFiles :: SessionState -> IO ()
 clearErrorLoadingFiles state =
-  atomicModifyIORef' (error_loading_files state) (\_ -> (Set.empty, ()))
+  atomicModifyIORef' (failedFiles state) (\_ -> (Set.empty, ()))
 
 -- | Clear cradle files and reset to empty set
 clearCradleFiles :: SessionState -> IO ()
 clearCradleFiles state =
-  atomicModifyIORef' (cradle_files state) (\_ -> (Set.empty, ()))
+  atomicModifyIORef' (loadedFiles state) (\_ -> (Set.empty, ()))
 
 -- | Reset the file maps in the session state
 resetFileMaps :: SessionState -> STM ()
@@ -482,12 +501,12 @@ insertFileMapping state hieYaml ncfp =
 -- | Remove a file from the pending file set
 removeFromPending :: SessionState -> FilePath -> STM ()
 removeFromPending state file =
-  S.delete file (pendingFileSet state)
+  S.delete file (pendingFiles state)
 
 -- | Add a file to the pending file set
 addToPending :: SessionState -> FilePath -> STM ()
 addToPending state file =
-  S.insert file (pendingFileSet state)
+  S.insert file (pendingFiles state)
 
 
 -- | Insert multiple file mappings at once
@@ -501,7 +520,7 @@ incrementVersion state = modifyVar' (version state) succ
 
 -- | Get files from the pending file set
 getPendingFiles :: SessionState -> IO (HashSet FilePath)
-getPendingFiles state = atomically $ Set.fromList <$> S.toUnOrderedList (pendingFileSet state)
+getPendingFiles state = atomically $ Set.fromList <$> S.toUnOrderedList (pendingFiles state)
 
 -- | Handle errors during session loading by recording file as having error and removing from pending
 handleSessionError :: SessionState -> Maybe FilePath -> FilePath -> PackageSetupException -> IO ()
@@ -527,8 +546,8 @@ handleFileProcessingError state hieYaml file diags extraDepFiles = do
 getExtraFilesToLoad :: SessionState -> FilePath -> IO [FilePath]
 getExtraFilesToLoad state cfp = do
   pendingFiles <- getPendingFiles state
-  errorFiles <- readIORef (error_loading_files state)
-  old_files <- readIORef (cradle_files state)
+  errorFiles <- readIORef (failedFiles state)
+  old_files <- readIORef (loadedFiles state)
   -- if the file is in error loading files, we fall back to single loading mode
   return $
     Set.toList $
@@ -536,6 +555,19 @@ getExtraFilesToLoad state cfp = do
         then Set.empty
         -- remove error files from pending files since error loading need to load one by one
         else (Set.delete cfp $ pendingFiles `Set.difference` errorFiles) <> old_files
+
+newSessionState :: IO SessionState
+newSessionState = do
+  -- Initialize SessionState
+  sessionState <- SessionState
+    <$> newIORef (Set.fromList [])  -- loadedFiles
+    <*> newIORef (Set.fromList [])  -- failedFiles
+    <*> S.newIO                     -- pendingFiles
+    <*> newVar Map.empty            -- hscEnvs
+    <*> STM.newIO                   -- fileToFlags
+    <*> STM.newIO                   -- filesMap
+    <*> newVar 0                    -- version
+  return sessionState
 
 -- | Given a root directory, return a Shake 'Action' which setups an
 -- 'IdeGhcSession' given a file.
@@ -555,16 +587,7 @@ loadSessionWithOptions :: Recorder (WithPriority Log) -> SessionLoadingOptions -
 loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
   let toAbsolutePath = toAbsolute rootDir -- see Note [Root Directory]
 
-  -- Initialize SessionState
-  sessionState <- SessionState
-    <$> newIORef (Set.fromList [])  -- cradle_files
-    <*> newIORef (Set.fromList [])  -- error_loading_files
-    <*> newVar Map.empty            -- hscEnvs
-    <*> STM.newIO                   -- fileToFlags
-    <*> STM.newIO                   -- filesMap
-    <*> S.newIO                     -- pendingFileSet
-    <*> newVar 0                    -- version
-
+  sessionState <- newSessionState
   biosSessionLoadingVar <- newVar Nothing :: IO (Var (Maybe SessionLoadingPreferenceConfig))
   let returnWithVersion fun = IdeGhcSession fun <$> liftIO (readVar (version sessionState))
 
@@ -709,13 +732,13 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                                          ])
                                        Nothing
 
-          pendingFiles <- getPendingFiles sessionState
+          pendings <- getPendingFiles sessionState
           -- this_flags_map might contains files not in pendingFiles, take the intersection
-          let newLoaded = pendingFiles `Set.intersection` Set.fromList (fromNormalizedFilePath <$> HM.keys this_flags_map)
+          let newLoaded = pendings `Set.intersection` Set.fromList (fromNormalizedFilePath <$> HM.keys this_flags_map)
           atomically $ do
             STM.insert this_flags_map hieYaml (fileToFlags sessionState)
             insertAllFileMappings sessionState $ map ((hieYaml,) . fst) $ concatMap toFlagsMap all_targets
-            forM_ newLoaded $ flip S.delete (pendingFileSet sessionState)
+            forM_ newLoaded $ flip S.delete (pendingFiles sessionState)
 
           logWith recorder Info $ LogSessionNewLoadedFiles $ Set.toList newLoaded
           -- remove all new loaded file from error loading files
@@ -781,7 +804,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
              Left err -> do
                 -- what if the error to load file is one of old_files ?
                 let attemptToLoadFiles = Set.delete cfp $ Set.fromList $ concatMap cradleErrorLoadingFiles err
-                old_files <- readIORef (cradle_files sessionState)
+                old_files <- readIORef (loadedFiles sessionState)
                 let errorToLoadNewFiles = cfp : Set.toList (attemptToLoadFiles `Set.difference` old_files)
                 if length errorToLoadNewFiles > 1
                 then do
@@ -789,7 +812,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                     -- mark as less loaded files as failedLoadingFiles as possible
                     -- limitation is that when we are loading files, and the dependencies of old_files
                     -- are changed, and old_files are not valid anymore.
-                    -- but they will still be in the old_files, and will not move to error_loading_files.
+                    -- but they will still be in the old_files, and will not move to failedFiles.
                     -- And make other files failed to load in batch mode.
                     addErrorLoadingFiles sessionState errorToLoadNewFiles
                     -- retry without other files
@@ -869,7 +892,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
     let getOptionsLoop :: IO ()
         getOptionsLoop = do
             -- Get the next file to load
-            file <- atomically $ S.readQueue (pendingFileSet sessionState)
+            file <- atomically $ S.readQueue (pendingFiles sessionState)
             logWith recorder Debug (LogGetOptionsLoop file)
             let ncfp = toNormalizedFilePath' file
             cachedHieYamlLocation <- join <$> atomically (STM.lookup ncfp (filesMap sessionState))
@@ -887,7 +910,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
             let ncfp = toNormalizedFilePath' absFile
             res <- atomically $ do
                 -- wait until target file is not in pendingFiles
-                Extra.whenM (S.lookup absFile (pendingFileSet sessionState)) STM.retry
+                Extra.whenM (S.lookup absFile (pendingFiles sessionState)) STM.retry
                 -- check if in the cache
                 checkInCache ncfp
             logWith recorder Debug $ LogLookupSessionCache absFile
