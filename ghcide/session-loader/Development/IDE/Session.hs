@@ -454,13 +454,13 @@ handleLoadingFailureSingle sessionState file = do
   removeCradleFile sessionState file
 
 data SessionState = SessionState
-  { loadedFiles :: !(IORef (HashSet FilePath)),
-    failedFiles :: !(IORef (HashSet FilePath)),
+  { loadedFiles  :: !(IORef (HashSet FilePath)),
+    failedFiles  :: !(IORef (HashSet FilePath)),
     pendingFiles :: !(S.OrderedSet FilePath),
-    hscEnvs :: !(Var HieMap),
-    fileToFlags :: !(STM.Map (Maybe FilePath) (HashMap NormalizedFilePath (IdeResult HscEnvEq, DependencyInfo))),
-    filesMap :: !(STM.Map NormalizedFilePath (Maybe FilePath)),
-    version :: !(Var Int)
+    hscEnvs      :: !(Var HieMap),
+    fileToFlags  :: !FlagsMap,
+    filesMap     :: !FilesMap,
+    version      :: !(Var Int)
   }
 
 -- | Helper functions for SessionState management
