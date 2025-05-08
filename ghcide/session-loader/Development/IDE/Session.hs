@@ -78,7 +78,8 @@ import           Ide.Logger                          (Pretty (pretty),
                                                       nest,
                                                       toCologActionWithPrio,
                                                       vcat, viaShow, (<+>))
-import           Ide.Types                           (SessionLoadingPreferenceConfig (..),
+import           Ide.Types                           (Config,
+                                                      SessionLoadingPreferenceConfig (..),
                                                       sessionLoading)
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Server
@@ -460,7 +461,8 @@ data SessionState = SessionState
     hscEnvs      :: !(Var HieMap),
     fileToFlags  :: !FlagsMap,
     filesMap     :: !FilesMap,
-    version      :: !(Var Int)
+    version      :: !(Var Int),
+    sessionLoadingPreferenceConfig :: !(Var (Maybe SessionLoadingPreferenceConfig))
   }
 
 -- | Helper functions for SessionState management
@@ -570,6 +572,24 @@ getExtraFilesToLoad state cfp = do
         -- remove error files from pending files since error loading need to load one by one
         else (Set.delete cfp $ pendingFiles `Set.difference` errorFiles) <> old_files
 
+-- | We allow users to specify a loading strategy.
+-- Check whether this config was changed since the last time we have loaded
+-- a session.
+--
+-- If the loading configuration changed, we likely should restart the session
+-- in its entirety.
+didSessionLoadingPreferenceConfigChange :: SessionState -> Config -> IO Bool
+didSessionLoadingPreferenceConfigChange s clientConfig = do
+    let biosSessionLoadingVar = sessionLoadingPreferenceConfig s
+    mLoadingConfig <- readVar biosSessionLoadingVar
+    case mLoadingConfig of
+        Nothing -> do
+            writeVar biosSessionLoadingVar (Just (sessionLoading clientConfig))
+            pure False
+        Just loadingConfig -> do
+            writeVar biosSessionLoadingVar (Just (sessionLoading clientConfig))
+            pure (loadingConfig /= sessionLoading clientConfig)
+
 newSessionState :: IO SessionState
 newSessionState = do
   -- Initialize SessionState
@@ -581,6 +601,7 @@ newSessionState = do
     <*> STM.newIO                   -- fileToFlags
     <*> STM.newIO                   -- filesMap
     <*> newVar 0                    -- version
+    <*> newVar Nothing              -- sessionLoadingPreferenceConfig
   return sessionState
 
 -- | Given a root directory, return a Shake 'Action' which setups an
@@ -602,7 +623,6 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
   let toAbsolutePath = toAbsolute rootDir -- see Note [Root Directory]
 
   sessionState <- newSessionState
-  biosSessionLoadingVar <- newVar Nothing :: IO (Var (Maybe SessionLoadingPreferenceConfig))
   let returnWithVersion fun = IdeGhcSession fun <$> liftIO (readVar (version sessionState))
 
   -- This caches the mapping from Mod.hs -> hie.yaml
@@ -833,31 +853,12 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
                     -- we are only loading this file and it failed
                     let res = map (\err' -> renderCradleError err' cradle ncfp) err
                     handleFileProcessingError sessionState hieYaml cfp res $ concatMap cradleErrorDependencies err
-
-    let
-        -- | We allow users to specify a loading strategy.
-        -- Check whether this config was changed since the last time we have loaded
-        -- a session.
-        --
-        -- If the loading configuration changed, we likely should restart the session
-        -- in its entirety.
-        didSessionLoadingPreferenceConfigChange :: IO Bool
-        didSessionLoadingPreferenceConfigChange = do
-          mLoadingConfig <- readVar biosSessionLoadingVar
-          case mLoadingConfig of
-            Nothing -> do
-              writeVar biosSessionLoadingVar (Just (sessionLoading clientConfig))
-              pure False
-            Just loadingConfig -> do
-              writeVar biosSessionLoadingVar (Just (sessionLoading clientConfig))
-              pure (loadingConfig /= sessionLoading clientConfig)
-
     -- This caches the mapping from hie.yaml + Mod.hs -> [String]
     -- Returns the Ghc session and the cradle dependencies
     let sessionOpts :: (Maybe FilePath, FilePath)
                     -> IO ()
         sessionOpts (hieYaml, file) = do
-          Extra.whenM didSessionLoadingPreferenceConfigChange $ do
+          Extra.whenM (didSessionLoadingPreferenceConfigChange sessionState clientConfig) $ do
             logWith recorder Info LogSessionLoadingChanged
             -- If the dependencies are out of date then clear both caches and start
             -- again.
