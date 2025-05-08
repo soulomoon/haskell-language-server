@@ -893,13 +893,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
         checkInCache ncfp = runMaybeT $ do
                cachedHieYamlLocation <- MaybeT $ STM.lookup ncfp (filesMap sessionState)
                m <- MaybeT $ STM.lookup cachedHieYamlLocation (fileToFlags sessionState)
-               -- Each one of deps will be registered as a FileSystemWatcher in the GhcSession action
-               -- so that we can get a workspace/didChangeWatchedFiles notification when a dep changes.
-               -- The GlobPattern of a FileSystemWatcher can be absolute or relative.
-               -- We use the absolute one because it is supported by more LSP clients.
-               -- Here we make sure deps are absolute and later we use those absolute deps as GlobPattern.
-               let absolutePathsCradleDeps (eq, deps) = (eq, fmap toAbsolutePath deps)
-               MaybeT $ pure $ absolutePathsCradleDeps <$> HM.lookup ncfp m
+               MaybeT $ pure $ HM.lookup ncfp m
 
     -- The main function which gets options for a file. We only want one of these running
     -- at a time. Therefore the IORef contains the currently running cradle, if we try
@@ -947,9 +941,16 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
     -- see Note [Serializing runs in separate thread]
     -- Start the getOptionsLoop if the queue is empty
     liftIO $ atomically $ Extra.whenM (isEmptyTQueue que) $ writeTQueue que getOptionsLoop
+
+    -- Each one of deps will be registered as a FileSystemWatcher in the GhcSession action
+    -- so that we can get a workspace/didChangeWatchedFiles notification when a dep changes.
+    -- The GlobPattern of a FileSystemWatcher can be absolute or relative.
+    -- We use the absolute one because it is supported by more LSP clients.
+    -- Here we make sure deps are absolute and later we use those absolute deps as GlobPattern.
+    let absolutePathsCradleDeps (eq, deps) = (eq, fmap toAbsolutePath $ Map.keys deps)
     returnWithVersion $ \file -> do
       let absFile = toAbsolutePath file
-      second Map.keys <$> lookupOrWaitCache absFile
+      absolutePathsCradleDeps <$> lookupOrWaitCache absFile
 
 -- | Run the specific cradle on a specific FilePath via hie-bios.
 -- This then builds dependencies or whatever based on the cradle, gets the
