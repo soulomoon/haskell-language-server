@@ -455,8 +455,8 @@ handleLoadingFailureSingle sessionState file = do
   removeCradleFile sessionState file
 
 data SessionState = SessionState
-  { loadedFiles  :: !(IORef (HashSet FilePath)),
-    failedFiles  :: !(IORef (HashSet FilePath)),
+  { loadedFiles  :: !(Var (HashSet FilePath)),
+    failedFiles  :: !(Var (HashSet FilePath)),
     pendingFiles :: !(S.OrderedSet FilePath),
     hscEnvs      :: !(Var HieMap),
     fileToFlags  :: !FlagsMap,
@@ -471,7 +471,7 @@ data SessionState = SessionState
 -- | Add a file to the set of files with errors during loading
 addErrorLoadingFile :: SessionState -> FilePath -> IO ()
 addErrorLoadingFile state file =
-  atomicModifyIORef' (failedFiles state) (\xs -> (Set.insert file xs, ()))
+  modifyVar_' (failedFiles state) (\xs -> return $ Set.insert file xs)
 
 addErrorLoadingFiles :: SessionState -> [FilePath] -> IO ()
 addErrorLoadingFiles = mapM_ . addErrorLoadingFile
@@ -479,26 +479,26 @@ addErrorLoadingFiles = mapM_ . addErrorLoadingFile
 -- | Remove a file from the set of files with errors during loading
 removeErrorLoadingFile :: SessionState -> FilePath -> IO ()
 removeErrorLoadingFile state file =
-  atomicModifyIORef' (failedFiles state) (\xs -> (Set.delete file xs, ()))
+  modifyVar_' (failedFiles state) (\xs -> return $ Set.delete file xs)
 
 addCradleFiles :: SessionState -> HashSet FilePath -> IO ()
 addCradleFiles state files =
-  atomicModifyIORef' (loadedFiles state) (\xs -> (files <> xs, ()))
+  modifyVar_' (loadedFiles state) (\xs -> return $ files <> xs)
 
 -- | Remove a file from the cradle files set
 removeCradleFile :: SessionState -> FilePath -> IO ()
 removeCradleFile state file =
-  atomicModifyIORef' (loadedFiles state) (\xs -> (Set.delete file xs, ()))
+  modifyVar_' (loadedFiles state) (\xs -> return $ Set.delete file xs)
 
 -- | Clear error loading files and reset to empty set
 clearErrorLoadingFiles :: SessionState -> IO ()
 clearErrorLoadingFiles state =
-  atomicModifyIORef' (failedFiles state) (\_ -> (Set.empty, ()))
+  modifyVar_' (failedFiles state) (const $ return Set.empty)
 
 -- | Clear cradle files and reset to empty set
 clearCradleFiles :: SessionState -> IO ()
 clearCradleFiles state =
-  atomicModifyIORef' (loadedFiles state) (\_ -> (Set.empty, ()))
+  modifyVar_' (loadedFiles state) (const $ return Set.empty)
 
 -- | Reset the file maps in the session state
 resetFileMaps :: SessionState -> STM ()
@@ -562,8 +562,8 @@ handleFileProcessingError state hieYaml file diags extraDepFiles = do
 getExtraFilesToLoad :: SessionState -> FilePath -> IO [FilePath]
 getExtraFilesToLoad state cfp = do
   pendingFiles <- getPendingFiles state
-  errorFiles <- readIORef (failedFiles state)
-  old_files <- readIORef (loadedFiles state)
+  errorFiles <- readVar (failedFiles state)
+  old_files <- readVar (loadedFiles state)
   -- if the file is in error loading files, we fall back to single loading mode
   return $
     Set.toList $
@@ -594,8 +594,8 @@ newSessionState :: IO SessionState
 newSessionState = do
   -- Initialize SessionState
   sessionState <- SessionState
-    <$> newIORef (Set.fromList [])  -- loadedFiles
-    <*> newIORef (Set.fromList [])  -- failedFiles
+    <$> newVar (Set.fromList [])  -- loadedFiles
+    <*> newVar (Set.fromList [])  -- failedFiles
     <*> S.newIO                     -- pendingFiles
     <*> newVar Map.empty            -- hscEnvs
     <*> STM.newIO                   -- fileToFlags
@@ -835,7 +835,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
              Left err -> do
                 -- what if the error to load file is one of old_files ?
                 let attemptToLoadFiles = Set.delete cfp $ Set.fromList $ concatMap cradleErrorLoadingFiles err
-                old_files <- readIORef (loadedFiles sessionState)
+                old_files <- readVar (loadedFiles sessionState)
                 let errorToLoadNewFiles = cfp : Set.toList (attemptToLoadFiles `Set.difference` old_files)
                 if length errorToLoadNewFiles > 1
                 then do
