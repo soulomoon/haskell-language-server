@@ -97,6 +97,14 @@ jobs:
           ghc: ${{ matrix.ghc }}
           os: ${{ runner.os }}
 
+      - name: Cache cabal store
+        uses: actions/cache@v3
+        with:
+          path: ~/.cabal/store
+          key: ${{ runner.os }}-ghc-${{ matrix.ghc }}-cabalstore-${{ hashFiles('**/*.cabal', 'cabal.project*') }}
+          restore-keys: |
+            ${{ runner.os }}-ghc-${{ matrix.ghc }}-cabalstore-
+
       - name: Cache dist-newstyle
         uses: actions/cache@v3
         with:
