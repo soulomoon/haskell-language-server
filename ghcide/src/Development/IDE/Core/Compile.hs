@@ -787,7 +787,7 @@ addRelativeImport fp modu dflags = dflags
 
 -- | Also resets the interface store
 atomicFileWrite :: ShakeExtras -> FilePath -> (FilePath -> IO a) -> IO a
-atomicFileWrite se targetPath write = do
+atomicFileWrite se targetPath write = uninterruptibleMask_ $ do
   let dir = takeDirectory targetPath
   createDirectoryIfMissing True dir
   (tempFilePath, cleanUp) <- newTempFileWithin dir
