@@ -31,14 +31,14 @@ import           Development.IDE.Core.Compile             (sourceParser,
 import           Development.IDE.Core.FileStore           (getVersionedTextDoc)
 import           Development.IDE.Core.PluginUtils
 import           Development.IDE.GHC.Compat
-import           Development.IDE.GHC.Compat.Error         (msgEnvelopeErrorL)
+import           Development.IDE.GHC.Compat.Error         (GhcHint (SuggestExtension),
+                                                           LanguageExtensionHint (..),
+                                                           diagnosticHints,
+                                                           msgEnvelopeErrorL)
 import           Development.IDE.Plugin.Completions       (ghcideCompletionsPluginPriority)
 import           Development.IDE.Plugin.Completions.Logic (getCompletionPrefixFromRope)
 import           Development.IDE.Plugin.Completions.Types (PosPrefixInfo (..))
 import qualified Development.IDE.Spans.Pragmas            as Pragmas
-import           GHC.Types.Error                          (GhcHint (SuggestExtension),
-                                                           LanguageExtensionHint (..),
-                                                           diagnosticHints)
 import           Ide.Plugin.Error
 import           Ide.Types
 import qualified Language.LSP.Protocol.Lens               as L

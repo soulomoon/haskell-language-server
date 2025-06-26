@@ -5,6 +5,8 @@ module Development.IDE.GHC.Compat.Error (
   MsgEnvelope(..),
   msgEnvelopeErrorL,
   GhcMessage(..),
+  GhcHint (SuggestExtension),
+  LanguageExtensionHint (..),
   -- * Error messages for the typechecking and renamer phase
   TcRnMessage (..),
   TcRnMessageDetailed (..),
