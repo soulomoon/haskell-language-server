@@ -1324,24 +1324,6 @@ getDependencyInfo fs = Map.fromList <$> mapM do_one fs
     do_one :: FilePath -> IO (FilePath, Maybe UTCTime)
     do_one fp = (fp,) . eitherToMaybe <$> safeTryIO (getModificationTime fp)
 
--- | This function removes all the -package flags which refer to packages we
--- are going to deal with ourselves. For example, if a executable depends
--- on a library component, then this function will remove the library flag
--- from the package flags for the executable
---
--- There are several places in GHC (for example the call to hptInstances in
--- tcRnImports) which assume that all modules in the HPT have the same unit
--- ID. Therefore we create a fake one and give them all the same unit id.
-_removeInplacePackages --Only used in ghc < 9.4
-    :: UnitId     -- ^ fake uid to use for our internal component
-    -> [UnitId]
-    -> DynFlags
-    -> (DynFlags, [UnitId])
-_removeInplacePackages fake_uid us df = (setHomeUnitId_ fake_uid $
-                                       df { packageFlags = ps }, uids)
-  where
-    (uids, ps) = Compat.filterInplaceUnits us (packageFlags df)
-
 -- | Memoize an IO function, with the characteristics:
 --
 --   * If multiple people ask for a result simultaneously, make sure you only compute it once.
