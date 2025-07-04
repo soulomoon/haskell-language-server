@@ -180,7 +180,9 @@ library
     Development.IDE.Plugin.Test
     Development.IDE.Plugin.TypeLenses
     Development.IDE.Session
+    Development.IDE.Session.Dependency
     Development.IDE.Session.Diagnostics
+    Development.IDE.Session.Ghc
     Development.IDE.Session.Implicit
     Development.IDE.Spans.AtPoint
     Development.IDE.Spans.Common
