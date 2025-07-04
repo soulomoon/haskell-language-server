@@ -357,6 +357,8 @@ CallStack (from HasCallStack):
   expectJust, called at compiler\\typecheck\\FamInst.hs:461:30 in ghc:FamInst
 ```
 
+and many more.
+
 To mitigate this, we set the cache directory for each component dependent
 on the components of the current `HscEnv`, additionally to the component options
 of the respective components.

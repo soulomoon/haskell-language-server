@@ -208,7 +208,7 @@ instance Pretty Log where
 
 -- | Bump this version number when making changes to the format of the data stored in hiedb
 hiedbDataVersion :: String
-hiedbDataVersion = "1"
+hiedbDataVersion = "2"
 
 data SessionLoadingOptions = SessionLoadingOptions
   { findCradle             :: FilePath -> IO (Maybe FilePath)
@@ -705,7 +705,7 @@ type SessionM = ReaderT SessionEnv IO
 -- 2. Check in the cache, whether the given 'hie.yaml' was already loaded before
 -- 3.1. If it wasn't, initialise a new session and continue with step 4.
 -- 3.2. If it is loaded, check whether we need to reload the session, e.g. because the `.cabal` file was modified
--- 3.2.1. If we need to reload, remove the 
+-- 3.2.1. If we need to reload, remove the
 getOptionsLoop :: Recorder (WithPriority Log) -> SessionShake -> SessionState -> TVar (Hashed KnownTargets) -> SessionM ()
 getOptionsLoop recorder sessionShake sessionState knownTargetsVar = forever $ do
   -- Get the next file to load
