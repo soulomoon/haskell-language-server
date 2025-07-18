@@ -91,9 +91,9 @@ import qualified Data.HashSet                        as Set
 import           Database.SQLite.Simple
 import           Development.IDE.Core.Tracing        (withTrace)
 import           Development.IDE.Core.WorkerThread   (withWorkerQueue)
-import           Development.IDE.Session.Diagnostics (renderCradleError)
 import           Development.IDE.Session.Dependency
-import           Development.IDE.Session.Ghc hiding (Log)
+import           Development.IDE.Session.Diagnostics (renderCradleError)
+import           Development.IDE.Session.Ghc         hiding (Log)
 import           Development.IDE.Types.Shake         (WithHieDb,
                                                       WithHieDbShield (..),
                                                       toNoFileKey)
@@ -106,11 +106,11 @@ import           Text.ParserCombinators.ReadP        (readP_to_S)
 
 import           Control.Concurrent.STM              (STM, TVar)
 import qualified Control.Monad.STM                   as STM
+import           Control.Monad.Trans.Reader
+import qualified Development.IDE.Session.Ghc         as Ghc
 import qualified Development.IDE.Session.OrderedSet  as S
 import qualified Focus
 import qualified StmContainers.Map                   as STM
-import Control.Monad.Trans.Reader
-import qualified Development.IDE.Session.Ghc as Ghc
 
 data Log
   = LogSettingInitialDynFlags
@@ -689,12 +689,12 @@ data SessionShake = SessionShake
   }
 
 data SessionEnv = SessionEnv
-  { sessionLspContext :: Maybe (LanguageContextEnv Config)
-  , sessionRootDir :: FilePath
-  , sessionIdeOptions :: IdeOptions
-  , sessionClientConfig :: Config
+  { sessionLspContext      :: Maybe (LanguageContextEnv Config)
+  , sessionRootDir         :: FilePath
+  , sessionIdeOptions      :: IdeOptions
+  , sessionClientConfig    :: Config
   , sessionSharedNameCache :: NameCache
-  , sessionLoadingOptions :: SessionLoadingOptions
+  , sessionLoadingOptions  :: SessionLoadingOptions
   }
 
 type SessionM = ReaderT SessionEnv IO
@@ -1023,121 +1023,6 @@ memoIO op = do
                 res <- onceFork $ op k
                 return (Map.insert k res mp, res)
             Just res -> return (mp, res)
-
-unit_flags :: [Flag (CmdLineP [String])]
-unit_flags = [defFlag "unit"  (SepArg addUnit)]
-
-addUnit :: String -> EwM (CmdLineP [String]) ()
-addUnit unit_str = liftEwM $ do
-  units <- getCmdLineState
-  putCmdLineState (unit_str : units)
-
--- | Throws if package flags are unsatisfiable
-setOptions :: GhcMonad m
-    => NormalizedFilePath
-    -> ComponentOptions
-    -> DynFlags
-    -> FilePath -- ^ root dir, see Note [Root Directory]
-    -> m (NonEmpty (DynFlags, [GHC.Target]))
-setOptions cfp (ComponentOptions theOpts compRoot _) dflags rootDir = do
-    ((theOpts',_errs,_warns),units) <- processCmdLineP unit_flags [] (map noLoc theOpts)
-    case NE.nonEmpty units of
-      Just us -> initMulti us
-      Nothing -> do
-        (df, targets) <- initOne (map unLoc theOpts')
-        -- A special target for the file which caused this wonderful
-        -- component to be created. In case the cradle doesn't list all the targets for
-        -- the component, in which case things will be horribly broken anyway.
-        --
-        -- When we have a singleComponent that is caused to be loaded due to a
-        -- file, we assume the file is part of that component. This is useful
-        -- for bare GHC sessions, such as many of the ones used in the testsuite
-        --
-        -- We don't do this when we have multiple components, because each
-        -- component better list all targets or there will be anarchy.
-        -- It is difficult to know which component to add our file to in
-        -- that case.
-        -- Multi unit arguments are likely to come from cabal, which
-        -- does list all targets.
-        --
-        -- If we don't end up with a target for the current file in the end, then
-        -- we will report it as an error for that file
-        let abs_fp = toAbsolute rootDir (fromNormalizedFilePath cfp)
-        let special_target = Compat.mkSimpleTarget df abs_fp
-        pure $ (df, special_target : targets) :| []
-    where
-      initMulti unitArgFiles =
-        forM unitArgFiles $ \f -> do
-          args <- liftIO $ expandResponse [f]
-          -- The reponse files may contain arguments like "+RTS",
-          -- and hie-bios doesn't expand the response files of @-unit@ arguments.
-          -- Thus, we need to do the stripping here.
-          initOne $ HieBios.removeRTS $ HieBios.removeVerbosityOpts args
-      initOne this_opts = do
-        (dflags', targets') <- addCmdOpts this_opts dflags
-        let dflags'' =
-                case unitIdString (homeUnitId_ dflags') of
-                     -- cabal uses main for the unit id of all executable packages
-                     -- This makes multi-component sessions confused about what
-                     -- options to use for that component.
-                     -- Solution: hash the options and use that as part of the unit id
-                     -- This works because there won't be any dependencies on the
-                     -- executable unit.
-                     "main" ->
-                       let hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack this_opts)
-                           hashed_uid = Compat.toUnitId (Compat.stringToUnit ("main-"++hash))
-                       in setHomeUnitId_ hashed_uid dflags'
-                     _ -> dflags'
-
-        let targets = makeTargetsAbsolute root targets'
-            root = case workingDirectory dflags'' of
-              Nothing   -> compRoot
-              Just wdir -> compRoot </> wdir
-        let dflags''' =
-              setWorkingDirectory root $
-              disableWarningsAsErrors $
-              -- disabled, generated directly by ghcide instead
-              flip gopt_unset Opt_WriteInterface $
-              -- disabled, generated directly by ghcide instead
-              -- also, it can confuse the interface stale check
-              dontWriteHieFiles $
-              setIgnoreInterfacePragmas $
-              setBytecodeLinkerOptions $
-              disableOptimisation $
-              Compat.setUpTypedHoles $
-              makeDynFlagsAbsolute compRoot -- makeDynFlagsAbsolute already accounts for workingDirectory
-              dflags''
-        return (dflags''', targets)
-
-setIgnoreInterfacePragmas :: DynFlags -> DynFlags
-setIgnoreInterfacePragmas df =
-    gopt_set (gopt_set df Opt_IgnoreInterfacePragmas) Opt_IgnoreOptimChanges
-
-disableOptimisation :: DynFlags -> DynFlags
-disableOptimisation df = updOptLevel 0 df
-
-setHiDir :: FilePath -> DynFlags -> DynFlags
-setHiDir f d =
-    -- override user settings to avoid conflicts leading to recompilation
-    d { hiDir      = Just f}
-
-setODir :: FilePath -> DynFlags -> DynFlags
-setODir f d =
-    -- override user settings to avoid conflicts leading to recompilation
-    d { objectDir = Just f}
-
-getCacheDirsDefault :: String -> [String] -> IO CacheDirs
-getCacheDirsDefault prefix opts = do
-    dir <- Just <$> getXdgDirectory XdgCache (cacheDir </> prefix ++ "-" ++ opts_hash)
-    return $ CacheDirs dir dir dir
-    where
-        -- Create a unique folder per set of different GHC options, assuming that each different set of
-        -- GHC options will create incompatible interface files.
-        opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
-
--- | Sub directory for the cache path
-cacheDir :: String
-cacheDir = "ghcide"
 
 ----------------------------------------------------------------------------------------------------
 
