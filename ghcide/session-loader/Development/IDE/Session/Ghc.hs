@@ -230,7 +230,10 @@ setOptions haddockOpt cfp (ComponentOptions theOpts compRoot _) dflags rootDir =
       initMulti unitArgFiles =
         forM unitArgFiles $ \f -> do
           args <- liftIO $ expandResponse [f]
-          initOne args
+          -- The reponse files may contain arguments like "+RTS",
+          -- and hie-bios doesn't expand the response files of @-unit@ arguments.
+          -- Thus, we need to do the stripping here.
+          initOne $ HieBios.removeRTS $ HieBios.removeVerbosityOpts args
       initOne this_opts = do
         (dflags', targets') <- addCmdOpts this_opts dflags
         let dflags'' =
