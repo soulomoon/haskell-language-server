@@ -509,7 +509,7 @@ incrementVersion state = modifyVar' (version state) succ
 
 -- | Get files from the pending file set
 getPendingFiles :: SessionState -> IO (HashSet FilePath)
-getPendingFiles state = atomically $ Set.fromList <$> S.toUnOrderedList (pendingFiles state)
+getPendingFiles state = atomically $ S.toHashSet (pendingFiles state)
 
 -- | Handle errors during session loading by recording file as having error and removing from pending
 handleSingleFileProcessingError' :: SessionState -> Maybe FilePath -> FilePath -> PackageSetupException -> SessionM ()
