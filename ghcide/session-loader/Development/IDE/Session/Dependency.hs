@@ -1,8 +1,8 @@
 module Development.IDE.Session.Dependency where
 
-import           Control.Exception.Safe              as Safe
+import           Control.Exception.Safe as Safe
 import           Data.Either.Extra
-import qualified Data.Map.Strict                     as Map
+import qualified Data.Map.Strict        as Map
 import           Data.Time.Clock
 import           System.Directory
 
