@@ -16,22 +16,12 @@ type OrderedSet a = (TQueue a, Set a)
 
 -- | Insert an element into the ordered set.
 -- If the element is not already present, it is added to both the queue and set.
--- If the element already exists, it is moved to the end of the queue to maintain
--- most-recently-inserted ordering semantics.
--- It take O(n), not very good.
-
--- Alternative: preserve original position and ignore new one.
--- I am not sure which one is better.
+-- If the element already exists, ignore it
 insert :: Hashable a => a -> OrderedSet a -> STM ()
 insert a (que, s) = do
     (_, inserted) <- S.focus (Focus.testingIfInserts $ Focus.insert ()) a s
     -- if already in the set
-    -- update the position of the element in the queue
-    when (not inserted) $ do
-            items <- filter (==a) <$> flushTQueue que
-            mapM_ (writeTQueue que) items
-            return ()
-    writeTQueue que a
+    when inserted $ writeTQueue que a
 
 newIO :: Hashable a => IO (OrderedSet a)
 newIO = do
@@ -58,5 +48,5 @@ lookup a (_, s) = S.lookup a s
 delete :: Hashable a => a -> OrderedSet a -> STM ()
 delete a (_, s) = S.delete a s
 
-toHashSet :: Hashable a => OrderedSet a -> Data.HashSet a
-toHashSet (_, s) = TreeSet.fromList $ LT.toList $ S.listT s
+toHashSet :: Hashable a => OrderedSet a -> STM (Data.HashSet.HashSet a)
+toHashSet (_, s) = Data.HashSet.fromList <$> LT.toList (S.listT s)

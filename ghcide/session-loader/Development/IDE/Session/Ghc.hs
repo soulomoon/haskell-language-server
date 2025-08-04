@@ -30,6 +30,7 @@ import           Development.IDE.Types.Diagnostics
 import           Development.IDE.Types.HscEnvEq     (HscEnvEq, newHscEnvEq)
 import           Development.IDE.Types.Location
 import           GHC.ResponseFile
+import qualified HIE.Bios.Cradle.Utils              as HieBios
 import           HIE.Bios.Environment               hiding (getCacheDir)
 import           HIE.Bios.Types                     hiding (Log)
 import           Ide.Logger                         (Pretty (pretty),
