@@ -17,5 +17,3 @@ a-1.0.0-inplace
 base
 -XHaskell98
 C
-+RTS
--A32M
