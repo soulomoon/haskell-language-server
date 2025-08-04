@@ -827,10 +827,11 @@ session recorder sessionShake sessionState knownTargetsVar(hieYaml, cfp, opts, l
 packageSetup :: Recorder (WithPriority Log) -> SessionState -> SessionM HscEnv -> (Maybe FilePath, NormalizedFilePath, ComponentOptions) -> SessionM ([ComponentInfo], [ComponentInfo])
 packageSetup recorder sessionState newEmptyHscEnv (hieYaml, cfp, opts) = do
   getCacheDirs <- asks (getCacheDirs . sessionLoadingOptions)
+  haddockparse <- asks (optHaddockParse . sessionIdeOptions)
   rootDir <- asks sessionRootDir
   -- Parse DynFlags for the newly discovered component
   hscEnv <- newEmptyHscEnv
-  newTargetDfs <- liftIO $ evalGhcEnv hscEnv $ setOptions cfp opts (hsc_dflags hscEnv) rootDir
+  newTargetDfs <- liftIO $ evalGhcEnv hscEnv $ setOptions haddockparse cfp opts (hsc_dflags hscEnv) rootDir
   let deps = componentDependencies opts ++ maybeToList hieYaml
   dep_info <- liftIO $ getDependencyInfo deps
   -- Now lookup to see whether we are combining with an existing HscEnv

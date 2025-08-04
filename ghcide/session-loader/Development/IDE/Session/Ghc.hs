@@ -2,57 +2,59 @@
 module Development.IDE.Session.Ghc where
 
 import           Control.Monad
-import           Control.Monad.Extra                 as Extra
+import           Control.Monad.Extra                as Extra
 import           Control.Monad.IO.Class
-import qualified Crypto.Hash.SHA1                    as H
-import qualified Data.ByteString.Base16              as B16
-import qualified Data.ByteString.Char8               as B
+import qualified Crypto.Hash.SHA1                   as H
+import qualified Data.ByteString.Base16             as B16
+import qualified Data.ByteString.Char8              as B
 import           Data.Function
 import           Data.List
-import           Data.List.Extra                     as L
-import           Data.List.NonEmpty                  (NonEmpty (..))
-import qualified Data.List.NonEmpty                  as NE
-import qualified Data.Map.Strict                     as Map
+import           Data.List.Extra                    as L
+import           Data.List.NonEmpty                 (NonEmpty (..))
+import qualified Data.List.NonEmpty                 as NE
+import qualified Data.Map.Strict                    as Map
 import           Data.Maybe
-import qualified Data.Text                           as T
-import           Development.IDE.Core.Shake          hiding (Log, knownTargets,
-                                                      withHieDb)
-import qualified Development.IDE.GHC.Compat          as Compat
+import qualified Data.Text                          as T
+import           Development.IDE.Core.Shake         hiding (Log, knownTargets,
+                                                     withHieDb)
+import qualified Development.IDE.GHC.Compat         as Compat
 import           Development.IDE.GHC.Compat.CmdLine
-import           Development.IDE.GHC.Compat.Core     hiding (Target, TargetFile,
-                                                      TargetModule, Var,
-                                                      Warning, getOptions)
-import qualified Development.IDE.GHC.Compat.Core     as GHC
-import           Development.IDE.GHC.Compat.Env      hiding (Logger)
-import           Development.IDE.GHC.Compat.Units    (UnitId)
+import           Development.IDE.GHC.Compat.Core    hiding (Target, TargetFile,
+                                                     TargetModule, Var, Warning,
+                                                     getOptions)
+import qualified Development.IDE.GHC.Compat.Core    as GHC
+import           Development.IDE.GHC.Compat.Env     hiding (Logger)
+import           Development.IDE.GHC.Compat.Units   (UnitId)
 import           Development.IDE.GHC.Util
 import           Development.IDE.Types.Diagnostics
-import           Development.IDE.Types.HscEnvEq      (HscEnvEq, newHscEnvEq)
+import           Development.IDE.Types.HscEnvEq     (HscEnvEq, newHscEnvEq)
 import           Development.IDE.Types.Location
 import           GHC.ResponseFile
-import           HIE.Bios.Environment                hiding (getCacheDir)
-import           HIE.Bios.Types                      hiding (Log)
-import           Ide.Logger                          (Pretty (pretty),
-                                                      Priority (Debug, Error, Info),
-                                                      Recorder, WithPriority, logWith, viaShow, (<+>))
+import           HIE.Bios.Environment               hiding (getCacheDir)
+import           HIE.Bios.Types                     hiding (Log)
+import           Ide.Logger                         (Pretty (pretty),
+                                                     Priority (Debug, Error, Info),
+                                                     Recorder, WithPriority,
+                                                     logWith, viaShow, (<+>))
 import           System.Directory
 import           System.FilePath
 import           System.Info
 
 
 import           Control.DeepSeq
-import           Control.Exception                   (evaluate)
-import           Control.Monad.IO.Unlift             (MonadUnliftIO)
-import qualified Data.Set                            as OS
-import qualified Development.IDE.GHC.Compat.Util     as Compat
+import           Control.Exception                  (evaluate)
+import           Control.Monad.IO.Unlift            (MonadUnliftIO)
+import qualified Data.Set                           as OS
+import qualified Development.IDE.GHC.Compat.Util    as Compat
 import           Development.IDE.Session.Dependency
+import           Development.IDE.Types.Options
 import           GHC.Data.Graph.Directed
-import           Ide.PluginUtils                     (toAbsolute)
+import           Ide.PluginUtils                    (toAbsolute)
 
-import           GHC.Driver.Env                      (hsc_all_home_unit_ids)
+import           GHC.Driver.Env                     (hsc_all_home_unit_ids)
 import           GHC.Driver.Errors.Types
-import           GHC.Types.Error                     (errMsgDiagnostic,
-                                                      singleMessage)
+import           GHC.Types.Error                    (errMsgDiagnostic,
+                                                     singleMessage)
 import           GHC.Unit.State
 
 data Log
@@ -192,12 +194,13 @@ newComponentCache recorder exts _cfp hsc_env old_cis new_cis = do
 
 -- | Throws if package flags are unsatisfiable
 setOptions :: GhcMonad m
-    => NormalizedFilePath
+    => OptHaddockParse
+    -> NormalizedFilePath
     -> ComponentOptions
     -> DynFlags
     -> FilePath -- ^ root dir, see Note [Root Directory]
     -> m (NonEmpty (DynFlags, [GHC.Target]))
-setOptions cfp (ComponentOptions theOpts compRoot _) dflags rootDir = do
+setOptions haddockOpt cfp (ComponentOptions theOpts compRoot _) dflags rootDir = do
     ((theOpts',_errs,_warns),units) <- processCmdLineP unit_flags [] (map noLoc theOpts)
     case NE.nonEmpty units of
       Just us -> initMulti us
@@ -258,6 +261,7 @@ setOptions cfp (ComponentOptions theOpts compRoot _) dflags rootDir = do
               dontWriteHieFiles $
               setIgnoreInterfacePragmas $
               setBytecodeLinkerOptions $
+              enableOptHaddock haddockOpt $
               disableOptimisation $
               Compat.setUpTypedHoles $
               makeDynFlagsAbsolute compRoot -- makeDynFlagsAbsolute already accounts for workingDirectory
@@ -317,6 +321,14 @@ setIgnoreInterfacePragmas df =
 
 disableOptimisation :: DynFlags -> DynFlags
 disableOptimisation df = updOptLevel 0 df
+
+-- | We always compile with '-haddock' unless explicitly disabled.
+--
+-- This avoids inconsistencies when doing recompilation checking which was
+-- observed in https://github.com/haskell/haskell-language-server/issues/4511
+enableOptHaddock :: OptHaddockParse -> DynFlags -> DynFlags
+enableOptHaddock HaddockParse d   = gopt_set d Opt_Haddock
+enableOptHaddock NoHaddockParse d = d
 
 setHiDir :: FilePath -> DynFlags -> DynFlags
 setHiDir f d =

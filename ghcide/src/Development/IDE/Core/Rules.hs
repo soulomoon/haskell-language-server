@@ -138,6 +138,8 @@ import           Development.IDE.Types.HscEnvEq
 import           Development.IDE.Types.Location
 import           Development.IDE.Types.Options
 import qualified Development.IDE.Types.Shake                  as Shake
+import           GHC.Iface.Ext.Types                          (HieASTs (..))
+import           GHC.Iface.Ext.Utils                          (generateReferencesMap)
 import qualified GHC.LanguageExtensions                       as LangExt
 import           HIE.Bios.Ghc.Gap                             (hostIsDynamic)
 import qualified HieDb
@@ -260,12 +262,10 @@ getParsedModuleRule recorder =
     let ms = ms' { ms_hspp_opts = modify_dflags $ ms_hspp_opts ms' }
         reset_ms pm = pm { pm_mod_summary = ms' }
 
-    -- We still parse with Haddocks whether Opt_Haddock is True or False to collect information
-    -- but we no longer need to parse with and without Haddocks separately for above GHC90.
-    liftIO $ (fmap.fmap.fmap) reset_ms $ getParsedModuleDefinition hsc opt file (withOptHaddock ms)
+    liftIO $ (fmap.fmap.fmap) reset_ms $ getParsedModuleDefinition hsc opt file ms
 
-withOptHaddock :: ModSummary -> ModSummary
-withOptHaddock = withOption Opt_Haddock
+withoutOptHaddock :: ModSummary -> ModSummary
+withoutOptHaddock = withoutOption Opt_Haddock
 
 withOption :: GeneralFlag -> ModSummary -> ModSummary
 withOption opt ms = ms{ms_hspp_opts= gopt_set (ms_hspp_opts ms) opt}
@@ -284,7 +284,7 @@ getParsedModuleWithCommentsRule recorder =
     ModSummaryResult{msrModSummary = ms, msrHscEnv = hsc} <- use_ GetModSummary file
     opt <- getIdeOptions
 
-    let ms' = withoutOption Opt_Haddock $ withOption Opt_KeepRawTokenStream ms
+    let ms' = withoutOptHaddock $ withOption Opt_KeepRawTokenStream ms
     modify_dflags <- getModifyDynFlags dynFlagsModifyParser
     let ms'' = ms' { ms_hspp_opts = modify_dflags $ ms_hspp_opts ms' }
         reset_ms pm = pm { pm_mod_summary = ms' }
@@ -512,7 +512,7 @@ persistentHieFileRule recorder = addPersistentRule GetHieAst $ \file -> runMaybe
   (currentSource, ver) <- liftIO $ case M.lookup (filePathToUri' file) vfsData of
     Nothing -> (,Nothing) . T.decodeUtf8 <$> BS.readFile (fromNormalizedFilePath file)
     Just vf -> pure (virtualFileText vf, Just $ virtualFileVersion vf)
-  let refmap = Compat.generateReferencesMap . Compat.getAsts . Compat.hie_asts $ res
+  let refmap = generateReferencesMap . getAsts . Compat.hie_asts $ res
       del = deltaFromDiff (T.decodeUtf8 $ Compat.hie_hs_src res) currentSource
   pure (HAR (Compat.hie_module res) (Compat.hie_asts res) refmap mempty (HieFromDisk res),del,ver)
 
@@ -540,8 +540,8 @@ getHieAstRuleDefinition f hsc tmr = do
           liftIO $ writeAndIndexHieFile hsc se modSummary f exports asts source
     _ -> pure []
 
-  let refmap = Compat.generateReferencesMap . Compat.getAsts <$> masts
-      typemap = AtPoint.computeTypeReferences . Compat.getAsts <$> masts
+  let refmap = generateReferencesMap . getAsts <$> masts
+      typemap = AtPoint.computeTypeReferences . getAsts <$> masts
   pure (diags <> diagsWrite, HAR (ms_mod $ tmrModSummary tmr) <$> masts <*> refmap <*> typemap <*> pure HieFresh)
 
 getImportMapRule :: Recorder (WithPriority Log) -> Rules ()
@@ -972,8 +972,8 @@ regenerateHiFile sess f ms compNeeded = do
     hsc <- setFileCacheHook (hscEnv sess)
     opt <- getIdeOptions
 
-    -- Embed haddocks in the interface file
-    (diags, mb_pm) <- liftIO $ getParsedModuleDefinition hsc opt f (withOptHaddock ms)
+    -- By default, we parse with `-haddock` unless 'OptHaddockParse' is overwritten.
+    (diags, mb_pm) <- liftIO $ getParsedModuleDefinition hsc opt f ms
     case mb_pm of
         Nothing -> return (diags, Nothing)
         Just pm -> do
