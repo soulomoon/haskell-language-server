@@ -20,7 +20,7 @@ type OrderedSet a = (TQueue a, Set a)
 -- most-recently-inserted ordering semantics.
 -- It take O(n), not very good.
 
--- Alternative: could preserve original position.
+-- Alternative: preserve original position and ignore new one.
 -- I am not sure which one is better.
 insert :: Hashable a => a -> OrderedSet a -> STM ()
 insert a (que, s) = do
