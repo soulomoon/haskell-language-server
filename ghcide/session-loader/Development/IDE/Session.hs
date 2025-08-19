@@ -817,10 +817,30 @@ session recorder sessionShake sessionState knownTargetsVar(hieYaml, cfp, opts, l
   let new_cache = newComponentCache (cmapWithPrio LogSessionGhc recorder) (optExtensions ideOptions) cfp hscEnv
   all_target_details <- liftIO $ new_cache old_deps new_deps
   (all_targets, this_flags_map) <- liftIO $ addErrorTargetIfUnknown all_target_details hieYaml cfp
-
-  liftIO $ handleBatchLoadSuccess recorder sessionState hieYaml this_flags_map all_targets
-  -- Typecheck all files in the project on startup
-  liftIO $ loadKnownTargets recorder sessionShake (optCheckProject ideOptions) knownTargetsVar new_deps all_targets
+  -- The VFS doesn't change on cradle edits, re-use the old one.
+  -- Invalidate all the existing GhcSession build nodes by restarting the Shake session
+  liftIO $ do
+    checkProject <- optCheckProject ideOptions
+    restartSession sessionShake VFSUnmodified "new component" [] $ do
+        -- It is necessary to call handleBatchLoadSuccess in restartSession
+        -- to ensure the GhcSession rule does not return before a new session is started.
+        -- Otherwise, invalid compilation results may propagate to downstream rules,
+        -- potentially resulting in lost diagnostics and other issues.
+        handleBatchLoadSuccess recorder sessionState hieYaml this_flags_map all_targets
+        keys2 <- invalidateCache sessionShake
+        keys1 <- extendKnownTargets recorder knownTargetsVar all_targets
+        -- Typecheck all files in the project on startup
+        unless (null new_deps || not checkProject) $ do
+            cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
+            void $ enqueueActions sessionShake $ mkDelayedAction "InitialLoad" Debug $ void $ do
+                mmt <- uses GetModificationTime cfps'
+                let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
+                modIfaces <- uses GetModIface cs_exist
+                -- update exports map
+                shakeExtras <- getShakeExtras
+                let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
+                liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
+        return [keys1, keys2]
 
 -- | Create a new HscEnv from a hieYaml root and a set of options
 packageSetup :: Recorder (WithPriority Log) -> SessionState -> SessionM HscEnv -> (Maybe FilePath, NormalizedFilePath, ComponentOptions) -> SessionM ([ComponentInfo], [ComponentInfo])
@@ -897,26 +917,6 @@ extendKnownTargets recorder knownTargetsVar newTargets = do
     logWith recorder Debug $ LogKnownFilesUpdated (targetMap x)
   return $ toNoFileKey GetKnownTargets
 
-loadKnownTargets :: Recorder (WithPriority Log) -> SessionShake -> IO Bool -> TVar (Hashed KnownTargets) -> [ComponentInfo] -> [TargetDetails] -> IO ()
-loadKnownTargets recorder sessionShake getCheckProject knownTargetsVar new_deps targets = do
-  checkProject <- getCheckProject
-
-  -- The VFS doesn't change on cradle edits, re-use the old one.
-  -- Invalidate all the existing GhcSession build nodes by restarting the Shake session
-  restartSession sessionShake VFSUnmodified "new component" [] $ do
-    keys2 <- invalidateCache sessionShake
-    keys1 <- extendKnownTargets recorder knownTargetsVar targets
-    unless (null new_deps || not checkProject) $ do
-      cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations targets)
-      void $ enqueueActions sessionShake $ mkDelayedAction "InitialLoad" Debug $ void $ do
-        mmt <- uses GetModificationTime cfps'
-        let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
-        modIfaces <- uses GetModIface cs_exist
-        -- update exports map
-        shakeExtras <- getShakeExtras
-        let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
-        liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
-    return [keys1, keys2]
 
 loadCradleWithNotifications ::
   Recorder (WithPriority Log) ->
