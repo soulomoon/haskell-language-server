@@ -39,6 +39,7 @@ import           Development.IDE.Graph.Internal.Types
 import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                    as SMap
+import qualified StmContainers.Set                    as SSet
 import           System.IO.Unsafe
 import           System.Time.Extra                    (duration, sleep)
 
@@ -53,6 +54,7 @@ newDatabase :: Dynamic -> TheRules -> IO Database
 newDatabase databaseExtra databaseRules = do
     databaseStep <- newTVarIO $ Step 0
     databaseValues <- atomically SMap.new
+    databaseDirtyKeys <- atomically SSet.new
     pure Database{..}
 
 -- | Increment the step and mark dirty.
@@ -60,13 +62,12 @@ newDatabase databaseExtra databaseRules = do
 incDatabase :: Database -> Maybe [Key] -> IO ()
 -- only some keys are dirty
 incDatabase db (Just kk) = do
-    atomicallyNamed "incDatabase" $ modifyTVar'  (databaseStep db) $ \(Step i) -> Step $ i + 1
-    transitiveDirtyKeys <- transitiveDirtySet db kk
-    for_ (toListKeySet transitiveDirtyKeys) $ \k ->
-        -- Updating all the keys atomically is not necessary
-        -- since we assume that no build is mutating the db.
-        -- Therefore run one transaction per key to minimise contention.
-        atomicallyNamed "incDatabase" $ SMap.focus updateDirty k (databaseValues db)
+    atomicallyNamed "incDatabase" $ do
+        modifyTVar' (databaseStep db) $ \(Step i) -> Step $ i + 1
+        for_ kk $ \k -> SSet.insert k (databaseDirtyKeys db)
+        keys <- ListT.toList $ SSet.listT (databaseDirtyKeys db)
+        transitiveDirtyKeys <- transitiveDirtySet db keys
+        for_ (toListKeySet transitiveDirtyKeys) $ \k -> SMap.focus updateDirty k (databaseValues db)
 
 -- all keys are dirty
 incDatabase db Nothing = do
@@ -220,6 +221,7 @@ compute db@Database{..} stack key mode result = do
     atomicallyNamed "compute and run hook" $ do
         runHook
         SMap.focus (updateStatus $ Clean res) key databaseValues
+        SSet.delete key databaseDirtyKeys
     pure res
 
 updateStatus :: Monad m => Status -> Focus.Focus KeyDetails m ()
@@ -286,14 +288,14 @@ updateReverseDeps myId db prev new = do
 getReverseDependencies :: Database -> Key -> STM (Maybe KeySet)
 getReverseDependencies db = (fmap.fmap) keyReverseDeps  . flip SMap.lookup (databaseValues db)
 
-transitiveDirtySet :: Foldable t => Database -> t Key -> IO KeySet
+transitiveDirtySet :: Foldable t => Database -> t Key -> STM KeySet
 transitiveDirtySet database = flip State.execStateT mempty . traverse_ loop
   where
     loop x = do
         seen <- State.get
         if x `memberKeySet` seen then pure () else do
             State.put (insertKeySet x seen)
-            next <- lift $ atomically $ getReverseDependencies database x
+            next <- lift $ getReverseDependencies database x
             traverse_ loop (maybe mempty toListKeySet next)
 
 --------------------------------------------------------------------------------

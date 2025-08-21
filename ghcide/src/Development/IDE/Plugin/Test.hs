@@ -130,7 +130,7 @@ testRequestHandler s (GarbageCollectDirtyKeys parents age) = do
     res <- liftIO $ runAction "garbage collect dirty" s $ garbageCollectDirtyKeysOlderThan age parents
     return $ Right $ toJSON $ map show res
 testRequestHandler s GetStoredKeys = do
-    keys <- liftIO $ atomically $ map fst <$> ListT.toList (STM.listT $ state $ shakeExtras s)
+    keys <- liftIO $ atomically $ map fst <$> ListT.toList (STM.listT $ stateValues $ shakeExtras s)
     return $ Right $ toJSON $ map show keys
 testRequestHandler s GetFilesOfInterest = do
     ff <- liftIO $ getFilesOfInterest s

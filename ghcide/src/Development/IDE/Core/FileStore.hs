@@ -82,6 +82,7 @@ data Log
   = LogCouldNotIdentifyReverseDeps !NormalizedFilePath
   | LogTypeCheckingReverseDeps !NormalizedFilePath !(Maybe [NormalizedFilePath])
   | LogShake Shake.Log
+  | LogGetModificationTime !NormalizedFilePath
   deriving Show
 
 instance Pretty Log where
@@ -94,6 +95,8 @@ instance Pretty Log where
       <> ":"
       <+> pretty (fmap (fmap show) reverseDepPaths)
     LogShake msg -> pretty msg
+    LogGetModificationTime path ->
+      "Getting modification time for" <+> viaShow path
 
 addWatchedFileRule :: Recorder (WithPriority Log) -> (NormalizedFilePath -> Action Bool) -> Rules ()
 addWatchedFileRule recorder isWatched = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \AddWatchedFile f -> do
@@ -109,7 +112,8 @@ addWatchedFileRule recorder isWatched = defineNoDiagnostics (cmapWithPrio LogSha
 
 
 getModificationTimeRule :: Recorder (WithPriority Log) -> Rules ()
-getModificationTimeRule recorder = defineEarlyCutoff (cmapWithPrio LogShake recorder) $ Rule $ \(GetModificationTime_ missingFileDiags) file ->
+getModificationTimeRule recorder = defineEarlyCutoff (cmapWithPrio LogShake recorder) $ Rule $ \(GetModificationTime_ missingFileDiags) file -> do
+    logWith recorder Info $ LogGetModificationTime file
     getModificationTimeImpl missingFileDiags file
 
 getModificationTimeImpl
@@ -279,11 +283,9 @@ setFileModified recorder vfs state saved nfp actionBefore = do
           AlwaysCheck -> True
           CheckOnSave -> saved
           _           -> False
-    restartShakeSession (shakeExtras state) vfs (fromNormalizedFilePath nfp ++ " (modified)") [] $ do
+    restartShakeSession (shakeExtras state) vfs (fromNormalizedFilePath nfp ++ " (modified)") ([mkDelayedAction "ParentTC" L.Debug (typecheckParentsAction recorder nfp) | checkParents]) $ do
         keys<-actionBefore
         return (toKey GetModificationTime nfp:keys)
-    when checkParents $
-      typecheckParents recorder state nfp
 
 typecheckParents :: Recorder (WithPriority Log) -> IdeState -> NormalizedFilePath -> IO ()
 typecheckParents recorder state nfp = void $ shakeEnqueue (shakeExtras state) parents

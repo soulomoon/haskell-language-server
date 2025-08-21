@@ -27,6 +27,7 @@ import           GHC.Generics                       (Generic)
 import qualified ListT
 import qualified StmContainers.Map                  as SMap
 import           StmContainers.Map                  (Map)
+import           StmContainers.Set                  (Set)
 import           System.Time.Extra                  (Seconds)
 import           UnliftIO                           (MonadUnliftIO)
 
@@ -109,10 +110,13 @@ onKeyReverseDeps f it@KeyDetails{..} =
     it{keyReverseDeps = f keyReverseDeps}
 
 data Database = Database {
-    databaseExtra  :: Dynamic,
-    databaseRules  :: TheRules,
-    databaseStep   :: !(TVar Step),
-    databaseValues :: !(Map Key KeyDetails)
+    databaseExtra     :: Dynamic,
+    databaseRules     :: TheRules,
+    databaseStep      :: !(TVar Step),
+    databaseValues    :: !(Map Key KeyDetails),
+    databaseDirtyKeys :: !(Set Key)
+    -- ^ The set of dirty keys, which are the keys that have been marked as dirty
+    -- by the client, it would be removed once the target key is marked as clean.
     }
 
 waitForDatabaseRunningKeys :: Database -> IO ()
