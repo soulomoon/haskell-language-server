@@ -130,6 +130,8 @@ import           Development.IDE.Types.Options          as Options
 import qualified Language.LSP.Protocol.Message          as LSP
 import qualified Language.LSP.Server                    as LSP
 
+import           Debug.Trace                            (trace, traceEvent,
+                                                         traceEventIO)
 import           Development.IDE.Core.Tracing
 import           Development.IDE.Core.WorkerThread
 import           Development.IDE.GHC.Compat             (NameCache,
@@ -140,8 +142,10 @@ import           Development.IDE.GHC.Orphans            ()
 import           Development.IDE.Graph                  hiding (ShakeValue,
                                                          action)
 import qualified Development.IDE.Graph                  as Shake
-import           Development.IDE.Graph.Database         (ShakeDatabase,
+import           Development.IDE.Graph.Database         (AsyncParentKill (AsyncParentKill),
+                                                         ShakeDatabase,
                                                          shakeGetBuildStep,
+                                                         shakeGetBuildStep',
                                                          shakeGetDatabaseKeys,
                                                          shakeNewDatabase,
                                                          shakeProfileDatabase,
@@ -178,6 +182,7 @@ import           System.FilePath                        hiding (makeRelative)
 import           System.IO.Unsafe                       (unsafePerformIO)
 import           System.Time.Extra
 import           UnliftIO                               (MonadUnliftIO (withRunInIO))
+import qualified UnliftIO.Exception                     as UE
 
 
 data Log
@@ -805,7 +810,9 @@ shakeRestart recorder IdeState{..} vfs reason acts ioActionBetweenShakeSession =
         withMVar'
             shakeSession
             (\runner -> do
+                step <- shakeGetBuildStep shakeDb
                 (stopTime,()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner
+                liftIO $ traceEventIO ("Cross killed, restart, shake cancelled step: " ++ show step)
                 keys <- ioActionBetweenShakeSession
                 -- it is every important to update the dirty keys after we enter the critical section
                 -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
@@ -875,12 +882,16 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
         if optRunSubset
           then Just <$> readTVarIO dirtyKeys
           else return Nothing
+    step <- shakeGetBuildStep' shakeDb
+    liftIO $ traceEventIO ("Build reenqueued, " ++ show reenqueued ++ " step: " ++ show step)
     let
         -- A daemon-like action used to inject additional work
         -- Runs actions from the work queue sequentially
         pumpActionThread otSpan = do
             d <- liftIO $ atomicallyNamed "action queue - pop" $ popQueue actionQueue
-            actionFork (run otSpan d) $ \_ -> pumpActionThread otSpan
+            actionFork (run otSpan d) $ \_ -> do
+                liftIO $ traceEventIO ("Build Pump action thread forking, " ++ show d ++ "step: " ++ show step)
+                pumpActionThread otSpan
 
         -- TODO figure out how to thread the otSpan into defineEarlyCutoff
         run _otSpan d  = do
@@ -902,7 +913,7 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
           return $ do
               let exception =
                     case res of
-                      Left e -> Just e
+                      Left e -> traceEvent ("Cross Killed at workRun done, step" <> show step <> ": " <> show e) (Just e)
                       _      -> Nothing
               logWith recorder Debug $ LogBuildSessionFinish exception
 
@@ -917,7 +928,9 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
     --  Cancelling is required to flush the Shake database when either
     --  the filesystem or the Ghc configuration have changed
     let cancelShakeSession :: IO ()
-        cancelShakeSession = cancel workThread
+        cancelShakeSession = do
+            tid <- myThreadId
+            cancelWith workThread (AsyncParentKill tid step "restart")
 
     pure (ShakeSession{..})
 
@@ -1484,8 +1497,17 @@ kickSignal testing lspEnv files msg = when testing $ liftIO $ mRunLspT lspEnv $
 
 -- | Add kick start/done signal to rule
 runWithSignal :: (KnownSymbol s0, KnownSymbol s1, IdeRule k v) => Proxy s0 -> Proxy s1 -> [NormalizedFilePath] -> k -> Action ()
+-- runWithSignal msgStart msgEnd files rule = do
+--   ShakeExtras{ideTesting = Options.IdeTesting testing, lspEnv} <- getShakeExtras
+--   kickSignal testing lspEnv files msgStart
+--   void $ uses rule files
+--   kickSignal testing lspEnv files msgEnd
 runWithSignal msgStart msgEnd files rule = do
   ShakeExtras{ideTesting = Options.IdeTesting testing, lspEnv} <- getShakeExtras
-  kickSignal testing lspEnv files msgStart
-  void $ uses rule files
-  kickSignal testing lspEnv files msgEnd
+  UE.bracket
+    (withTrace ("runWithSignal begin " <> show rule) $ \_tag -> kickSignal testing lspEnv files msgStart
+    )
+    (const $ withTrace ("runWithSignal end " <> show rule) $ \_tag -> kickSignal testing lspEnv files msgEnd
+    )
+    (const $ void $ uses rule files
+    )

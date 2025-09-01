@@ -8,16 +8,17 @@
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TypeFamilies       #-}
 
-module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge) where
+module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..)) where
 
 import           Prelude                              hiding (unzip)
 
 import           Control.Concurrent.Async
 import           Control.Concurrent.Extra
-import           Control.Concurrent.STM.Stats         (STM, atomically,
+import           Control.Concurrent.STM.Stats         (STM, TVar, atomically,
                                                        atomicallyNamed,
                                                        modifyTVar', newTVarIO,
-                                                       readTVarIO)
+                                                       readTVar, readTVarIO,
+                                                       retry)
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class               (MonadIO (liftIO))
@@ -25,13 +26,13 @@ import           Control.Monad.Trans.Class            (lift)
 import           Control.Monad.Trans.Reader
 import qualified Control.Monad.Trans.State.Strict     as State
 import           Data.Dynamic
-import           Data.Either
-import           Data.Foldable                        (for_, traverse_)
+import           Data.Foldable                        (Foldable (toList), for_,
+                                                       traverse_)
 import           Data.IORef.Extra
 import           Data.Maybe
 import           Data.Traversable                     (for)
 import           Data.Tuple.Extra
-import           Debug.Trace                          (traceM)
+import           Debug.Trace                          (traceEventIO, traceM)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules
@@ -39,11 +40,14 @@ import           Development.IDE.Graph.Internal.Types
 import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                    as SMap
-import           System.IO.Unsafe
 import           System.Time.Extra                    (duration, sleep)
+import           UnliftIO                             (MonadUnliftIO (withRunInIO))
+import qualified UnliftIO.Exception                   as UE
 
 #if MIN_VERSION_base(4,19,0)
+import           Data.Either.Extra                    (partitionEithers)
 import           Data.Functor                         (unzip)
+import           System.IO.Unsafe                     (unsafePerformIO)
 #else
 import           Data.List.NonEmpty                   (unzip)
 #endif
@@ -88,16 +92,24 @@ build
     => Database -> Stack -> f key -> IO (f Key, f value)
 -- build _ st k | traceShow ("build", st, k) False = undefined
 build db stack keys = do
-    built <- runAIO $ do
-        built <- builder db stack (fmap newKey keys)
-        case built of
-          Left clean  -> return clean
-          Right dirty -> liftIO dirty
-    let (ids, vs) = unzip built
-    pure (ids, fmap (asV . resultValue) vs)
+    step <- readTVarIO $ databaseStep db
+    go `catch` \e@(AsyncParentKill i s t) -> do
+        when (s /=step) $ traceEventIO $ "Build: " ++ "curStep: " ++ show step ++ ", key: " ++ show (toList keys) ++ ", " ++ show e
+        throw $ AsyncParentKill i s (t ++ "<>"  ++ show (toList keys))
     where
-        asV :: Value -> value
-        asV (Value x) = unwrapDynamic x
+    go = do
+        step <- readTVarIO (databaseStep db)
+        -- !built <- builder db stack (fmap newKey keys)
+        built <- runAIO step $ do
+            built <- builder db stack (fmap newKey keys)
+            case built of
+                Left clean  -> return clean
+                Right dirty -> liftIO dirty
+        let (ids, vs) = unzip built
+        pure (ids, fmap (asV . resultValue) vs)
+        where
+            asV :: Value -> value
+            asV (Value x) = unwrapDynamic x
 
 -- | Build a list of keys and return their results.
 --  If none of the keys are dirty, we can return the results immediately.
@@ -105,7 +117,7 @@ build db stack keys = do
 builder
     :: Traversable f => Database -> Stack -> f Key -> AIO (Either (f (Key, Result)) (IO (f (Key, Result))))
 -- builder _ st kk | traceShow ("builder", st,kk) False = undefined
-builder db@Database{..} stack keys = withRunInIO $ \(RunInIO run) -> do
+builder db@Database{..} stack keys = withRunInIO $ \run -> do
     -- Things that I need to force before my results are ready
     toForce <- liftIO $ newTVarIO []
     current <- liftIO $ readTVarIO databaseStep
@@ -301,14 +313,31 @@ transitiveDirtySet database = flip State.execStateT mempty . traverse_ loop
 
 -- | A simple monad to implement cancellation on top of 'Async',
 --   generalizing 'withAsync' to monadic scopes.
-newtype AIO a = AIO { unAIO :: ReaderT (IORef [Async ()]) IO a }
+newtype AIO a = AIO { unAIO :: ReaderT (TVar [Async ()]) IO a }
   deriving newtype (Applicative, Functor, Monad, MonadIO)
 
+data AsyncParentKill = AsyncParentKill ThreadId Step String
+    deriving (Show, Eq)
+
+instance Exception AsyncParentKill where
+  toException = asyncExceptionToException
+  fromException = asyncExceptionFromException
+
 -- | Run the monadic computation, cancelling all the spawned asyncs if an exception arises
-runAIO :: AIO a -> IO a
-runAIO (AIO act) = do
-    asyncs <- newIORef []
-    runReaderT act asyncs `onException` cleanupAsync asyncs
+runAIO :: Step -> AIO a -> IO a
+runAIO s (AIO act) = do
+    asyncsRef <- newTVarIO []
+    -- Log the exact exception (including async exceptions) before cleanup,
+    -- then rethrow to preserve previous semantics.
+    runReaderT act asyncsRef `catch` \(e :: SomeException) -> do
+        asyncs <- atomically $ do
+            r <- readTVar asyncsRef
+            modifyTVar' asyncsRef $ const []
+            return r
+        tid <- myThreadId
+        cleanupAsync e asyncs tid s
+        throw e
+
 
 -- | Like 'async' but with built-in cancellation.
 --   Returns an IO action to wait on the result.
@@ -319,7 +348,7 @@ asyncWithCleanUp act = do
     -- mask to make sure we keep track of the spawned async
     liftIO $ uninterruptibleMask $ \restore -> do
         a <- async $ restore io
-        atomicModifyIORef'_ st (void a :)
+        atomically $ modifyTVar' st (void a :)
         return $ wait a
 
 unliftAIO :: AIO a -> AIO (IO a)
@@ -327,19 +356,20 @@ unliftAIO act = do
     st <- AIO ask
     return $ runReaderT (unAIO act) st
 
-newtype RunInIO = RunInIO (forall a. AIO a -> IO a)
+instance MonadUnliftIO AIO where
+    withRunInIO k = do
+        st <- AIO ask
+        liftIO $ k (\aio -> runReaderT (unAIO aio) st)
 
-withRunInIO :: (RunInIO -> AIO b) -> AIO b
-withRunInIO k = do
-    st <- AIO ask
-    k $ RunInIO (\aio -> runReaderT (unAIO aio) st)
-
-cleanupAsync :: IORef [Async a] -> IO ()
+cleanupAsync :: SomeException -> [Async a] -> ThreadId -> Step -> IO ()
 -- mask to make sure we interrupt all the asyncs
-cleanupAsync ref = uninterruptibleMask $ \unmask -> do
-    asyncs <- atomicModifyIORef' ref ([],)
+cleanupAsync e asyncs tid step  = uninterruptibleMask $ \unmask -> do
     -- interrupt all the asyncs without waiting
-    mapM_ (\a -> throwTo (asyncThreadId a) AsyncCancelled) asyncs
+    -- mapM_ (\a -> throwTo (asyncThreadId a) AsyncCancelled) asyncs
+    let newException = case fromException e of
+            Just (AsyncParentKill _ _ t) -> AsyncParentKill tid step (t <> "cleanupAsync <> ")
+            _                            -> AsyncParentKill tid step (show e <> "cleanupAsync")
+    mapM_ (\a -> throwTo (asyncThreadId a) newException) asyncs
     -- Wait until all the asyncs are done
     -- But if it takes more than 10 seconds, log to stderr
     unless (null asyncs) $ do
@@ -371,7 +401,7 @@ waitConcurrently_ many = do
     (asyncs, syncs) <- liftIO $ uninterruptibleMask $ \unmask -> do
         waits <- liftIO $ traverse (waitOrSpawn . fmapWait unmask) many
         let (syncs, asyncs) = partitionEithers waits
-        liftIO $ atomicModifyIORef'_ ref (asyncs ++)
+        liftIO $ atomically $ modifyTVar' ref (asyncs ++)
         return (asyncs, syncs)
     -- work on the sync computations
     liftIO $ sequence_ syncs
