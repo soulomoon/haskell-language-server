@@ -8,7 +8,7 @@
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TypeFamilies       #-}
 
-module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge) where
+module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, incDatabaseRaw, garbageCollectKeys, garbageCollectKeys1) where
 
 import           Prelude                              hiding (unzip)
 
@@ -56,6 +56,72 @@ newDatabase databaseExtra databaseRules = do
     databaseValues <- atomically SMap.new
     databaseDirtyKeys <- atomically SSet.new
     pure Database{..}
+
+incDatabaseRaw :: Database -> IO ()
+incDatabaseRaw db =
+    atomicallyNamed "incDatabaseRaw" $ do
+        modifyTVar' (databaseStep db) $ \(Step i) -> Step $ i + 1
+
+garbageCollectKeys1 :: Database -> (Key -> Bool) -> ([Key] -> STM ()) -> IO [Key]
+garbageCollectKeys1 db pred garbageCollectHook = do
+    -- GC policy:
+        -- We find a list of keys that are FOI and their dependencies,
+        -- and mark them as "needed". Then we delete all dirty keys not marked as needed.
+    let maxAge = 0 -- builds; tune as needed or make configurable upstream
+    -- on idle but still dirty keys
+    ks <- getKeysAndVisitAge db
+    let foiks = [ k | (k, _) <- ks, pred k ]
+    toKeep <- atomically $ transitiveSet db foiks
+    dirtyWithAge <- Development.IDE.Graph.Internal.Database.getDirtySet db
+    let victims = [k | (k, age) <- dirtyWithAge
+                     , age >= maxAge
+                     , not (k `memberKeySet` toKeep)]
+    unless (null victims) $ do
+        -- Delete victim keys and remove them from the dirty set
+        atomically $ do
+            forM_ victims $ \k -> do
+                SMap.focus cleanupDirty k (databaseValues db)
+            -- Remove the victim keys from reverse-dependency sets of remaining keys
+            let list = SMap.listT (databaseValues db)
+            ListT.traverse_ (\(k', _) ->
+                SMap.focus (Focus.adjust (onKeyReverseDeps (\ks -> foldr deleteKeySet ks victims))) k' (databaseValues db)
+                ) list
+            garbageCollectHook victims
+        pure ()
+    return victims
+
+garbageCollectKeys :: Database -> (Key -> Bool) -> ([Key] -> STM ()) -> IO [Key]
+garbageCollectKeys db pred garbageCollectHook = do
+    -- GC policy:
+    --   - Select dirty keys whose age >= maxAge and that satisfy the given predicate 'pred'.
+    --   - For each selected key (a victim), drop its previous result by setting its status to Dirty Nothing
+    --     and remove that key from every other key's reverse-dependency set.
+    --   - Finally, run the provided 'garbageCollectHook victims' within the same STM transaction.
+    let maxAge = 0 -- builds; tune as needed or make configurable upstream
+    -- on idle but still dirty keys
+    dirtyWithAge <- Development.IDE.Graph.Internal.Database.getDirtySet db
+    let victims = [k | (k, age) <- dirtyWithAge, age >= maxAge, pred k]
+    unless (null victims) $ do
+        -- Delete victim keys and remove them from the dirty set
+        atomically $ do
+            forM_ victims $ \k -> do
+                SMap.focus cleanupDirty k (databaseValues db)
+            -- Remove the victim keys from reverse-dependency sets of remaining keys
+            let list = SMap.listT (databaseValues db)
+            ListT.traverse_ (\(k', _) ->
+                SMap.focus (Focus.adjust (onKeyReverseDeps (\ks -> foldr deleteKeySet ks victims))) k' (databaseValues db)
+                ) list
+            garbageCollectHook victims
+        pure ()
+    return victims
+
+
+cleanupDirty :: Monad m => Focus.Focus KeyDetails m ()
+cleanupDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
+            let status'
+                  | Dirty _ <- status = Dirty Nothing
+                  | otherwise = status
+            in KeyDetails status' rdeps
 
 -- | Increment the step and mark dirty.
 --   Assumes that the database is not running a build
@@ -296,6 +362,25 @@ transitiveDirtySet database = flip State.execStateT mempty . traverse_ loop
         if x `memberKeySet` seen then pure () else do
             State.put (insertKeySet x seen)
             next <- lift $ getReverseDependencies database x
+            traverse_ loop (maybe mempty toListKeySet next)
+
+getDependencies :: Database -> Key -> STM (Maybe KeySet)
+getDependencies db k = do
+    m <- SMap.lookup k (databaseValues db)
+    pure $ do
+        KeyDetails st _ <- m
+        case getDeps st of
+            UnknownDeps -> Nothing
+            rd          -> Just (getResultDepsDefault mempty rd)
+
+transitiveSet :: Foldable t => Database -> t Key -> STM KeySet
+transitiveSet database = flip State.execStateT mempty . traverse_ loop
+  where
+    loop x = do
+        seen <- State.get
+        if x `memberKeySet` seen then pure () else do
+            State.put (insertKeySet x seen)
+            next <- lift $ getDependencies database x
             traverse_ loop (maybe mempty toListKeySet next)
 
 --------------------------------------------------------------------------------

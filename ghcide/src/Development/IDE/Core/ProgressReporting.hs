@@ -39,7 +39,11 @@ import           Language.LSP.Server            (ProgressAmount (..),
                                                  ProgressCancellable (..),
                                                  withProgress)
 import qualified Language.LSP.Server            as LSP
+import qualified ListT                          as L
 import qualified StmContainers.Map              as STM
+import qualified StmContainers.Set              as S
+import qualified StmContainers.Set              as Set
+import           StmContainers.Set
 import           UnliftIO                       (Async, async, bracket, cancel)
 
 data ProgressEvent
@@ -124,24 +128,25 @@ updateState _ StopProgress st = pure st
 data InProgressState
   = InProgressState
       { -- | Number of files to do
-        todoVar    :: TVar Int,
+        todoVar        :: TVar Int,
         -- | Number of files done
-        doneVar    :: TVar Int,
-        currentVar :: STM.Map NormalizedFilePath Int
+        doneVar        :: TVar Int,
+        currentVar     :: STM.Map NormalizedFilePath Int,
+        workingFileVar :: S.Set NormalizedFilePath
       }
 
 newInProgress :: IO InProgressState
-newInProgress = InProgressState <$> newTVarIO 0 <*> newTVarIO 0 <*> STM.newIO
+newInProgress = InProgressState <$> newTVarIO 0 <*> newTVarIO 0 <*> STM.newIO <*> newIO
 
 recordProgress :: InProgressState -> NormalizedFilePath -> (Int -> Int) -> IO ()
 recordProgress InProgressState {..} file shift = do
   (prev, new) <- atomicallyNamed "recordProgress" $ STM.focus alterPrevAndNew file currentVar
   atomicallyNamed "recordProgress2" $ case (prev, new) of
     (Nothing, 0) -> modifyTVar' doneVar (+ 1) >> modifyTVar' todoVar (+ 1)
-    (Nothing, _) -> modifyTVar' todoVar (+ 1)
+    (Nothing, _) -> modifyTVar' todoVar (+ 1) >> S.insert file workingFileVar
     (Just 0, 0)  -> pure ()
     (Just 0, _)  -> modifyTVar' doneVar pred
-    (Just _, 0)  -> modifyTVar' doneVar (+ 1)
+    (Just _, 0)  -> modifyTVar' doneVar (+ 1) >> S.delete file workingFileVar
     (Just _, _)  -> pure ()
   where
     alterPrevAndNew = do
@@ -158,16 +163,18 @@ recordProgress InProgressState {..} file shift = do
 progressReportingNoTrace ::
   STM Int ->
   STM Int ->
+  STM (Maybe T.Text)->
   Maybe (LSP.LanguageContextEnv c) ->
   T.Text ->
   ProgressReportingStyle ->
   IO ProgressReporting
-progressReportingNoTrace _ _ Nothing _title _optProgressStyle = return noProgressReporting
-progressReportingNoTrace todo done (Just lspEnv) title optProgressStyle = do
+progressReportingNoTrace _ _ _ Nothing _title _optProgressStyle = return noProgressReporting
+progressReportingNoTrace todo done mf (Just lspEnv) title optProgressStyle = do
   progressState <- newVar NotStarted
-  let _progressUpdate event = liftIO $ updateStateVar $ Event event
+  let _progressUpdate event = do
+            liftIO $ updateStateVar $ Event event
       _progressStop = updateStateVar StopProgress
-      updateStateVar = modifyVar_ progressState . updateState (progressCounter lspEnv title optProgressStyle todo done)
+      updateStateVar = modifyVar_ progressState . updateState (progressCounter lspEnv title optProgressStyle todo done mf)
   return ProgressReporting {..}
 
 -- | `progressReporting` initiates a new progress reporting session.
@@ -182,12 +189,18 @@ progressReporting Nothing _title _optProgressStyle = noPerFileProgressReporting
 progressReporting (Just lspEnv) title optProgressStyle = do
   inProgressState <- newInProgress
   progressReportingInner <- progressReportingNoTrace (readTVar $ todoVar inProgressState)
-                                (readTVar $ doneVar inProgressState) (Just lspEnv) title optProgressStyle
+                                (readTVar $ doneVar inProgressState) (getFile $ workingFileVar inProgressState) (Just lspEnv) title optProgressStyle
   let
     inProgress :: NormalizedFilePath -> IO a -> IO a
     inProgress = updateStateForFile inProgressState
   return PerFileProgressReporting {..}
   where
+    getFile :: Set.Set NormalizedFilePath -> STM (Maybe T.Text)
+    getFile set = do
+        let lst = S.listT set
+        x <- L.head lst
+        return (T.pack . fromNormalizedFilePath <$> x)
+
     updateStateForFile inProgress file = UnliftIO.bracket (liftIO $ f succ) (const $ liftIO $ f pred) . const
       where
         -- This functions are deliberately eta-expanded to avoid space leaks.
@@ -203,23 +216,25 @@ progressCounter ::
   ProgressReportingStyle ->
   STM Int ->
   STM Int ->
+  STM (Maybe T.Text)->
   IO ()
-progressCounter lspEnv title optProgressStyle getTodo getDone =
+progressCounter lspEnv title optProgressStyle getTodo getDone mf =
   LSP.runLspT lspEnv $ withProgress title Nothing NotCancellable $ \update -> loop update 0
   where
     loop _ _ | optProgressStyle == NoProgress = forever $ liftIO $ threadDelay maxBound
     loop update prevPct = do
-      (todo, done, nextPct) <- liftIO $ atomically $ do
+      (todo, done, nextPct,file) <- liftIO $ atomically $ do
         todo <- getTodo
         done <- getDone
+        file <- mf
         let nextFrac :: Double
             nextFrac = if todo == 0 then 0 else fromIntegral done / fromIntegral todo
             nextPct :: UInt
             nextPct = floor $ 100 * nextFrac
         when (nextPct == prevPct) retry
-        pure (todo, done, nextPct)
+        pure (todo, done, nextPct, file)
 
-      _ <- update (ProgressAmount (Just nextPct) (Just $ T.pack $ show done <> "/" <> show todo))
+      _ <- update (ProgressAmount (Just nextPct) (Just $ (T.pack $ show done) <> "/" <> (T.pack $ show todo) <> maybe mempty (":" <>) file))
       loop update nextPct
 
 mRunLspT :: (Applicative m) => Maybe (LSP.LanguageContextEnv c) -> LSP.LspT c m () -> m ()

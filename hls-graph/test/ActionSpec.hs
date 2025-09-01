@@ -48,14 +48,17 @@ spec = do
     let parent = newKey CountRule
     -- instruct to RunDependenciesChanged then CountRule should be recomputed
     -- result should be changed 0, build 1
-    _res1 <- shakeRunDatabaseForKeys (Just [child]) db [apply1 CountRule] -- count = 2
+    _res1 <- shakeRunDatabaseForKeys (Just [child]) db [apply1 CountRule] $ \_ -> return ()
+    -- count = 2
     -- since child changed = parent build
     -- instruct to RunDependenciesSame then CountRule should not be recomputed
     -- result should be changed 0, build 1
-    _res3 <- shakeRunDatabaseForKeys (Just [parent]) db [apply1 CountRule] -- count = 2
+    _res3 <- shakeRunDatabaseForKeys (Just [parent]) db [apply1 CountRule] $ \_ -> return ()
+    -- count = 2
     -- invariant child changed = parent build should remains after RunDependenciesSame
     -- this used to be a bug, with additional computation, see https://github.com/haskell/haskell-language-server/pull/4238
-    _res3 <- shakeRunDatabaseForKeys (Just [parent]) db [apply1 CountRule] -- count = 2
+    _res3 <- shakeRunDatabaseForKeys (Just [parent]) db [apply1 CountRule] $ \_ -> return ()
+    -- count = 2
     c1 <- readMVar count1
     c1 `shouldBe` 2
   describe "apply1" $ do

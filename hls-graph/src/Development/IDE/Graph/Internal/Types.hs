@@ -148,6 +148,12 @@ getResult (Clean re)           = Just re
 getResult (Dirty m_re)         = m_re
 getResult (Running _ _ _ m_re) = m_re -- watch out: this returns the previous result
 
+getDeps :: Status -> ResultDeps
+getDeps (Clean re)         = resultDeps re
+getDeps (Dirty (Just re))  = resultDeps re
+getDeps (Dirty Nothing)    = UnknownDeps
+getDeps (Running _ _ re _) = resultDeps re
+
 waitRunning :: Status -> IO ()
 waitRunning Running{..} = runningWait
 waitRunning _           = return ()

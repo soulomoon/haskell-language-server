@@ -57,10 +57,6 @@ instance Pretty Log where
   pretty = \case
     LogShake msg -> pretty msg
 
-newtype OfInterestVar = OfInterestVar (Var (HashMap NormalizedFilePath FileOfInterestStatus))
-
-instance IsIdeGlobal OfInterestVar
-
 -- | The rule that initialises the files of interest state.
 ofInterestRules :: Recorder (WithPriority Log) -> Rules ()
 ofInterestRules recorder = do
@@ -79,9 +75,6 @@ ofInterestRules recorder = do
     summarize (IsFOI (Modified False)) = BS.singleton 2
     summarize (IsFOI (Modified True))  = BS.singleton 3
 
-------------------------------------------------------------
-newtype GarbageCollectVar = GarbageCollectVar (Var Bool)
-instance IsIdeGlobal GarbageCollectVar
 
 ------------------------------------------------------------
 -- Exposed API
@@ -154,10 +147,6 @@ kick = do
 
     liftIO $ progressUpdate progress ProgressCompleted
 
-    GarbageCollectVar var <- getIdeGlobalAction
-    garbageCollectionScheduled <- liftIO $ readVar var
-    when garbageCollectionScheduled $ do
-        void garbageCollectDirtyKeys
-        liftIO $ writeVar var False
 
     signal (Proxy @"kick/done")
+

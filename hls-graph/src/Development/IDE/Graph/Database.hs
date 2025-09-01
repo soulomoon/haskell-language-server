@@ -34,7 +34,7 @@ shakeNewDatabase opts rules = do
     pure $ ShakeDatabase (length actions) actions db
 
 shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [a]
-shakeRunDatabase = shakeRunDatabaseForKeys Nothing
+shakeRunDatabase a b = shakeRunDatabaseForKeys Nothing a b (const $ pure ())
 
 -- | Returns the set of dirty keys annotated with their age (in # of builds)
 shakeGetDirtySet :: ShakeDatabase -> IO [(Key, Int)]
@@ -57,9 +57,11 @@ shakeRunDatabaseForKeys
       -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
     -> ShakeDatabase
     -> [Action a]
+    -> (Database -> IO ())
     -> IO [a]
-shakeRunDatabaseForKeys keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
+shakeRunDatabaseForKeys keysChanged (ShakeDatabase lenAs1 as1 db) as2 garbageCollect = do
     incDatabase db keysChanged
+    garbageCollect db
     fmap (drop lenAs1) $ runActions db $ map unvoid as1 ++ as2
 
 -- | Given a 'ShakeDatabase', write an HTML profile to the given file about the latest run.

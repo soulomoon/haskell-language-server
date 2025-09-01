@@ -297,7 +297,7 @@ typecheckParentsAction recorder nfp = do
     case revs of
       Nothing -> logWith recorder Info $ LogCouldNotIdentifyReverseDeps nfp
       Just rs -> do
-        logWith recorder Info $ LogTypeCheckingReverseDeps nfp revs
+        logWith recorder L.Debug $ LogTypeCheckingReverseDeps nfp revs
         void $ uses GetModIface rs
 
 -- | Note that some keys have been modified and restart the session
