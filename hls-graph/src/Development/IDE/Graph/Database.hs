@@ -1,4 +1,5 @@
 module Development.IDE.Graph.Database(
+    AsyncParentKill(..),
     ShakeDatabase,
     ShakeValue,
     shakeNewDatabase,
@@ -8,8 +9,8 @@ module Development.IDE.Graph.Database(
     shakeGetBuildStep,
     shakeGetDatabaseKeys,
     shakeGetDirtySet,
-    shakeGetCleanKeys
-    ,shakeGetBuildEdges) where
+    shakeGetCleanKeys,
+    shakeGetBuildEdges) where
 import           Control.Concurrent.STM.Stats            (readTVarIO)
 import           Data.Dynamic
 import           Data.Maybe
@@ -42,9 +43,9 @@ shakeGetDirtySet (ShakeDatabase _ _ db) =
     Development.IDE.Graph.Internal.Database.getDirtySet db
 
 -- | Returns the build number
-shakeGetBuildStep :: ShakeDatabase -> IO Int
+shakeGetBuildStep :: ShakeDatabase -> IO Step
 shakeGetBuildStep (ShakeDatabase _ _ db) = do
-    Step s <- readTVarIO $ databaseStep db
+    s <- readTVarIO $ databaseStep db
     return s
 
 -- Only valid if we never pull on the results, which we don't

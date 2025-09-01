@@ -94,7 +94,6 @@ import           Data.Aeson                              (Result (Success),
                                                           toJSON)
 import qualified Data.Aeson.Types                        as A
 import qualified Data.ByteString.Char8                   as BS
-import qualified Data.ByteString.Char8                   as BS8
 import           Data.Coerce                             (coerce)
 import           Data.Default
 import           Data.Dynamic
@@ -107,8 +106,7 @@ import           Data.Hashable
 import qualified Data.HashMap.Strict                     as HMap
 import           Data.HashSet                            (HashSet)
 import qualified Data.HashSet                            as HSet
-import           Data.List.Extra                         (foldl', partition,
-                                                          takeEnd)
+import           Data.List.Extra                         (partition, takeEnd)
 import qualified Data.Map.Strict                         as Map
 import           Data.Maybe
 import qualified Data.SortedList                         as SL
@@ -130,15 +128,11 @@ import           Development.IDE.Types.Options           as Options
 import qualified Language.LSP.Protocol.Message           as LSP
 import qualified Language.LSP.Server                     as LSP
 
-import           Control.Concurrent                      (threadDelay)
-import           Control.Concurrent.Extra                (readVar)
-import           Control.Monad                           (forever)
 import           Data.HashMap.Strict                     (HashMap)
 import qualified Data.HashMap.Strict                     as HashMap
 import           Data.Int                                (Int64)
 import           Data.IORef.Extra                        (atomicModifyIORef'_,
                                                           readIORef)
-import           Data.Text.Encoding                      (encodeUtf8)
 import           Development.IDE.Core.Tracing
 import           Development.IDE.Core.WorkerThread
 import           Development.IDE.GHC.Compat              (NameCache,
@@ -149,18 +143,16 @@ import           Development.IDE.GHC.Orphans             ()
 import           Development.IDE.Graph                   hiding (ShakeValue,
                                                           action)
 import qualified Development.IDE.Graph                   as Shake
-import           Development.IDE.Graph.Database          (ShakeDatabase,
+import           Development.IDE.Graph.Database          (AsyncParentKill (..),
+                                                          ShakeDatabase,
                                                           shakeGetBuildStep,
                                                           shakeGetDatabaseKeys,
                                                           shakeNewDatabase,
                                                           shakeProfileDatabase,
                                                           shakeRunDatabaseForKeys)
-import           Development.IDE.Graph.Internal.Database (garbageCollectKeys,
-                                                          garbageCollectKeys1)
-import           Development.IDE.Graph.Internal.Types    (Database)
+import           Development.IDE.Graph.Internal.Database (garbageCollectKeys1)
 import           Development.IDE.Graph.Rule
 import           Development.IDE.Types.Action
-import           Development.IDE.Types.Action            (isActionQueueEmpty)
 import           Development.IDE.Types.Diagnostics
 import           Development.IDE.Types.Exports           hiding (exportsMapSize)
 import qualified Development.IDE.Types.Exports           as ExportsMap
@@ -169,7 +161,6 @@ import           Development.IDE.Types.Location
 import           Development.IDE.Types.Monitoring        (Monitoring (..))
 import           Development.IDE.Types.Shake
 import qualified Focus
-import           GHC.Base                                (undefined)
 import           GHC.Fingerprint
 import           GHC.Stack                               (HasCallStack)
 import           GHC.TypeLits                            (KnownSymbol)
@@ -179,7 +170,6 @@ import qualified Ide.Logger                              as Logger
 import           Ide.Plugin.Config
 import qualified Ide.PluginUtils                         as HLS
 import           Ide.Types
-import           Ide.Types                               (CheckParents (CheckOnSave))
 import qualified Language.LSP.Protocol.Lens              as L
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Protocol.Types
@@ -948,7 +938,8 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
                         $ \db -> do
                             GarbageCollectVar var <- getIdeGlobalExtras extras
                             -- checkParentsOpt <- optCheckParents =<< getIdeOptionsIO extras
-                            isGarbageCollectionScheduled <- readVar var
+                            -- isGarbageCollectionScheduled <- readVar var
+                            let isGarbageCollectionScheduled = False
                             when (isActionQueueEmpty && isGarbageCollectionScheduled) $ do
                                 -- reset garbage collection flag
                                 liftIO $ writeVar var False
@@ -989,8 +980,11 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
 
     --  Cancelling is required to flush the Shake database when either
     --  the filesystem or the Ghc configuration have changed
+    step <- shakeGetBuildStep shakeDb
     let cancelShakeSession :: IO ()
-        cancelShakeSession = cancel workThread
+        cancelShakeSession = do
+            tid <- myThreadId
+            cancelWith workThread $ AsyncParentKill tid step
 
     pure (ShakeSession{..})
 
