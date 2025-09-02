@@ -17,6 +17,7 @@ module Development.IDE.Graph.Internal.Action
 ) where
 
 import           Control.Concurrent.Async
+import           Control.Concurrent.STM                  (readTVarIO)
 import           Control.DeepSeq                         (force)
 import           Control.Exception
 import           Control.Monad.IO.Class
@@ -25,12 +26,15 @@ import           Control.Monad.Trans.Reader
 import           Data.Foldable                           (toList)
 import           Data.Functor.Identity
 import           Data.IORef
+import           Debug.Trace                             (traceEventIO)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Database
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules    (RuleResult)
 import           Development.IDE.Graph.Internal.Types
 import           System.Exit
+import qualified UnliftIO.Exception                      as UE
+-- (no STM imports needed here)
 
 type ShakeValue a = (Show a, Typeable a, Eq a, Hashable a, NFData a)
 
@@ -40,16 +44,19 @@ alwaysRerun = do
     ref <- Action $ asks actionDeps
     liftIO $ modifyIORef' ref (AlwaysRerunDeps mempty <>)
 
-parallel :: [Action a] -> Action [a]
-parallel [] = pure []
-parallel [x] = fmap (:[]) x
-parallel xs = do
+-- parallel :: [Action a] -> Action [a]
+-- parallel xs = parallel' xs
+
+parallel :: String -> [Action a] -> Action [a]
+parallel title [] = pure []
+parallel title [x] = fmap (:[]) x
+parallel title xs = do
     a <- Action ask
     deps <- liftIO $ readIORef $ actionDeps a
     case deps of
         UnknownDeps ->
             -- if we are already in the rerun mode, nothing we do is going to impact our state
-            liftIO $ mapConcurrently (ignoreState a) xs
+            liftIO $ mapConcurrently (ignoreState title (length xs) a) (zip [0..] xs)
         deps -> do
             (newDeps, res) <- liftIO $ unzip <$> mapConcurrently (usingState a) xs
             liftIO $ writeIORef (actionDeps a) $ mconcat $ deps : newDeps
@@ -61,23 +68,32 @@ parallel xs = do
             deps <- readIORef ref
             pure (deps, res)
 
-ignoreState :: SAction -> Action b -> IO b
-ignoreState a x = do
+ignoreState :: String -> Int -> SAction -> (Int, Action b) -> IO b
+ignoreState title n a (i, x) = do
     ref <- newIORef mempty
-    runReaderT (fromAction x) a{actionDeps=ref}
+    runReaderT (fromAction x) a{actionDeps=ref} `catch` \(e :: SomeException) -> do
+        liftIO $ traceEventIO $ "Build Action ignoreState exception " ++ title ++ ", " ++ "Num: " ++ show i ++"/" ++ show n ++" " ++ show e
+        throw e
 
 actionFork :: Action a -> (Async a -> Action b) -> Action b
 actionFork act k = do
     a <- Action ask
     deps <- liftIO $ readIORef $ actionDeps a
     let db = actionDatabase a
+
     case deps of
         UnknownDeps -> do
             -- if we are already in the rerun mode, nothing we do is going to impact our state
-            [res] <- liftIO $ withAsync (ignoreState a act) $ \as -> runActions db [k as]
+            [res] <- liftIO $ withAsync (catchAndLogAndRethrow $ ignoreState "actionFork" (-1) a (-1, act)) $ \as -> runActions "actionFork" db [k as]
             return res
         _ ->
             error "please help me"
+
+-- Ensure we keep a signature to satisfy -Werror=missing-signatures
+catchAndLogAndRethrow :: IO b -> IO b
+catchAndLogAndRethrow a = a `UE.catch` \e -> do
+    liftIO $ traceEventIO $ "Build Action catchAndLogAndRethrow: " ++ show (e :: SomeException)
+    throw e
 
 isAsyncException :: SomeException -> Bool
 isAsyncException e
@@ -129,10 +145,20 @@ applyWithoutDependency ks = do
     (_, vs) <- liftIO $ build db stack ks
     pure vs
 
-runActions :: Database -> [Action a] -> IO [a]
-runActions db xs = do
+runActions :: String -> Database -> [Action a] -> IO [a]
+runActions title db xs = do
     deps <- newIORef mempty
-    runReaderT (fromAction $ parallel xs) $ SAction db deps emptyStack
+    step <- readTVarIO $ databaseStep db
+    let tag i act =
+            -- Log which action failed; rethrow unchanged so upstream semantics stay the same
+            act `UE.catchAny` \(e :: SomeException) -> do
+                liftIO $ traceEventIO ("Build runActions (" ++ title ++ ") action[" ++ show i ++ "] exception: " ++ show e)
+                throw e
+        tagged = zipWith tag ([0 ..] :: [Int]) xs
+    runReaderT (fromAction $ parallel title tagged) (SAction db deps emptyStack) `catch` \(e :: SomeException) -> do
+        traceEventIO $ "Build runActions " <> show step  <> ", " ++ title ++ ", Caught exception: " ++ show e
+        throw e
+
 
 -- | Returns the set of dirty keys annotated with their age (in # of builds)
 getDirtySet  :: Action [(Key, Int)]

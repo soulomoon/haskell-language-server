@@ -304,7 +304,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
         argsParseConfig = getConfigFromNotification argsHlsPlugins
         rules = do
             argsRules
-            unless argsDisableKick $ action kick
+            -- unless argsDisableKick $ action kick
             pluginRules plugins
         -- install the main and ghcide-plugin rules
         -- install the kick action, which triggers a typecheck on every

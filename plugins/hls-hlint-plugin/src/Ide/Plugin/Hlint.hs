@@ -109,6 +109,7 @@ import           Language.LSP.Protocol.Types                        hiding
                                                                     (Null)
 import qualified Language.LSP.Protocol.Types                        as LSP
 
+import           Debug.Trace                                        (traceEventIO)
 import           Development.IDE.Core.PluginUtils                   as PluginUtils
 import qualified Development.IDE.Core.Shake                         as Shake
 import           Development.IDE.Spans.Pragmas                      (LineSplitTextEdits (LineSplitTextEdits),
@@ -120,6 +121,7 @@ import           Development.IDE.Spans.Pragmas                      (LineSplitTe
                                                                      nextPragmaLine)
 import           GHC.Generics                                       (Generic)
 import           Text.Regex.TDFA.Text                               ()
+import qualified UnliftIO.Exception                                 as UE
 
 -- ---------------------------------------------------------------------
 
@@ -209,7 +211,10 @@ rules recorder plugin = do
 
   action $ do
     files <- Map.keys <$> getFilesOfInterestUntracked
-    Shake.runWithSignal (Proxy @"kick/start/hlint") (Proxy @"kick/done/hlint") files GetHlintDiagnostics
+    Shake.runWithSignal (Proxy @"kick/start/hlint") (Proxy @"kick/done/hlint") files GetHlintDiagnostics `UE.catchAny`
+        \(e :: SomeException) -> do
+            liftIO $ traceEventIO $ "Build Hlint action caught exception: " ++ show e
+            throw e
 
   where
 

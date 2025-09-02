@@ -742,6 +742,7 @@ library hls-hlint-plugin
     , unordered-containers
     , ghc-lib-parser-ex
     , lsp-types
+    , unliftio
 
   -- apply-refact doesn't work on 9.10, or even have a buildable
   -- configuration

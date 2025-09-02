@@ -76,7 +76,7 @@ module Development.IDE.Core.Shake(
     Log(..),
     VFSModified(..), getClientConfigAction,
     ThreadQueue(..),
-    runWithSignal
+    runWithSignal, getStepAction
     ) where
 
 import           Control.Concurrent.Async
@@ -150,6 +150,8 @@ import           Development.IDE.Graph.Database         (AsyncParentKill (AsyncP
                                                          shakeNewDatabase,
                                                          shakeProfileDatabase,
                                                          shakeRunDatabaseForKeys)
+import           Development.IDE.Graph.Internal.Types   (SAction (actionDatabase),
+                                                         databaseStep)
 import           Development.IDE.Graph.Rule
 import           Development.IDE.Types.Action
 import           Development.IDE.Types.Diagnostics
@@ -356,6 +358,8 @@ getShakeExtras = do
     -- Will fail the action with a pattern match failure, but be caught
     Just x <- getShakeExtra @ShakeExtras
     return x
+
+getStepAction = getStep
 
 getShakeExtrasRules :: Rules ShakeExtras
 getShakeExtrasRules = do
@@ -850,6 +854,7 @@ shakeEnqueue ShakeExtras{actionQueue, shakeRecorder} act = do
                     fail $ "internal bug: forever blocked on MVar for " <>
                             actionName act)
               , Handler (\e@AsyncCancelled -> do
+                  traceEventIO ("Build shakeEnqueue, action cancelled: " ++ actionName act)
                   logWith shakeRecorder Debug $ LogCancelledAction (T.pack $ actionName act)
 
                   atomicallyNamed "actionQueue - abort" $ abortQueue dai actionQueue
@@ -889,8 +894,8 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
         -- Runs actions from the work queue sequentially
         pumpActionThread otSpan = do
             d <- liftIO $ atomicallyNamed "action queue - pop" $ popQueue actionQueue
+            liftIO $ traceEventIO ("Build Pump action thread forking, " ++ show d ++ ", step: " ++ show step)
             actionFork (run otSpan d) $ \_ -> do
-                liftIO $ traceEventIO ("Build Pump action thread forking, " ++ show d ++ "step: " ++ show step)
                 pumpActionThread otSpan
 
         -- TODO figure out how to thread the otSpan into defineEarlyCutoff
@@ -902,7 +907,7 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
             logWith recorder (actionPriority d) $ LogDelayedAction d runTime
 
         -- The inferred type signature doesn't work in ghc >= 9.0.1
-        workRun :: (forall b. IO b -> IO b) -> IO (IO ())
+        workRun :: (forall b. IO b -> IO b) -> IO ()
         workRun restore = withSpan "Shake session" $ \otSpan -> do
           setTag otSpan "reason" (fromString reason)
           setTag otSpan "queue" (fromString $ unlines $ map actionName reenqueued)
@@ -910,12 +915,12 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
           let keysActs = pumpActionThread otSpan : map (run otSpan) (reenqueued ++ acts)
           res <- try @SomeException $
             restore $ shakeRunDatabaseForKeys (toListKeySet <$> allPendingKeys) shakeDb keysActs
-          return $ do
-              let exception =
-                    case res of
-                      Left e -> traceEvent ("Cross Killed at workRun done, step" <> show step <> ": " <> show e) (Just e)
-                      _      -> Nothing
-              logWith recorder Debug $ LogBuildSessionFinish exception
+          step <- shakeGetBuildStep' shakeDb
+          let exception =
+                case res of
+                    Left e -> traceEvent ("Build Cross Killed at workRun done, step " <> show step <> ": " <> show e) (Just e)
+                    _      -> Nothing
+          logWith recorder Debug $ LogBuildSessionFinish exception
 
     -- Do the work in a background thread
     workThread <- asyncWithUnmask workRun
@@ -923,7 +928,7 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
     -- run the wrap up in a separate thread since it contains interruptible
     -- commands (and we are not using uninterruptible mask)
     -- TODO: can possibly swallow exceptions?
-    _ <- async $ join $ wait workThread
+    -- _ <- async $ wait workThread
 
     --  Cancelling is required to flush the Shake database when either
     --  the filesystem or the Ghc configuration have changed
@@ -1259,6 +1264,7 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
     ShakeExtras{state, progress, dirtyKeys} <- getShakeExtras
     options <- getIdeOptions
     let trans g x =  withRunInIO $ \run -> g (run x)
+    step <- getStep
     (if optSkipProgress options key then id else trans (inProgress progress file)) $ do
         val <- case mbOld of
             Just old | mode == RunDependenciesSame -> do
@@ -1276,15 +1282,15 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                 -- as this is likely a bug in the dirty key tracking
                 assert (mode /= RunDependenciesSame) $ return Nothing
         res <- case val of
-            Just res -> return res
-            Nothing -> do
+            Just res -> traceEvent ("uild shortcut step " ++ show step ++ " " ++ show key ++ " " ++ show file) $ return res
+            Nothing -> traceEvent ("uild no shortcut now compute step " ++ " " ++ show step ++ " " ++ show key ++ " " ++ show file) $ do
                 staleV <- liftIO $ atomicallyNamed "define -read 3" $ getValues state key file <&> \case
                     Nothing                   -> Failed False
                     Just (Succeeded ver v, _) -> Stale Nothing ver v
                     Just (Stale d ver v, _)   -> Stale d ver v
                     Just (Failed b, _)        -> Failed b
                 (mbBs, (diags, mbRes)) <- actionCatch
-                    (do v <- action staleV; liftIO $ evaluate $ force v) $
+                    (do !v <- action staleV; liftIO $ evaluate $ force v) $
                     \(e :: SomeException) -> do
                         pure (Nothing, ([ideErrorText file (T.pack $ show (key, file) ++ show e) | not $ isBadDependency e],Nothing))
 

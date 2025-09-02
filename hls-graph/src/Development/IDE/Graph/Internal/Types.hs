@@ -5,8 +5,7 @@
 
 module Development.IDE.Graph.Internal.Types where
 
-import           Control.Concurrent.STM             (STM)
-import           Control.Monad                      ((>=>))
+import           Control.Concurrent.STM             (STM, readTVarIO)
 import           Control.Monad.Catch
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Reader
@@ -79,9 +78,15 @@ data SAction = SAction {
 getDatabase :: Action Database
 getDatabase = Action $ asks actionDatabase
 
+getStep :: Action Step
+getStep = do
+    db <- getDatabase
+    liftIO $ readTVarIO $ databaseStep db
+
+
 -- | waitForDatabaseRunningKeysAction waits for all keys in the database to finish running.
-waitForDatabaseRunningKeysAction :: Action ()
-waitForDatabaseRunningKeysAction = getDatabase >>= liftIO . waitForDatabaseRunningKeys
+-- waitForDatabaseRunningKeysAction :: Action ()
+-- waitForDatabaseRunningKeysAction = getDatabase >>= liftIO . waitForDatabaseRunningKeys
 
 ---------------------------------------------------------------------
 -- DATABASE
@@ -89,7 +94,7 @@ waitForDatabaseRunningKeysAction = getDatabase >>= liftIO . waitForDatabaseRunni
 data ShakeDatabase = ShakeDatabase !Int [Action ()] Database
 
 newtype Step = Step Int
-    deriving newtype (Eq,Ord,Hashable,Show)
+    deriving newtype (Eq,Ord,Hashable,Show,Num,Enum,Real,Integral)
 
 ---------------------------------------------------------------------
 -- Keys
@@ -115,8 +120,8 @@ data Database = Database {
     databaseValues :: !(Map Key KeyDetails)
     }
 
-waitForDatabaseRunningKeys :: Database -> IO ()
-waitForDatabaseRunningKeys = getDatabaseValues >=> mapM_ (waitRunning . snd)
+-- waitForDatabaseRunningKeys :: Database -> IO ()
+-- waitForDatabaseRunningKeys = getDatabaseValues >=> mapM_ (waitRunning . snd)
 
 getDatabaseValues :: Database -> IO [(Key, Status)]
 getDatabaseValues = atomically
@@ -129,24 +134,24 @@ data Status
     = Clean !Result
     | Dirty (Maybe Result)
     | Running {
-        runningStep   :: !Step,
-        runningWait   :: !(IO ()),
-        runningResult :: Result,     -- LAZY
-        runningPrev   :: !(Maybe Result)
+        runningStep :: !Step,
+        -- runningWait   :: !(IO ()),
+        -- runningResult :: Result,     -- LAZY
+        runningPrev :: !(Maybe Result)
         }
 
 viewDirty :: Step -> Status -> Status
-viewDirty currentStep (Running s _ _ re) | currentStep /= s = Dirty re
+viewDirty currentStep (Running s re) | currentStep /= s = Dirty re
 viewDirty _ other = other
 
 getResult :: Status -> Maybe Result
-getResult (Clean re)           = Just re
-getResult (Dirty m_re)         = m_re
-getResult (Running _ _ _ m_re) = m_re -- watch out: this returns the previous result
+getResult (Clean re)       = Just re
+getResult (Dirty m_re)     = m_re
+getResult (Running _ m_re) = m_re -- watch out: this returns the previous result
 
-waitRunning :: Status -> IO ()
-waitRunning Running{..} = runningWait
-waitRunning _           = return ()
+-- waitRunning :: Status -> IO ()
+-- waitRunning Running{..} = runningWait
+-- waitRunning _           = return ()
 
 data Result = Result {
     resultValue     :: !Value,

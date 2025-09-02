@@ -1,0 +1,24 @@
+9278000: cap 4: Build reenqueued, [] step: 0
+9549000: cap 0: Build Action ignoreState exception shakeRunDatabaseForKeys, Num: 1/2 AsyncCancelled
+9564000: cap 4: Build runActions 1, shakeRunDatabaseForKeys, Caught exception: AsyncParentKill (ThreadId 26) 0 "restart"
+9599000: cap 4: Build Cross Killed at workRun done, step 1: AsyncParentKill (ThreadId 26) 0 "restart"
+9750000: cap 4: Build reenqueued, [] step: 1
+10045000: cap 2: Build Action ignoreState exception shakeRunDatabaseForKeys, Num: 1/2 AsyncCancelled
+10052000: cap 4: Build runActions 2, shakeRunDatabaseForKeys, Caught exception: AsyncParentKill (ThreadId 26) 1 "restart"
+10067000: cap 4: Build Cross Killed at workRun done, step 2: AsyncParentKill (ThreadId 26) 1 "restart"
+10258000: cap 1: Build reenqueued, [] step: 2
+10552000: cap 0: Build Action ignoreState exception shakeRunDatabaseForKeys, Num: 1/2 AsyncCancelled
+10563000: cap 4: Build runActions 3, shakeRunDatabaseForKeys, Caught exception: AsyncParentKill (ThreadId 26) 2 "restart"
+10578000: cap 4: Build Cross Killed at workRun done, step 3: AsyncParentKill (ThreadId 26) 2 "restart"
+10799000: cap 2: Build reenqueued, [] step: 3
+11192000: cap 2: Build Action ignoreState exception shakeRunDatabaseForKeys, Num: 1/2 AsyncCancelled
+11244000: cap 0: Build Action ignoreState exception shakeRunDatabaseForKeys, Num: 0/2 AsyncCancelled
+11247000: cap 0: Build runActions 4, shakeRunDatabaseForKeys, Caught exception: AsyncParentKill (ThreadId 26) 3 "restart"
+11255000: cap 1: Build Cross Killed at workRun done, step 4: AsyncParentKill (ThreadId 26) 3 "restart"
+11408000: cap 1: Build reenqueued, [] step: 4
+11614000: cap 4: Build: curStep: 5, key: [GetHlintSettings; ], AsyncParentKill (ThreadId 75) 4 "AsyncCancelled cleanupAsync cleanupAsync "
+11638000: cap 3: Build: curStep: 5, key: [GetHlintDiagnostics; /Volumes/src/soulomoonHLS.worktrees/b313fd0/plugins/hls-hlint-plugin/test/testdata/Base.hs], AsyncParentKill (ThreadId 75) 4 "AsyncCancelled cleanupAsync cleanupAsync <>[GetHlintSettings; ]"
+11650000: cap 3: Build Action ignoreState exception shakeRunDatabaseForKeys, Num: 0/2 AsyncParentKill (ThreadId 75) 4 "AsyncCancelled cleanupAsync cleanupAsync <>[GetHlintSettings; ]<>[GetHlintDiagnostics; /Volumes/src/soulomoonHLS.worktrees/b313fd0/plugins/hls-hlint-plugin/test/testdata/Base.hs]"
+11659000: cap 2: Build Action ignoreState exception shakeRunDatabaseForKeys, Num: 1/2 AsyncCancelled
+11665000: cap 2: Build runActions 5, shakeRunDatabaseForKeys, Caught exception: AsyncParentKill (ThreadId 75) 4 "AsyncCancelled cleanupAsync cleanupAsync <>[GetHlintSettings; ]<>[GetHlintDiagnostics; /Volumes/src/soulomoonHLS.worktrees/b313fd0/plugins/hls-hlint-plugin/test/testdata/Base.hs]"
+11674000: cap 1: Build Cross Killed at workRun done, step 5: AsyncParentKill (ThreadId 75) 4 "AsyncCancelled cleanupAsync cleanupAsync <>[GetHlintSettings; ]<>[GetHlintDiagnostics; /Volumes/src/soulomoonHLS.worktrees/b313fd0/plugins/hls-hlint-plugin/test/testdata/Base.hs]"

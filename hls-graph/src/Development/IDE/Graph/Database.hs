@@ -68,7 +68,7 @@ shakeRunDatabaseForKeys
     -> IO [a]
 shakeRunDatabaseForKeys keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
     incDatabase db keysChanged
-    fmap (drop lenAs1) $ runActions db $ map unvoid as1 ++ as2
+    fmap (drop lenAs1) $ runActions "shakeRunDatabaseForKeys" db $ map unvoid as1 ++ as2
 
 -- | Given a 'ShakeDatabase', write an HTML profile to the given file about the latest run.
 shakeProfileDatabase :: ShakeDatabase -> FilePath -> IO ()
