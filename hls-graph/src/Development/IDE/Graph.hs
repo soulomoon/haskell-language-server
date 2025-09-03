@@ -9,7 +9,6 @@ module Development.IDE.Graph(
     -- * Configuration
     ShakeOptions(shakeAllowRedefineRules, shakeExtra),
     getShakeExtra, getShakeExtraRules, newShakeExtra,
-    getDatabase, getStep,
     -- * Explicit parallelism
     parallel,
     -- * Oracle rules

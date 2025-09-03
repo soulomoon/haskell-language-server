@@ -12,10 +12,12 @@ module Development.IDE.Graph.Internal.Action
 , applyWithoutDependency
 , parallel
 , runActions
+, mapConcurrentlyAPKill
 , Development.IDE.Graph.Internal.Action.getDirtySet
 , getKeysAndVisitedAge
 ) where
 
+import           Control.Concurrent                      (myThreadId)
 import           Control.Concurrent.Async
 import           Control.Concurrent.STM                  (readTVarIO)
 import           Control.DeepSeq                         (force)
@@ -44,47 +46,60 @@ alwaysRerun = do
     ref <- Action $ asks actionDeps
     liftIO $ modifyIORef' ref (AlwaysRerunDeps mempty <>)
 
--- parallel :: [Action a] -> Action [a]
--- parallel xs = parallel' xs
 
-parallel :: String -> [Action a] -> Action [a]
-parallel title [] = pure []
-parallel title [x] = fmap (:[]) x
-parallel title xs = do
+-- parallel :: String -> [(String, Action a)] -> Action [a]
+parallel _ title [] = pure []
+parallel _ title [x] = fmap (:[]) (snd x)
+parallel step title xs = do
     a <- Action ask
     deps <- liftIO $ readIORef $ actionDeps a
     case deps of
         UnknownDeps ->
             -- if we are already in the rerun mode, nothing we do is going to impact our state
-            liftIO $ mapConcurrently (ignoreState title (length xs) a) (zip [0..] xs)
+            liftIO $ mapConcurrentlyAPKill step title (ignoreState title (length xs) a) (zip [0..] xs)
         deps -> do
-            (newDeps, res) <- liftIO $ unzip <$> mapConcurrently (usingState a) xs
-            liftIO $ writeIORef (actionDeps a) $ mconcat $ deps : newDeps
-            pure res
+            error "please help me"
+            -- (newDeps, res) <- liftIO $ unzip <$> mapConcurrently (usingState a) xs
+            -- liftIO $ writeIORef (actionDeps a) $ mconcat $ deps : newDeps
+            -- pure res
     where
-        usingState a x = do
+        usingState a (name, x) = do
             ref <- newIORef mempty
             res <- runReaderT (fromAction x) a{actionDeps=ref}
             deps <- readIORef ref
             pure (deps, res)
 
-ignoreState :: String -> Int -> SAction -> (Int, Action b) -> IO b
-ignoreState title n a (i, x) = do
+ignoreState :: String -> Int -> SAction -> (Int, (String, Action b)) -> IO b
+ignoreState title n a (i, (name, x)) = do
     ref <- newIORef mempty
+    step <- readTVarIO $ databaseStep $ actionDatabase a
+    ttid <- myThreadId
     runReaderT (fromAction x) a{actionDeps=ref} `catch` \(e :: SomeException) -> do
-        liftIO $ traceEventIO $ "Build Action ignoreState exception " ++ title ++ ", " ++ "Num: " ++ show i ++"/" ++ show n ++" " ++ show e
-        throw e
+        let newException = case fromException e of
+                Just (AsyncParentKill tid s t) -> AsyncParentKill tid s (t <> formatName step ttid "ignoreState" <> show title ++ "[" <> name <> "]" )
+                _ -> AsyncParentKill ttid step (show e <> formatName step ttid "ignoreState" <> show title ++ "[" <> name <> "]" )
+        liftIO $ traceEventIO $ "Build ignoreState " ++ title ++ "[" <> name <> "], " ++ "Num: " ++ show i ++"/" ++ show n ++" " ++ show newException
+        throw newException
 
-actionFork :: Action a -> (Async a -> Action b) -> Action b
-actionFork act k = do
+actionFork :: (String, Action a) -> (Async a -> Action b) -> Action b
+actionFork (name, act) k = do
     a <- Action ask
     deps <- liftIO $ readIORef $ actionDeps a
     let db = actionDatabase a
+    step <- liftIO $ readTVarIO $ databaseStep db
+    tid <- liftIO myThreadId
 
     case deps of
         UnknownDeps -> do
             -- if we are already in the rerun mode, nothing we do is going to impact our state
-            [res] <- liftIO $ withAsync (catchAndLogAndRethrow $ ignoreState "actionFork" (-1) a (-1, act)) $ \as -> runActions "actionFork" db [k as]
+            [res] <- liftIO $ do
+                as <- async $ catchAndLogAndRethrow $ ignoreState "actionFork" (-1) a (-1, (name, act))
+                runActions "actionFork" db [(name, k as)] `catch` \(e :: SomeException) -> do
+                    traceEventIO $ "Build Action actionFork Caught exception: " ++ show e
+                    let newError = AsyncParentKill tid step (show e <> " " <> "actionFork" ++ "[" <> name <> "]")
+                    cancelWith as newError
+                    throw newError
+
             return res
         _ ->
             error "please help me"
@@ -145,19 +160,53 @@ applyWithoutDependency ks = do
     (_, vs) <- liftIO $ build db stack ks
     pure vs
 
-runActions :: String -> Database -> [Action a] -> IO [a]
+runActions :: String -> Database -> [(String, Action a)] -> IO [a]
 runActions title db xs = do
     deps <- newIORef mempty
     step <- readTVarIO $ databaseStep db
-    let tag i act =
+    let tag i (n, act) =
             -- Log which action failed; rethrow unchanged so upstream semantics stay the same
-            act `UE.catchAny` \(e :: SomeException) -> do
-                liftIO $ traceEventIO ("Build runActions (" ++ title ++ ") action[" ++ show i ++ "] exception: " ++ show e)
-                throw e
+            (n, act `UE.catchAny` \(e :: SomeException) -> do
+                    liftIO $ traceEventIO ("Build runActions (" ++ title ++ ") action[" ++ show i ++ "] exception: " ++ show e)
+                    throw e)
         tagged = zipWith tag ([0 ..] :: [Int]) xs
-    runReaderT (fromAction $ parallel title tagged) (SAction db deps emptyStack) `catch` \(e :: SomeException) -> do
+    runReaderT (fromAction $ parallel step title tagged) (SAction db deps emptyStack) `catch` \(e :: SomeException) -> do
         traceEventIO $ "Build runActions " <> show step  <> ", " ++ title ++ ", Caught exception: " ++ show e
         throw e
+
+
+-- | Like 'mapConcurrently', but if any worker fails, cancels the rest by
+--   throwing 'AsyncParentKill' to them. Returns results in the original order
+--   if all workers succeed. The label is included in the kill exception.
+mapConcurrentlyAPKill :: (Traversable t) => Step -> String -> (a -> IO b) -> t a -> IO (t b)
+mapConcurrentlyAPKill step label f xs = uninterruptibleMask $ \restore -> do
+  asStruct <- traverse (\x -> async $ restore (f x)) xs
+  let asList = toList asStruct
+  let loop :: [Async b] -> IO ()
+      loop [] = pure ()
+      loop pending = do
+        ans <- (Right <$> restore (waitAnyCatch pending)) `catch` \(e :: SomeAsyncException) -> return $ Left e
+        case ans of
+          (Right (a, Right _)) -> loop (filter (/= a) pending)
+          (Right (a, Left e)) -> do
+            tid <- myThreadId
+            let killEx = case fromException e of
+                  Just (AsyncParentKill _ _ t) -> AsyncParentKill tid step (t <> formatName step tid "mapConcurrentlyAPKill" <> label)
+                  _ -> AsyncParentKill tid step (show e <> formatName step tid "mapConcurrentlyAPKill" <> label)
+                others = filter (/= a) pending
+            mapM_ (\b -> throwTo (asyncThreadId b) killEx) others
+            mapM_ waitCatch pending
+            throwIO e
+          Left e -> do
+            tid <- myThreadId
+            let killEx = case fromException $ asyncExceptionToException e of
+                  Just (AsyncParentKill _ _ t) -> AsyncParentKill tid step (t <> formatName step tid "mapConcurrentlyAPKill" <> label)
+                  _ -> AsyncParentKill tid step (show e <> formatName step tid "mapConcurrentlyAPKill" <> label)
+            mapM_ (\b -> throwTo (asyncThreadId b) killEx) pending
+            mapM_ waitCatch pending
+            throwIO e
+  loop asList
+  traverse wait asStruct
 
 
 -- | Returns the set of dirty keys annotated with their age (in # of builds)

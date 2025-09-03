@@ -8,7 +8,7 @@
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TypeFamilies       #-}
 
-module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..)) where
+module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..), formatName) where
 
 import           Prelude                              hiding (unzip)
 
@@ -32,7 +32,8 @@ import           Data.IORef.Extra
 import           Data.Maybe
 import           Data.Traversable                     (for)
 import           Data.Tuple.Extra
-import           Debug.Trace                          (traceEventIO, traceM)
+import           Debug.Trace                          (traceEvent, traceEventIO,
+                                                       traceM)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules
@@ -45,8 +46,9 @@ import           UnliftIO                             (MonadUnliftIO (withRunInI
 import qualified UnliftIO.Exception                   as UE
 
 #if MIN_VERSION_base(4,19,0)
-import           Data.Either                          (partitionEithers)
+import           Data.Either.Extra                    (partitionEithers)
 import           Data.Functor                         (unzip)
+import           Data.Unique                          (hashUnique, newUnique)
 import           System.IO.Unsafe                     (unsafePerformIO)
 #else
 import           Data.List.NonEmpty                   (unzip)
@@ -82,66 +84,90 @@ incDatabase db _ = do
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
             let status'
-                  | Running _ x <- status = Dirty x
-                  | Clean x <- status = Dirty (Just x)
+                  | Running _ _ _ x <- status = Dirty Nothing
+                --   | Clean x <- status = Dirty (Just x)
+                  | Clean x <- status = Dirty Nothing
                   | otherwise = status
             in KeyDetails status' rdeps
 -- | Unwrap and build a list of keys in parallel
+formatName :: Step -> ThreadId -> String -> String
+formatName s tid name = if null name then "" else " |" ++ name  ++ " " ++ show s ++  " " ++ show tid ++ "| "
+
 build
     :: forall f key value . (Traversable f, RuleResult key ~ value, Typeable key, Show key, Hashable key, Eq key, Typeable value)
     => Database -> Stack -> f key -> IO (f Key, f value)
 -- build _ st k | traceShow ("build", st, k) False = undefined
 build db stack keys = do
-    step <- readTVarIO $ databaseStep db
-    go `catch` \e@(AsyncParentKill i s t) -> do
-        when (s /=step) $ traceEventIO $ "Build: curStep: " ++ show step ++ ", key: " ++ show (toList keys) ++ ", " ++ show e
-        throw $ AsyncParentKill i s (t ++ "<>"  ++ show (toList keys))
+    -- step <- readTVarIO $ databaseStep db
+    -- tid <- myThreadId
+    go
+    -- `catch` \(AsyncParentKill i s t) -> do
+    --     uid <- newUnique
+    --     let e = AsyncParentKill i s (t ++ formatName step tid "build"  ++ show (hashUnique uid) ++ show (toList keys))
+    --     when (s /=step) $ traceEventIO $ "Build build step: " ++ show step ++ ", exception: " ++ show e
+    --     throw e
     where
     go = do
         step <- readTVarIO (databaseStep db)
         -- !built <- builder db stack (fmap newKey keys)
-        built <- runAIO step $ builder db stack (fmap newKey keys)
+        built <- runAIO step (show $ toList keys) $ do
+            built <- builder db stack (fmap newKey keys)
+            case built of
+                Left clean  -> return clean
+                Right dirty -> liftIO dirty
         let (ids, vs) = unzip built
         pure (ids, fmap (asV . resultValue) vs)
         where
             asV :: Value -> value
             asV (Value x) = unwrapDynamic x
 
+data BType = BClean | BDirty | BRunning deriving Show
 -- | Build a list of keys and return their results.
 --  If none of the keys are dirty, we can return the results immediately.
 --  Otherwise, a blocking computation is returned *which must be evaluated asynchronously* to avoid deadlock.
-builder :: (Traversable f) => Database -> Stack -> f Key -> AIO (f (Key, Result))
+builder
+    :: Traversable f => Database -> Stack -> f Key -> AIO (Either (f (Key, Result)) (IO (f (Key, Result))))
 -- builder _ st kk | traceShow ("builder", st,kk) False = undefined
-builder db stack keys = do
-    keyWaits <- for keys $ \k -> builderOne db stack k
-    !res <- for keyWaits $ \(k, waitR) -> do
-        !v<- liftIO waitR
-        return (k, v)
-    return res
+builder db@Database{..} stack keys = withRunInIO $ \run -> do
+    -- Things that I need to force before my results are ready
+    toForce <- liftIO $ newTVarIO []
+    current <- liftIO $ readTVarIO databaseStep
+    results <- liftIO $ for keys $ \id ->
+        -- Updating the status of all the dependencies atomically is not necessary.
+        -- Therefore, run one transaction per dep. to avoid contention
+        atomicallyNamed "builder" $ do
+            -- Spawn the id if needed
+            status <- SMap.lookup id databaseValues
+            (val, bt) <- case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
+                Clean r -> pure (r, BClean)
+                Running _ force val _
+                  | memberStack id stack -> throw $ StackException stack
+                  | otherwise -> do
+                    retry
+                    -- modifyTVar' toForce (Wait force :)
+                    -- pure (val, BRunning)
+                Dirty s -> do
+                    let act = run (asyncWithCleanUp current (show id) $ refresh db stack id s)
+                        (force, val) = splitIO $ join act
+                    SMap.focus (updateStatus $ Running current force val s) id databaseValues
+                    modifyTVar' toForce (Spawn force:)
+                    pure (val, BDirty)
 
-builderOne :: Database -> Stack -> Key -> AIO (Key, IO Result)
-builderOne db@Database {..} stack k = UE.mask $ \restore -> do
-  current <- liftIO $ readTVarIO databaseStep
-  registerWaitResult <- liftIO $ atomicallyNamed "builder" $ do
-    -- Spawn the k if needed
-    status <- SMap.lookup k databaseValues
-    let refreshRsult s = do
-          let act =
-                restore $
-                  asyncWithCleanUp $
-                    refresh db stack k s
-                      `UE.onException` (UE.uninterruptibleMask_ $ liftIO (atomicallyNamed "builder - onException" (SMap.focus updateDirty k databaseValues)))
-          SMap.focus (updateStatus $ Running current s) k databaseValues
-          return act
-    case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
-      Dirty mbr -> refreshRsult mbr
-      Running step _mbr
-        | step /= current -> error $ "Inconsistent database state: key " ++ show k ++ " is marked Running at step " ++ show step ++ " but current step is " ++ show current
-        | memberStack k stack -> throw $ StackException stack
-        | otherwise -> retry
-      Clean r -> pure . pure . pure $ r
-  waitR <- registerWaitResult
-  return (k, waitR)
+            pure ((id, val), bt)
+
+
+    let (newResult, bts) = unzip results
+    traceEventIO $ "Build builder: " ++ show current ++ ", keys: " ++ show (toList keys) ++ ", bts: " ++ show (toList bts)
+
+    toForceList <- liftIO $ readTVarIO toForce
+    let waitAll = run $ waitConcurrently_ toForceList
+    case toForceList of
+        [] -> return $ Left newResult
+        _ -> return $ Right $ do
+                waitAll
+                pure newResult
+
+
 -- | isDirty
 -- only dirty when it's build time is older than the changed time of one of its dependencies
 isDirty :: Foldable t => Result -> t (a, Result) -> Bool
@@ -157,37 +183,43 @@ isDirty me = any (\(_,dep) -> resultBuilt me < resultChanged dep)
 refreshDeps :: KeySet -> Database -> Stack -> Key -> Result -> [KeySet] -> AIO Result
 refreshDeps visited db stack key result = \case
     -- no more deps to refresh
-    [] -> compute' db stack key RunDependenciesSame (Just result)
+    [] -> liftIO $ compute db stack key RunDependenciesSame (Just result)
     (dep:deps) -> do
         let newVisited = dep <> visited
         res <- builder db stack (toListKeySet (dep `differenceKeySet` visited))
-        if isDirty result res
+        case res of
+            Left res ->  if isDirty result res
                 -- restart the computation if any of the deps are dirty
-                then compute' db stack key RunDependenciesChanged (Just result)
+                then liftIO $ compute db stack key RunDependenciesChanged (Just result)
                 -- else kick the rest of the deps
                 else refreshDeps newVisited db stack key result deps
+            Right iores -> do
+                res <- liftIO iores
+                if isDirty result res
+                    then liftIO $ compute db stack key RunDependenciesChanged (Just result)
+                    else refreshDeps newVisited db stack key result deps
 
-
--- refresh :: Database -> Stack -> Key -> Maybe Result -> IO Result
--- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
+-- | Refresh a key:
 refresh :: Database -> Stack -> Key -> Maybe Result -> AIO Result
+-- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
 refresh db stack key result = case (addStack key stack, result) of
     (Left e, _) -> throw e
     (Right stack, Just me@Result{resultDeps = ResultDeps deps}) -> refreshDeps mempty db stack key me (reverse deps)
-    (Right stack, _) -> compute' db stack key RunDependenciesChanged result
+    (Right stack, _) -> liftIO $ compute db stack key RunDependenciesChanged result
 
-compute' :: Database -> Stack -> Key -> RunMode -> Maybe Result -> AIO Result
-compute' db stack key mode result = liftIO $ compute db stack key mode result
 -- | Compute a key.
 compute :: Database -> Stack -> Key -> RunMode -> Maybe Result -> IO Result
 -- compute _ st k _ _ | traceShow ("compute", st, k) False = undefined
 compute db@Database{..} stack key mode result = do
+    curStep <- readTVarIO databaseStep
+    traceEventIO $ "Build Action compute begin " ++ show key ++ " step" ++ show curStep
     let act = runRule databaseRules key (fmap resultData result) mode
-    deps <- liftIO $ newIORef UnknownDeps
+    traceEventIO $ "Build Action compute begin 1" ++ show key ++ " step" ++ show curStep
+    deps <- newIORef UnknownDeps
     (execution, RunResult{..}) <-
-        liftIO $ duration $ runReaderT (fromAction act) $ SAction db deps stack
-    curStep <- liftIO $ readTVarIO databaseStep
-    deps <- liftIO $ readIORef deps
+        duration $ runReaderT (fromAction act) $ SAction db deps stack
+    traceEventIO $ "Build Action compute begin 3" ++ show key ++ " step" ++ show curStep
+    deps <- readIORef deps
     let lastChanged = maybe curStep resultChanged result
     let lastBuild = maybe curStep resultBuilt result
     -- changed time is always older than or equal to build time
@@ -210,15 +242,19 @@ compute db@Database{..} stack key mode result = do
             -- If an async exception strikes before the deps have been recorded,
             -- we won't be able to accurately propagate dirtiness for this key
             -- on the next build.
-            liftIO $ void $
+            void $
                 updateReverseDeps key db
                     (getResultDepsDefault mempty previousDeps)
                     deps
         _ -> pure ()
-    liftIO $ atomicallyNamed "compute and run hook" $ do
+     -- IMPORTANT: update the status of the key to Clean *after* recording the reverse deps.
+     -- If an async exception strikes before the status has been updated,
+     -- we will rerun this key on the next build, which is safe.
+    atomicallyNamed "compute and run hook" $ do
         runHook
         SMap.focus (updateStatus $ Clean res) key databaseValues
-    pure res
+    traceEventIO $ "Build compute end " ++ show key ++ " step" ++ show curStep
+    pure $! res
 
 updateStatus :: Monad m => Status -> Focus.Focus KeyDetails m ()
 updateStatus res = Focus.alter
@@ -245,6 +281,18 @@ getKeysAndVisitAge db = do
         getAge Result{resultVisited = Step s} = curr - s
     return keysWithVisitAge
 --------------------------------------------------------------------------------
+-- Lazy IO trick
+
+data Box a = Box {fromBox :: a}
+
+-- | Split an IO computation into an unsafe lazy value and a forcing computation
+splitIO :: IO a -> (IO (), a)
+splitIO act = do
+    let act2 = Box <$> act
+    let res = unsafePerformIO act2
+    (void $ evaluate res, fromBox res)
+
+--------------------------------------------------------------------------------
 -- Reverse dependencies
 
 -- | Update the reverse dependencies of an Id
@@ -269,19 +317,6 @@ updateReverseDeps myId db prev new = do
         doOne f id = atomicallyNamed "updateReverseDeps" $
             SMap.focus (alterRDeps f) id (databaseValues db)
 
-getReverseDependencies :: Database -> Key -> STM (Maybe KeySet)
-getReverseDependencies db = (fmap.fmap) keyReverseDeps  . flip SMap.lookup (databaseValues db)
-
-transitiveDirtySet :: Foldable t => Database -> t Key -> IO KeySet
-transitiveDirtySet database = flip State.execStateT mempty . traverse_ loop
-  where
-    loop x = do
-        seen <- State.get
-        if x `memberKeySet` seen then pure () else do
-            State.put (insertKeySet x seen)
-            next <- lift $ atomically $ getReverseDependencies database x
-            traverse_ loop (maybe mempty toListKeySet next)
-
 --------------------------------------------------------------------------------
 -- Asynchronous computations with cancellation
 
@@ -298,8 +333,8 @@ instance Exception AsyncParentKill where
   fromException = asyncExceptionFromException
 
 -- | Run the monadic computation, cancelling all the spawned asyncs if an exception arises
-runAIO :: Step -> AIO a -> IO a
-runAIO s (AIO act) = do
+runAIO :: Step -> String -> AIO a -> IO a
+runAIO s keys (AIO act) = do
     asyncsRef <- newTVarIO []
     -- Log the exact exception (including async exceptions) before cleanup,
     -- then rethrow to preserve previous semantics.
@@ -309,19 +344,23 @@ runAIO s (AIO act) = do
             modifyTVar' asyncsRef $ const []
             return r
         tid <- myThreadId
-        cleanupAsync e asyncs tid s
+        cleanupAsync e keys asyncs tid s
         throw e
+
 
 -- | Like 'async' but with built-in cancellation.
 --   Returns an IO action to wait on the result.
-asyncWithCleanUp :: AIO a -> AIO (IO a)
-asyncWithCleanUp act = do
+asyncWithCleanUp :: Step -> String -> AIO a -> AIO (IO a)
+asyncWithCleanUp s key act = do
     st <- AIO ask
     io <- unliftAIO act
     -- mask to make sure we keep track of the spawned async
     liftIO $ uninterruptibleMask $ \restore -> do
+        tid <- myThreadId
         a <- async $ restore io
         atomically $ modifyTVar' st (void a :)
+        liftIO $ traceEventIO $ "Build asyncWithCleanUp: spawned " ++ show (asyncThreadId a) ++ " from " ++ (show tid) ++ " Step " ++ show s ++ ",  key " ++ key
+         -- return an IO action to wait on the result
         return $ wait a
 
 unliftAIO :: AIO a -> AIO (IO a)
@@ -334,14 +373,15 @@ instance MonadUnliftIO AIO where
         st <- AIO ask
         liftIO $ k (\aio -> runReaderT (unAIO aio) st)
 
-cleanupAsync :: SomeException -> [Async a] -> ThreadId -> Step -> IO ()
+cleanupAsync :: SomeException -> String -> [Async a] -> ThreadId -> Step -> IO ()
 -- mask to make sure we interrupt all the asyncs
-cleanupAsync e asyncs tid step  = uninterruptibleMask $ \unmask -> do
+cleanupAsync e keys asyncs ttid step  = uninterruptibleMask $ \unmask -> do
     -- interrupt all the asyncs without waiting
     -- mapM_ (\a -> throwTo (asyncThreadId a) AsyncCancelled) asyncs
     let newException = case fromException e of
-            Just (AsyncParentKill _ _ t) -> AsyncParentKill tid step (t <> " cleanupAsync ")
-            _                            -> AsyncParentKill tid step (show e  <> " cleanupAsync")
+            Just (AsyncParentKill tid s t) -> AsyncParentKill tid s (t <> formatName step ttid "cleanupAsync" <> show keys )
+            _                            -> AsyncParentKill ttid step (show e <> formatName step ttid "cleanupAsync"<> show keys )
+    traceEventIO $ "Build cleanupAsync: interrupting " ++ show (asyncThreadId <$> asyncs) ++ show step ++ " " ++ show keys ++ show newException
     mapM_ (\a -> throwTo (asyncThreadId a) newException) asyncs
     -- Wait until all the asyncs are done
     -- But if it takes more than 10 seconds, log to stderr
@@ -351,3 +391,39 @@ cleanupAsync e asyncs tid step  = uninterruptibleMask $ \unmask -> do
                 traceM "cleanupAsync: waiting for asyncs to finish"
         withAsync warnIfTakingTooLong $ \_ ->
             mapM_ waitCatch asyncs
+
+data Wait
+    = Wait {justWait :: !(IO ())}
+    | Spawn {justWait :: !(IO ())}
+
+fmapWait :: (IO () -> IO ()) -> Wait -> Wait
+fmapWait f (Wait io)  = Wait (f io)
+fmapWait f (Spawn io) = Spawn (f io)
+
+waitOrSpawn :: Wait -> IO (Either (IO ()) (Async ()))
+waitOrSpawn (Wait io)  = pure $ Left io
+waitOrSpawn (Spawn io) = Right <$> async io
+
+waitConcurrently_ :: [Wait] -> AIO ()
+waitConcurrently_ [] = pure ()
+waitConcurrently_ [one] = liftIO $ justWait one
+waitConcurrently_ many = do
+    ref <- AIO ask
+    -- spawn the async computations.
+    -- mask to make sure we keep track of all the asyncs.
+    (asyncs, syncs) <- liftIO $ uninterruptibleMask $ \unmask -> do
+        waits <- liftIO $ traverse (waitOrSpawn . fmapWait unmask) many
+        let (syncs, asyncs) = partitionEithers waits
+        liftIO $ atomically $ modifyTVar' ref (asyncs ++)
+        return (asyncs, syncs)
+    -- log what we registered in this scope for later correlation with cleanup
+    liftIO $ do
+        tid <- myThreadId
+        traceEventIO $ "Build waitConcurrently_: registered asyncs "
+                    ++ show (asyncThreadId <$> asyncs)
+                    ++ ", syncs " ++ show (length syncs)
+                    ++ ", from " ++ show tid
+    -- work on the sync computations
+    liftIO $ sequence_ syncs
+    -- wait for the async computations before returning
+    liftIO $ traverse_ wait asyncs

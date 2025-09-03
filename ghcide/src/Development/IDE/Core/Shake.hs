@@ -76,7 +76,7 @@ module Development.IDE.Core.Shake(
     Log(..),
     VFSModified(..), getClientConfigAction,
     ThreadQueue(..),
-    runWithSignal, getStepAction
+    runWithSignal
     ) where
 
 import           Control.Concurrent.Async
@@ -150,8 +150,7 @@ import           Development.IDE.Graph.Database         (AsyncParentKill (AsyncP
                                                          shakeNewDatabase,
                                                          shakeProfileDatabase,
                                                          shakeRunDatabaseForKeys)
-import           Development.IDE.Graph.Internal.Types   (SAction (actionDatabase),
-                                                         databaseStep)
+import           Development.IDE.Graph.Internal.Types   (Step)
 import           Development.IDE.Graph.Rule
 import           Development.IDE.Types.Action
 import           Development.IDE.Types.Diagnostics
@@ -359,8 +358,6 @@ getShakeExtras = do
     Just x <- getShakeExtra @ShakeExtras
     return x
 
-getStepAction = getStep
-
 getShakeExtrasRules :: Rules ShakeExtras
 getShakeExtrasRules = do
     mExtras <- getShakeExtraRules @ShakeExtras
@@ -540,7 +537,7 @@ type IdeRule k v =
 -- | A live Shake session with the ability to enqueue Actions for running.
 --   Keeps the 'ShakeDatabase' open, so at most one 'ShakeSession' per database.
 newtype ShakeSession = ShakeSession
-  { cancelShakeSession :: IO ()
+  { cancelShakeSession :: Step -> IO ()
     -- ^ Closes the Shake session
   }
 
@@ -775,7 +772,8 @@ shakeShut IdeState{..} = do
     runner <- tryReadMVar shakeSession
     -- Shake gets unhappy if you try to close when there is a running
     -- request so we first abort that.
-    for_ runner cancelShakeSession
+    step <- shakeGetBuildStep' shakeDb
+    for_ runner (flip cancelShakeSession step)
     void $ shakeDatabaseProfile shakeDb
     progressStop $ progress shakeExtras
     progressStop $ indexProgressReporting $ hiedbWriter shakeExtras
@@ -814,9 +812,10 @@ shakeRestart recorder IdeState{..} vfs reason acts ioActionBetweenShakeSession =
         withMVar'
             shakeSession
             (\runner -> do
-                step <- shakeGetBuildStep shakeDb
-                (stopTime,()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner
-                liftIO $ traceEventIO ("Cross killed, restart, shake cancelled step: " ++ show step)
+                step <- shakeGetBuildStep' shakeDb
+                liftIO $ traceEventIO ("Build, restart begin, shake cancelled step: " ++ show step)
+                (stopTime,()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner step
+                liftIO $ traceEventIO ("Build, restart end, shake cancelled step: " ++ show step)
                 keys <- ioActionBetweenShakeSession
                 -- it is every important to update the dirty keys after we enter the critical section
                 -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
@@ -854,7 +853,6 @@ shakeEnqueue ShakeExtras{actionQueue, shakeRecorder} act = do
                     fail $ "internal bug: forever blocked on MVar for " <>
                             actionName act)
               , Handler (\e@AsyncCancelled -> do
-                  traceEventIO ("Build shakeEnqueue, action cancelled: " ++ actionName act)
                   logWith shakeRecorder Debug $ LogCancelledAction (T.pack $ actionName act)
 
                   atomicallyNamed "actionQueue - abort" $ abortQueue dai actionQueue
@@ -887,40 +885,41 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
         if optRunSubset
           then Just <$> readTVarIO dirtyKeys
           else return Nothing
-    step <- shakeGetBuildStep' shakeDb
+    step <- shakeGetBuildStep shakeDb
     liftIO $ traceEventIO ("Build reenqueued, " ++ show reenqueued ++ " step: " ++ show step)
     let
         -- A daemon-like action used to inject additional work
         -- Runs actions from the work queue sequentially
         pumpActionThread otSpan = do
             d <- liftIO $ atomicallyNamed "action queue - pop" $ popQueue actionQueue
-            liftIO $ traceEventIO ("Build Pump action thread forking, " ++ show d ++ ", step: " ++ show step)
             actionFork (run otSpan d) $ \_ -> do
+                liftIO $ traceEventIO ("Build Pump action thread forking, " ++ show d ++ "step: " ++ show step)
                 pumpActionThread otSpan
 
         -- TODO figure out how to thread the otSpan into defineEarlyCutoff
-        run _otSpan d  = do
+        run _otSpan d  = (actionName d, do
             start <- liftIO offsetTime
             getAction d
             liftIO $ atomicallyNamed "actionQueue - done" $ doneQueue d actionQueue
             runTime <- liftIO start
-            logWith recorder (actionPriority d) $ LogDelayedAction d runTime
+            logWith recorder (actionPriority d) $ LogDelayedAction d runTime)
+
 
         -- The inferred type signature doesn't work in ghc >= 9.0.1
-        workRun :: (forall b. IO b -> IO b) -> IO ()
+        workRun :: (forall b. IO b -> IO b) -> IO (IO ())
         workRun restore = withSpan "Shake session" $ \otSpan -> do
           setTag otSpan "reason" (fromString reason)
           setTag otSpan "queue" (fromString $ unlines $ map actionName reenqueued)
           whenJust allPendingKeys $ \kk -> setTag otSpan "keys" (BS8.pack $ unlines $ map show $ toListKeySet kk)
-          let keysActs = pumpActionThread otSpan : map (run otSpan) (reenqueued ++ acts)
+          let keysActs = ("pumpActionThread", pumpActionThread otSpan) : map (run otSpan) (reenqueued ++ acts)
           res <- try @SomeException $
             restore $ shakeRunDatabaseForKeys (toListKeySet <$> allPendingKeys) shakeDb keysActs
-          step <- shakeGetBuildStep' shakeDb
-          let exception =
-                case res of
-                    Left e -> traceEvent ("Build Cross Killed at workRun done, step " <> show step <> ": " <> show e) (Just e)
-                    _      -> Nothing
-          logWith recorder Debug $ LogBuildSessionFinish exception
+          return $ do
+              let exception =
+                    case res of
+                      Left e -> traceEvent ("Cross Killed at workRun done, step" <> show step <> ": " <> show e) (Just e)
+                      _      -> Nothing
+              logWith recorder Debug $ LogBuildSessionFinish exception
 
     -- Do the work in a background thread
     workThread <- asyncWithUnmask workRun
@@ -928,14 +927,14 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
     -- run the wrap up in a separate thread since it contains interruptible
     -- commands (and we are not using uninterruptible mask)
     -- TODO: can possibly swallow exceptions?
-    -- _ <- async $ wait workThread
+    _ <- async $ join $ wait workThread
 
     --  Cancelling is required to flush the Shake database when either
     --  the filesystem or the Ghc configuration have changed
-    let cancelShakeSession :: IO ()
-        cancelShakeSession = do
+    let cancelShakeSession :: Step -> IO ()
+        cancelShakeSession step = do
             tid <- myThreadId
-            cancelWith workThread (AsyncParentKill tid step "restart")
+            cancelWith workThread (AsyncParentKill tid step $ "restart" ++ show step)
 
     pure (ShakeSession{..})
 
@@ -1263,11 +1262,13 @@ defineEarlyCutoff'
 defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
     ShakeExtras{state, progress, dirtyKeys} <- getShakeExtras
     options <- getIdeOptions
+    -- step <- shakeGetBuildStep' =<< getShakeDatabase
+    liftIO $ traceEventIO $ "Build defineEarlyCutoff " ++ show key ++ show file
     let trans g x =  withRunInIO $ \run -> g (run x)
-    step <- getStep
     (if optSkipProgress options key then id else trans (inProgress progress file)) $ do
         val <- case mbOld of
             Just old | mode == RunDependenciesSame -> do
+                liftIO $ traceEventIO $ "Build defineEarlyCutoff RunDependenciesSame " ++ show key
                 mbValue <- liftIO $ atomicallyNamed "define - read 1" $ getValues state key file
                 case mbValue of
                     -- No changes in the dependencies and we have
@@ -1281,16 +1282,17 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                 -- assert that a "clean" rule is never a cache miss
                 -- as this is likely a bug in the dirty key tracking
                 assert (mode /= RunDependenciesSame) $ return Nothing
+        liftIO $ traceEventIO $ "Build defineEarlyCutoff 2 " ++ show key ++ show file
         res <- case val of
-            Just res -> traceEvent ("uild shortcut step " ++ show step ++ " " ++ show key ++ " " ++ show file) $ return res
-            Nothing -> traceEvent ("uild no shortcut now compute step " ++ " " ++ show step ++ " " ++ show key ++ " " ++ show file) $ do
+            Just res -> return res
+            Nothing -> do
                 staleV <- liftIO $ atomicallyNamed "define -read 3" $ getValues state key file <&> \case
-                    Nothing                   -> Failed False
-                    Just (Succeeded ver v, _) -> Stale Nothing ver v
-                    Just (Stale d ver v, _)   -> Stale d ver v
-                    Just (Failed b, _)        -> Failed b
+                    Nothing                   -> traceEvent ("Build defineEarlyCutoff value Nothing" ++ show key ++ show file) $  Failed False
+                    Just (Succeeded ver v, _) -> traceEvent ("Build defineEarlyCutoff value succ" ++ show key ++ show file) $ Stale Nothing ver v
+                    Just (Stale d ver v, _)   -> traceEvent ("Build defineEarlyCutoff value stale" ++ show key ++ show file) $ Stale d ver v
+                    Just (Failed b, _)        -> traceEvent ("Build defineEarlyCutoff value f" ++ show key ++ show file) $ Failed b
                 (mbBs, (diags, mbRes)) <- actionCatch
-                    (do !v <- action staleV; liftIO $ evaluate $ force v) $
+                    (do v <- action staleV; liftIO $ evaluate $ force v) $
                     \(e :: SomeException) -> do
                         pure (Nothing, ([ideErrorText file (T.pack $ show (key, file) ++ show e) | not $ isBadDependency e],Nothing))
 
@@ -1314,6 +1316,7 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
                         setValues state key file res (Vector.fromList diags)
                         modifyTVar' dirtyKeys (deleteKeySet $ toKey key file)
+        !res <- liftIO $ evaluate res
         return res
   where
     -- Highly unsafe helper to compute the version of a file

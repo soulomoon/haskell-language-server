@@ -23,10 +23,10 @@ import           Development.IDE.Graph.Internal.Types
 -- | The type mapping between the @key@ or a rule and the resulting @value@.
 type family RuleResult key -- = value
 
-action :: Action a -> Rules ()
-action x = do
+action :: String -> Action a -> Rules ()
+action name x = do
     ref <- Rules $ asks rulesActions
-    liftIO $ modifyIORef' ref (void x:)
+    liftIO $ modifyIORef' ref ((name, void x):)
 
 addRule
     :: forall key value .
@@ -49,7 +49,7 @@ runRule rules key@(Key t) bs mode = case Map.lookup (typeOf t) rules of
     Nothing -> liftIO $ errorIO $ "Could not find key: " ++ show key
     Just x  -> unwrapDynamic x key bs mode
 
-runRules :: Dynamic -> Rules () -> IO (TheRules, [Action ()])
+runRules :: Dynamic -> Rules () -> IO (TheRules, [(String, Action ())])
 runRules rulesExtra (Rules rules) = do
     rulesActions <- newIORef []
     rulesMap <- newIORef Map.empty

@@ -209,12 +209,9 @@ rules recorder plugin = do
     (Config flags) <- getHlintConfig plugin
     liftIO $ argsSettings flags
 
-  action $ do
+  action "kick/hlint" $ do
     files <- Map.keys <$> getFilesOfInterestUntracked
-    Shake.runWithSignal (Proxy @"kick/start/hlint") (Proxy @"kick/done/hlint") files GetHlintDiagnostics `UE.catchAny`
-        \(e :: SomeException) -> do
-            liftIO $ traceEventIO $ "Build Hlint action caught exception: " ++ show e
-            throw e
+    Shake.runWithSignal (Proxy @"kick/start/hlint") (Proxy @"kick/done/hlint") files GetHlintDiagnostics
 
   where
 
@@ -416,7 +413,8 @@ resolveProvider recorder ideState _plId ca uri resolveValue = do
   file <-  getNormalizedFilePathE uri
   case resolveValue of
     (ApplyHint verTxtDocId oneHint) -> do
-        edit <- ExceptT $ liftIO $ applyHint recorder ideState file oneHint verTxtDocId
+        -- edit <- ExceptT $ liftIO $ ignoreHint recorder ideState file oneHint verTxtDocId
+        edit <- ExceptT $ liftIO $ ignoreHint recorder ideState file verTxtDocId ""
         pure $ ca & LSP.edit ?~ edit
     (IgnoreHint verTxtDocId hintTitle ) -> do
         edit <- ExceptT $ liftIO $ ignoreHint recorder ideState file verTxtDocId hintTitle

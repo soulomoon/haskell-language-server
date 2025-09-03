@@ -12,6 +12,7 @@ module Development.IDE.Graph.Database(
     shakeGetCleanKeys
     ,shakeGetBuildEdges,
     shakeGetBuildStep') where
+import           Control.Arrow                           (Arrow (..))
 import           Control.Concurrent.STM.Stats            (readTVarIO)
 import           Data.Dynamic
 import           Data.Maybe
@@ -35,7 +36,7 @@ shakeNewDatabase opts rules = do
     db <- newDatabase extra theRules
     pure $ ShakeDatabase (length actions) actions db
 
-shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [a]
+shakeRunDatabase :: ShakeDatabase -> [(String, Action a)] -> IO [a]
 shakeRunDatabase = shakeRunDatabaseForKeys Nothing
 
 -- | Returns the set of dirty keys annotated with their age (in # of builds)
@@ -56,15 +57,15 @@ shakeGetBuildStep' (ShakeDatabase _ _ db) = do
     return s
 
 -- Only valid if we never pull on the results, which we don't
-unvoid :: Functor m => m () -> m a
-unvoid = fmap undefined
+-- unvoid :: Functor m => m () -> m a
+unvoid (x, b) = (x, fmap undefined b)
 
 -- | Assumes that the database is not running a build
 shakeRunDatabaseForKeys
     :: Maybe [Key]
       -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
     -> ShakeDatabase
-    -> [Action a]
+    -> [(String, Action a)]
     -> IO [a]
 shakeRunDatabaseForKeys keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
     incDatabase db keysChanged

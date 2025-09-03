@@ -120,7 +120,6 @@ import           System.Random                       (RandomGen)
 import           Text.ParserCombinators.ReadP        (readP_to_S)
 
 import qualified Control.Monad.Catch                 as MC
-import           Debug.Trace.String                  (traceEventIO)
 import           GHC.Driver.Env                      (hsc_all_home_unit_ids)
 import           GHC.Driver.Errors.Types
 import           GHC.Types.Error                     (errMsgDiagnostic,
@@ -582,29 +581,23 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
           void $ modifyVar' filesMap $ flip HM.union (HM.fromList (map ((,hieYaml) . fst) $ concatMap toFlagsMap all_targets))
           -- The VFS doesn't change on cradle edits, re-use the old one.
           -- Invalidate all the existing GhcSession build nodes by restarting the Shake session
+          keys2 <- invalidateShakeCache
           restartShakeSession VFSUnmodified "new component" [] $ do
             keys1 <- extendKnownTargets all_targets
-            keys2 <- invalidateShakeCache
-            -- Typecheck all files in the project on startup
-            checkProject <- getCheckProject
-            unless (null new_deps || not checkProject) $ do
-                    cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
-                    void $ shakeEnqueue extras $ mkDelayedAction "InitialLoad" Debug $ void $ do
-                        liftIO $ traceEventIO $ "InitialLoad 1: " ++ show cfps'
-                        mmt <- uses GetModificationTime cfps'
-                        liftIO $ traceEventIO "InitialLoad 2"
-                        let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
-                        liftIO $ traceEventIO "InitialLoad 3"
-                        modIfaces <- uses GetModIface cs_exist
-                        liftIO $ traceEventIO "InitialLoad 4"
-                        -- update exports map
-                        shakeExtras <- getShakeExtras
-                        liftIO $ traceEventIO "InitialLoad 5"
-                        let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
-                        liftIO $ traceEventIO "InitialLoad 6"
-                        liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
-                        liftIO $ traceEventIO "InitialLoad 7"
             return [keys1, keys2]
+
+          -- Typecheck all files in the project on startup
+          checkProject <- getCheckProject
+          unless (null new_deps || not checkProject) $ do
+                cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
+                void $ shakeEnqueue extras $ mkDelayedAction "InitialLoad" Debug $ void $ do
+                    mmt <- uses GetModificationTime cfps'
+                    let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
+                    modIfaces <- uses GetModIface cs_exist
+                    -- update exports map
+                    shakeExtras <- getShakeExtras
+                    let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
+                    liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
 
           return $ second Map.keys this_options
 

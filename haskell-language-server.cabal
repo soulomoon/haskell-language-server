@@ -721,6 +721,7 @@ library hls-hlint-plugin
   exposed-modules:  Ide.Plugin.Hlint
   hs-source-dirs:   plugins/hls-hlint-plugin/src
   build-depends:
+    , unliftio ^>=0.2.25.1
     , aeson
     , bytestring
     , containers
@@ -742,7 +743,6 @@ library hls-hlint-plugin
     , unordered-containers
     , ghc-lib-parser-ex
     , lsp-types
-    , unliftio
 
   -- apply-refact doesn't work on 9.10, or even have a buildable
   -- configuration
