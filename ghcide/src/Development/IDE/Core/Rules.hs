@@ -722,7 +722,7 @@ loadGhcSession recorder ghcSessionDepsConfig = do
                 itExists <- getFileExists nfp
                 when itExists $ void $ do
                   use_ GetPhysicalModificationTime nfp
-        logWith recorder Logger.Info $ LogDependencies file deps
+        logWith recorder Logger.Debug $ LogDependencies file deps
         mapM_ addDependency deps
 
         let cutoffHash = LBS.toStrict $ B.encode (hash (snd val))

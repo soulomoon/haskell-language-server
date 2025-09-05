@@ -54,7 +54,6 @@ newHscEnvEq :: HscEnv -> IO HscEnvEq
 newHscEnvEq hscEnv' = do
 
     mod_cache <- newIORef emptyInstalledModuleEnv
-    file_cache <- newIORef M.empty
     -- This finder cache is for things which are outside of things which are tracked
     -- by HLS. For example, non-home modules, dependent object files etc
 #if MIN_VERSION_ghc(9,11,0)

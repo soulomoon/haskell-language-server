@@ -25,7 +25,6 @@ module Development.IDE.Core.FileStore(
     ) where
 
 import           Control.Concurrent.STM.Stats                 (STM, atomically)
-import           Control.Concurrent.STM.TQueue                (writeTQueue)
 import           Control.Exception
 import           Control.Lens                                 ((^.))
 import           Control.Monad.Extra
@@ -52,6 +51,7 @@ import           Development.IDE.Types.Diagnostics
 import           Development.IDE.Types.Location
 import           Development.IDE.Types.Options
 import           Development.IDE.Types.Shake                  (toKey)
+import           Development.IDE.WorkerThread                 (writeTaskQueue)
 import           HieDb.Create                                 (deleteMissingRealFiles)
 import           Ide.Logger                                   (Pretty (pretty),
                                                                Priority (Info),
@@ -82,7 +82,6 @@ data Log
   = LogCouldNotIdentifyReverseDeps !NormalizedFilePath
   | LogTypeCheckingReverseDeps !NormalizedFilePath !(Maybe [NormalizedFilePath])
   | LogShake Shake.Log
-  | LogGetModificationTime !NormalizedFilePath
   deriving Show
 
 instance Pretty Log where
@@ -95,8 +94,6 @@ instance Pretty Log where
       <> ":"
       <+> pretty (fmap (fmap show) reverseDepPaths)
     LogShake msg -> pretty msg
-    LogGetModificationTime path ->
-      "Getting modification time for" <+> viaShow path
 
 addWatchedFileRule :: Recorder (WithPriority Log) -> (NormalizedFilePath -> Action Bool) -> Rules ()
 addWatchedFileRule recorder isWatched = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \AddWatchedFile f -> do
@@ -113,7 +110,6 @@ addWatchedFileRule recorder isWatched = defineNoDiagnostics (cmapWithPrio LogSha
 
 getModificationTimeRule :: Recorder (WithPriority Log) -> Rules ()
 getModificationTimeRule recorder = defineEarlyCutoff (cmapWithPrio LogShake recorder) $ Rule $ \(GetModificationTime_ missingFileDiags) file -> do
-    logWith recorder Info $ LogGetModificationTime file
     getModificationTimeImpl missingFileDiags file
 
 getModificationTimeImpl
@@ -306,7 +302,7 @@ typecheckParentsAction recorder nfp = do
 setSomethingModified :: VFSModified -> IdeState -> String -> IO [Key] -> IO ()
 setSomethingModified vfs state reason actionBetweenSession = do
     -- Update database to remove any files that might have been renamed/deleted
-    atomically $ writeTQueue (indexQueue $ hiedbWriter $ shakeExtras state) (\withHieDb -> withHieDb deleteMissingRealFiles)
+    atomically $ writeTaskQueue (indexQueue $ hiedbWriter $ shakeExtras state) (\withHieDb -> withHieDb deleteMissingRealFiles)
     void $ restartShakeSession (shakeExtras state) vfs reason [] actionBetweenSession
 
 registerFileWatches :: [String] -> LSP.LspT Config IO Bool

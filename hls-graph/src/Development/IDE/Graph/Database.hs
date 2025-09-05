@@ -1,5 +1,4 @@
 module Development.IDE.Graph.Database(
-    AsyncParentKill(..),
     ShakeDatabase,
     ShakeValue,
     shakeNewDatabase,
@@ -9,9 +8,11 @@ module Development.IDE.Graph.Database(
     shakeGetBuildStep,
     shakeGetDatabaseKeys,
     shakeGetDirtySet,
-    shakeGetCleanKeys,
-    shakeGetBuildEdges) where
+    shakeGetCleanKeys
+    ,shakeGetBuildEdges,
+    shakeShutDatabase) where
 import           Control.Concurrent.STM.Stats            (readTVarIO)
+import           Control.Exception                       (SomeException)
 import           Data.Dynamic
 import           Data.Maybe
 import           Development.IDE.Graph.Classes           ()
@@ -22,20 +23,24 @@ import           Development.IDE.Graph.Internal.Options
 import           Development.IDE.Graph.Internal.Profile  (writeProfile)
 import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
+import           Development.IDE.WorkerThread            (TaskQueue)
 
 
 -- Placeholder to be the 'extra' if the user doesn't set it
 data NonExportedType = NonExportedType
 
-shakeNewDatabase :: ShakeOptions -> Rules () -> IO ShakeDatabase
-shakeNewDatabase opts rules = do
+shakeShutDatabase :: ShakeDatabase -> IO ()
+shakeShutDatabase (ShakeDatabase _ _ db) = shutDatabase db
+
+shakeNewDatabase :: TaskQueue (IO ()) -> ShakeOptions -> Rules () -> IO ShakeDatabase
+shakeNewDatabase que opts rules = do
     let extra = fromMaybe (toDyn NonExportedType) $ shakeExtra opts
     (theRules, actions) <- runRules extra rules
-    db <- newDatabase extra theRules
+    db <- newDatabase que extra theRules
     pure $ ShakeDatabase (length actions) actions db
 
-shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [a]
-shakeRunDatabase a b = shakeRunDatabaseForKeys Nothing a b (const $ pure ())
+shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [Either SomeException a]
+shakeRunDatabase = shakeRunDatabaseForKeys Nothing
 
 -- | Returns the set of dirty keys annotated with their age (in # of builds)
 shakeGetDirtySet :: ShakeDatabase -> IO [(Key, Int)]
@@ -43,9 +48,9 @@ shakeGetDirtySet (ShakeDatabase _ _ db) =
     Development.IDE.Graph.Internal.Database.getDirtySet db
 
 -- | Returns the build number
-shakeGetBuildStep :: ShakeDatabase -> IO Step
+shakeGetBuildStep :: ShakeDatabase -> IO Int
 shakeGetBuildStep (ShakeDatabase _ _ db) = do
-    s <- readTVarIO $ databaseStep db
+    Step s <- readTVarIO $ databaseStep db
     return s
 
 -- Only valid if we never pull on the results, which we don't
@@ -58,12 +63,11 @@ shakeRunDatabaseForKeys
       -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
     -> ShakeDatabase
     -> [Action a]
-    -> (Database -> IO ())
-    -> IO [a]
-shakeRunDatabaseForKeys keysChanged (ShakeDatabase lenAs1 as1 db) as2 garbageCollect = do
+    -> IO [Either SomeException a]
+shakeRunDatabaseForKeys keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
     incDatabase db keysChanged
-    garbageCollect db
-    fmap (drop lenAs1) $ runActions db $ map unvoid as1 ++ as2
+    drop lenAs1 <$> runActions db (map unvoid as1 ++ as2)
+
 
 -- | Given a 'ShakeDatabase', write an HTML profile to the given file about the latest run.
 shakeProfileDatabase :: ShakeDatabase -> FilePath -> IO ()

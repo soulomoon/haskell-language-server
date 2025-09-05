@@ -81,7 +81,6 @@ import           Data.Void
 
 import           Control.Concurrent.STM.Stats        (atomically, modifyTVar',
                                                       readTVar, writeTVar)
-import           Control.Concurrent.STM.TQueue
 import           Control.Monad.Trans.Cont            (ContT (ContT, runContT))
 import           Data.Foldable                       (for_)
 import           Data.HashMap.Strict                 (HashMap)
@@ -89,7 +88,6 @@ import           Data.HashSet                        (HashSet)
 import qualified Data.HashSet                        as Set
 import           Database.SQLite.Simple
 import           Development.IDE.Core.Tracing        (withTrace)
-import           Development.IDE.Core.WorkerThread   (withWorkerQueue)
 import           Development.IDE.Session.Dependency
 import           Development.IDE.Session.Diagnostics (renderCradleError)
 import           Development.IDE.Session.Ghc         hiding (Log)
@@ -108,6 +106,7 @@ import qualified Control.Monad.STM                   as STM
 import           Control.Monad.Trans.Reader
 import qualified Development.IDE.Session.Ghc         as Ghc
 import qualified Development.IDE.Session.OrderedSet  as S
+import           Development.IDE.WorkerThread
 import qualified Focus
 import qualified StmContainers.Map                   as STM
 
@@ -133,10 +132,13 @@ data Log
   | LogLookupSessionCache !FilePath
   | LogTime !String
   | LogSessionGhc Ghc.Log
+  | LogSessionWorkerThread LogWorkerThread
 deriving instance Show Log
+
 
 instance Pretty Log where
   pretty = \case
+    LogSessionWorkerThread lt -> pretty lt
     LogTime s -> "Time:" <+> pretty s
     LogLookupSessionCache path -> "Looking up session cache for" <+> pretty path
     LogGetOptionsLoop fp -> "Loop: getOptions for" <+> pretty fp
@@ -362,7 +364,7 @@ runWithDb recorder fp = ContT $ \k -> do
     _ <- withWriteDbRetryable deleteMissingRealFiles
     _ <- withWriteDbRetryable garbageCollectTypeNames
 
-    runContT (withWorkerQueue (writer withWriteDbRetryable)) $ \chan ->
+    runContT (withWorkerQueue (logWith (cmapWithPrio LogSessionWorkerThread recorder) Debug) "hiedb thread"  (writer withWriteDbRetryable)) $ \chan ->
         withHieDb fp (\readDb -> k (WithHieDbShield $ makeWithHieDbRetryable recorder rng readDb, chan))
   where
     writer withHieDbRetryable l = do
@@ -589,7 +591,7 @@ newSessionState = do
 -- components mapping to the same hie.yaml file are mapped to the same
 -- HscEnv which is updated as new components are discovered.
 
-loadSessionWithOptions :: Recorder (WithPriority Log) -> SessionLoadingOptions -> FilePath -> TQueue (IO ()) -> IO (Action IdeGhcSession)
+loadSessionWithOptions :: Recorder (WithPriority Log) -> SessionLoadingOptions -> FilePath -> TaskQueue (IO ()) -> IO (Action IdeGhcSession)
 loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
   let toAbsolutePath = toAbsolute rootDir -- see Note [Root Directory]
 
@@ -617,7 +619,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
 
     -- see Note [Serializing runs in separate thread]
     -- Start the getOptionsLoop if the queue is empty
-    liftIO $ atomically $ Extra.whenM (isEmptyTQueue que) $ do
+    liftIO $ atomically $ Extra.whenM (isEmptyTaskQueue que) $ do
       let newSessionLoadingOptions = SessionLoadingOptions
             { findCradle = cradleLoc
             , ..
@@ -636,7 +638,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
             , sessionLoadingOptions = newSessionLoadingOptions
             }
 
-      writeTQueue que (runReaderT (getOptionsLoop recorder sessionShake sessionState knownTargetsVar) sessionEnv)
+      writeTaskQueue que (runReaderT (getOptionsLoop recorder sessionShake sessionState knownTargetsVar) sessionEnv)
 
     -- Each one of deps will be registered as a FileSystemWatcher in the GhcSession action
     -- so that we can get a workspace/didChangeWatchedFiles notification when a dep changes.
@@ -935,7 +937,7 @@ loadCradleWithNotifications recorder sessionState loadCradle hieYaml cfp = do
   when (isNothing hieYaml) $
     logWith recorder Warning $ LogCradleNotFound lfpLog
   cradle <- liftIO $ loadCradle hieYaml rootDir
-  when (isTesting) $ mRunLspT lspEnv $
+  when isTesting $ mRunLspT lspEnv $
     sendNotification (SMethod_CustomMethod (Proxy @"ghcide/cradle/loaded")) (toJSON cfp)
 
   -- Display a user friendly progress message here: They probably don't know what a cradle is
@@ -1034,7 +1036,7 @@ data PackageSetupException
         { compileTime :: !Version
         , runTime     :: !Version
         }
-    deriving (Eq, Show, Typeable)
+    deriving (Eq, Show)
 
 instance Exception PackageSetupException
 

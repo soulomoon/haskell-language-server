@@ -115,7 +115,6 @@ module Development.IDE.GHC.Compat(
 import           Control.Applicative                     ((<|>))
 import qualified Data.ByteString                         as BS
 import           Data.Coerce                             (coerce)
-import           Data.List                               (foldl')
 import qualified Data.Map                                as Map
 import qualified Data.Set                                as S
 import           Data.String                             (IsString (fromString))

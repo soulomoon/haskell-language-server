@@ -39,7 +39,7 @@ import           Development.IDE.Graph.Database       (ShakeDatabase,
                                                        shakeGetBuildStep,
                                                        shakeGetCleanKeys)
 import           Development.IDE.Graph.Internal.Types (Result (resultBuilt, resultChanged, resultVisited),
-                                                       Step)
+                                                       Step (..))
 import qualified Development.IDE.Graph.Internal.Types as Graph
 import           Development.IDE.Types.Action
 import           Development.IDE.Types.HscEnvEq       (HscEnvEq (hscEnv))
@@ -140,7 +140,7 @@ getDatabaseKeys :: (Graph.Result -> Step)
 getDatabaseKeys field db = do
     keys <- shakeGetCleanKeys db
     step <- shakeGetBuildStep db
-    return [ k | (k, res) <- keys, field res == step]
+    return [ k | (k, res) <- keys, field res == Step step]
 
 parseAction :: CI String -> NormalizedFilePath -> Action (Either Text Bool)
 parseAction "typecheck" fp = Right . isJust <$> use TypeCheck fp
