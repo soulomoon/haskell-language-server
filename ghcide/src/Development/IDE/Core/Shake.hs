@@ -147,7 +147,6 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
                                                           shakeGetDatabaseKeys,
                                                           shakeNewDatabase,
                                                           shakeProfileDatabase,
-                                                          shakeRunDatabaseForKeys,
                                                           shakeRunDatabaseForKeysSep,
                                                           shakeShutDatabase)
 import           Development.IDE.Graph.Internal.Action   (runActionInDbCb)
@@ -427,10 +426,14 @@ class Typeable a => IsIdeGlobal a where
 
 -- data VirtualFileEntry = Open VirtualFile | Closed ClosedVirtualFile
 -- | Read a virtual file from the current snapshot
+getOpenFile :: VirtualFileEntry -> Maybe VirtualFile
+getOpenFile (Open vf) = Just vf
+getOpenFile _         = Nothing
+-- | Read a virtual file from the current snapshot
 getVirtualFile :: NormalizedFilePath -> Action (Maybe VirtualFile)
 getVirtualFile nf = do
   vfs <- fmap _vfsMap . liftIO . readTVarIO . vfsVar =<< getShakeExtras
-  let file = Map.lookup (filePathToUri' nf) vfs
+  let file = getOpenFile =<< Map.lookup (filePathToUri' nf) vfs
   pure $! file -- Don't leak a reference to the entire map
 
 -- Take a snapshot of the current LSP VFS
