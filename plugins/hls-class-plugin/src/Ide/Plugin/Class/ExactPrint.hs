@@ -6,7 +6,6 @@ module Ide.Plugin.Class.ExactPrint where
 
 import           Control.Monad.Trans.Maybe
 import           Data.Either.Extra                       (eitherToMaybe)
-import           Data.Functor.Identity                   (Identity)
 import qualified Data.Text                               as T
 import           Development.IDE.GHC.Compat
 import           GHC.Parser.Annotation

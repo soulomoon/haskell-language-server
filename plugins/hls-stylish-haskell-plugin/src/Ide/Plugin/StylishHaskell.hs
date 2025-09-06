@@ -25,7 +25,6 @@ import           Ide.PluginUtils
 import           Ide.Types                        hiding (Config)
 import           Language.Haskell.Stylish
 import           Language.LSP.Protocol.Types      as LSP
-import           System.Directory
 import           System.FilePath
 
 data Log

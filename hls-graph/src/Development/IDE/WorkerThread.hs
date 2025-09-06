@@ -32,8 +32,7 @@ import qualified Data.Text                as T
 
 import           Control.Concurrent
 import           Control.Exception        (catch)
-import           Control.Monad            (void, when)
-import           Debug.Trace              (traceM)
+import           Control.Monad            (when)
 import           Prettyprinter
 
 data LogWorkerThread
@@ -130,7 +129,7 @@ runInThreadStmInNewThreads getStep deliver (TaskQueue q) tthreads acts = do
   -- use barrier to wait for the result
   writeTQueue q (uninterruptibleMask $ \restore -> do
     curStep <- atomically getStep
-    traceM ("runInThreadStmInNewThreads: current step: " ++ show curStep ++ " deliver step: " ++ show deliver)
+    -- traceM ("runInThreadStmInNewThreads: current step: " ++ show curStep ++ " deliver step: " ++ show deliver)
     when (curStep == deliverStep deliver) $ do
         syncs <- mapM (\(act, handler) ->
             async (handler =<< (restore $ Right <$> act) `catch` \e@(SomeException _) -> return (Left e))) acts
