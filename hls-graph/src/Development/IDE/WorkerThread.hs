@@ -11,15 +11,15 @@ see Note [Serializing runs in separate thread]
 
 module Development.IDE.WorkerThread
   ( LogWorkerThread (..),
+    DeliverStatus(..),
     withWorkerQueue,
     awaitRunInThread,
     TaskQueue,
     writeTaskQueue,
     withWorkerQueueSimple,
-    awaitRunInThreadStm,
-    awaitRunInThreadStmInNewThread,
-    awaitRunInThreadStmInNewThreads,
-    isEmptyTaskQueue
+    runInThreadStmInNewThreads,
+    isEmptyTaskQueue,
+    counTaskQueue
   ) where
 
 import           Control.Concurrent.Async (Async, async, withAsync)
@@ -33,6 +33,7 @@ import qualified Data.Text                as T
 import           Control.Concurrent
 import           Control.Exception        (catch)
 import           Control.Monad            (void, when)
+import           Debug.Trace              (traceM)
 import           Prettyprinter
 
 data LogWorkerThread
@@ -117,28 +118,22 @@ withWorkerQueue log title workerAction = ContT $ \mainAction -> do
 -- | 'awaitRunInThread' queues up an 'IO' action to be run by a worker thread,
 -- and then blocks until the result is computed. If the action throws an
 -- non-async exception, it is rethrown in the calling thread.
-awaitRunInThreadStm :: TaskQueue (IO ()) -> IO result -> STM result
-awaitRunInThreadStm (TaskQueue q) act = do
-  barrier <- newEmptyTMVar
-  -- Take an action from TQueue, run it and
-  -- use barrier to wait for the result
-  writeTQueue q (try act >>= atomically . putTMVar barrier)
-  resultOrException <- takeTMVar barrier
-  case resultOrException of
-    Left e  -> throw (e :: SomeException)
-    Right r -> return r
 
-awaitRunInThreadStmInNewThread :: STM Int -> Int -> TaskQueue (IO ()) -> TVar [Async ()] -> IO result -> (SomeException -> IO ()) -> STM ()
-awaitRunInThreadStmInNewThread getStep deliverStep q tthreads act handler = awaitRunInThreadStmInNewThreads getStep deliverStep q tthreads [(act, handler)]
+data DeliverStatus = DeliverStatus
+  { deliverStep   :: Int
+    , deliverName :: String
+  } deriving (Show)
 
-awaitRunInThreadStmInNewThreads :: STM Int -> Int -> TaskQueue (IO ()) -> TVar [Async ()] -> [(IO result, SomeException -> IO ())] -> STM ()
-awaitRunInThreadStmInNewThreads getStep deliverStep (TaskQueue q) tthreads acts = do
+runInThreadStmInNewThreads :: STM Int -> DeliverStatus -> TaskQueue (IO ()) -> TVar [Async ()] -> [(IO result, Either SomeException result -> IO ())] -> STM ()
+runInThreadStmInNewThreads getStep deliver (TaskQueue q) tthreads acts = do
   -- Take an action from TQueue, run it and
   -- use barrier to wait for the result
   writeTQueue q (uninterruptibleMask $ \restore -> do
     curStep <- atomically getStep
-    when (curStep == deliverStep) $ do
-        syncs <- mapM (\(act, handler) -> async (restore (void act `catch` \(SomeException e) -> handler (SomeException e)))) acts
+    traceM ("runInThreadStmInNewThreads: current step: " ++ show curStep ++ " deliver step: " ++ show deliver)
+    when (curStep == deliverStep deliver) $ do
+        syncs <- mapM (\(act, handler) ->
+            async (handler =<< (restore $ Right <$> act) `catch` \e@(SomeException _) -> return (Left e))) acts
         atomically $ modifyTVar' tthreads (syncs++)
     )
 
@@ -161,4 +156,12 @@ tryReadTaskQueue (TaskQueue q) = tryReadTQueue q
 
 isEmptyTaskQueue :: TaskQueue a -> STM Bool
 isEmptyTaskQueue (TaskQueue q) = isEmptyTQueue q
+
+-- look and count the number of items in the queue
+-- do not remove them
+counTaskQueue :: TaskQueue a -> STM Int
+counTaskQueue (TaskQueue q) = do
+    xs <- flushTQueue q
+    mapM_ (unGetTQueue q) (reverse xs)
+    return $ length xs
 

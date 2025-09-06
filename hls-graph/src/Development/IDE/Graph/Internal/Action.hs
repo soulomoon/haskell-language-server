@@ -13,10 +13,11 @@ module Development.IDE.Graph.Internal.Action
 , runActions
 , Development.IDE.Graph.Internal.Action.getDirtySet
 , getKeysAndVisitedAge
-, runActionInDb
+, runActionInDbCb
 ) where
 
 import           Control.Concurrent.Async
+import           Control.Concurrent.STM.Stats            (atomicallyNamed)
 import           Control.DeepSeq                         (force)
 import           Control.Exception
 import           Control.Monad.IO.Class
@@ -31,7 +32,7 @@ import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules    (RuleResult)
 import           Development.IDE.Graph.Internal.Types
 import           System.Exit
-import           UnliftIO                                (atomically,
+import           UnliftIO                                (STM, atomically,
                                                           newEmptyTMVarIO,
                                                           putTMVar, readTMVar)
 
@@ -48,23 +49,32 @@ parallel [] = return []
 parallel xs = do
     a <- Action ask
     deps <- liftIO $ readIORef $ actionDeps a
-
     case deps of
         UnknownDeps ->
             -- if we are already in the rerun mode, nothing we do is going to impact our state
-            runActionInDb xs
+            runActionInDb "parallel" xs
         deps -> error $ "parallel not supported when we have precise dependencies: " ++ show deps
             -- (newDeps, res) <- liftIO $ unzip <$> runActionInDb usingState xs
             -- liftIO $ writeIORef (actionDeps a) $ mconcat $ deps : newDeps
             -- return ()
 
-runActionInDb :: [Action a] -> Action [Either SomeException a]
-runActionInDb acts = do
+-- non-blocking version of runActionInDb
+runActionInDbCb :: (a -> String) -> (a -> Action result) -> STM a -> (Either SomeException result -> IO ()) -> Action a
+runActionInDbCb getTitle work getAct handler = do
+    a <- Action ask
+    liftIO $ atomicallyNamed "action queue - pop" $ do
+        act <- getAct
+        runInDataBase (getTitle act) (actionDatabase a) [(ignoreState a $ work act, handler)]
+        return act
+
+runActionInDb :: String -> [Action a] -> Action [Either SomeException a]
+runActionInDb title acts = do
     a <- Action ask
     xs <- mapM (\x -> do
         barrier <- newEmptyTMVarIO
         return (x, barrier)) acts
-    liftIO $ atomically $ runInDataBase (actionDatabase a) (map (\(x, b) -> (ignoreState a x >>= (atomically . putTMVar b . Right), atomically . putTMVar b . Left)) xs)
+    liftIO $ atomically $ runInDataBase title (actionDatabase a)
+        (map (\(x, b) -> (ignoreState a x, atomically . putTMVar b)) xs)
     results <- liftIO $ mapM (atomically . readTMVar) $ fmap snd xs
     return results
 

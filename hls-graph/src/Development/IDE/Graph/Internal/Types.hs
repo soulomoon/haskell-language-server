@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveAnyClass     #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE LambdaCase         #-}
 {-# LANGUAGE RecordWildCards    #-}
 
 module Development.IDE.Graph.Internal.Types where
@@ -23,8 +24,9 @@ import           Data.Typeable
 import           Debug.Trace                        (traceEventIO, traceM)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
-import           Development.IDE.WorkerThread       (TaskQueue,
-                                                     awaitRunInThreadStmInNewThreads)
+import           Development.IDE.WorkerThread       (DeliverStatus (..),
+                                                     TaskQueue, counTaskQueue,
+                                                     runInThreadStmInNewThreads)
 import           GHC.Conc                           (TVar, atomically)
 import           GHC.Generics                       (Generic)
 import qualified ListT
@@ -131,15 +133,31 @@ data Database = Database {
     databaseValues  :: !(Map Key KeyDetails)
     }
 
-runInDataBase :: Database -> [(IO result, SomeException -> IO ())] -> STM ()
-runInDataBase db acts = do
-    s <- getDataBaseStepInt db
-    awaitRunInThreadStmInNewThreads (getDataBaseStepInt db) s (databaseQueue db) (databaseThreads db) acts
 
-runOneInDataBase :: Database -> IO result -> (SomeException -> IO ()) -> STM ()
-runOneInDataBase db act handler = do
+databaseGetActionQueueLength :: Database -> STM Int
+databaseGetActionQueueLength db = do
+    counTaskQueue (databaseQueue db)
+
+runInDataBase :: String -> Database -> [(IO result, Either SomeException result -> IO ())] -> STM ()
+runInDataBase title db acts = do
     s <- getDataBaseStepInt db
-    awaitRunInThreadStmInNewThreads (getDataBaseStepInt db) s (databaseQueue db) (databaseThreads db) [(act, handler)]
+    runInThreadStmInNewThreads (getDataBaseStepInt db) (DeliverStatus s title) (databaseQueue db) (databaseThreads db) acts
+
+runOneInDataBase :: String -> Database -> IO result -> (SomeException -> IO ()) -> STM ()
+runOneInDataBase title db act handler = do
+  s <- getDataBaseStepInt db
+  runInThreadStmInNewThreads
+    (getDataBaseStepInt db)
+    (DeliverStatus s title)
+    (databaseQueue db)
+    (databaseThreads db)
+    [ ( act,
+        \case
+          Left e -> handler e
+          Right _ -> return ()
+      )
+    ]
+
 
 getDataBaseStepInt :: Database -> STM Int
 getDataBaseStepInt db = do

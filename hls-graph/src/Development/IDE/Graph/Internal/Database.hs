@@ -123,7 +123,7 @@ builderOne db@Database {..} stack id = do
       Dirty s -> do
         SMap.focus (updateStatus $ Running current s) id databaseValues
         traceEvent ("Starting build of key: " ++ show id ++ ", step "++ show current)
-            $ runOneInDataBase db (refresh db stack id s) $ \e -> atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
+            $ runOneInDataBase (show id) db (refresh db stack id s) $ \e -> atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
         return Nothing
       Clean r -> return $ Just r
       -- force here might contains async exceptions from previous runs
