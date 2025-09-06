@@ -713,8 +713,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         semanticTokensId <- newTVarIO 0
         indexProgressReporting <- progressReportingNoTrace
             (liftM2 (+) (length <$> readTVar indexPending) (readTVar indexCompleted) )
-            (readTVar indexCompleted) (pure $ Nothing)
-            lspEnv "Indexing" optProgressStyle
+            (readTVar indexCompleted) lspEnv "Indexing" optProgressStyle
         let hiedbWriter = HieDbWriter{..}
         exportsMap <- newTVarIO mempty
         -- lazily initialize the exports map with the contents of the hiedb
