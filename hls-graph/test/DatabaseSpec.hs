@@ -2,13 +2,9 @@
 
 module DatabaseSpec where
 
-import           Control.Exception                       (Exception (..),
-                                                          SomeException,
-                                                          evaluate, throw)
-import           Control.Monad                           (join)
+import           Control.Exception                       (SomeException, throw)
 import           Control.Monad.IO.Class                  (MonadIO (..))
 import           Control.Monad.Trans.Cont                (evalContT)
-import           Debug.Trace                             (traceM)
 import           Development.IDE.Graph                   (newKey, shakeOptions)
 import           Development.IDE.Graph.Database          (shakeNewDatabase,
                                                           shakeRunDatabase)

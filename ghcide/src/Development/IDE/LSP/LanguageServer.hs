@@ -216,7 +216,7 @@ setupLSP recorder defaultRoot getHieDbLoc userHandlers getIdeState clientMsgVar 
     requestReactorShutdown = do
       k <- tryPutMVar reactorStopSignal ()
       logWith recorder Info $ LogReactorShutdownRequested k
-      let timeOutSeconds = 2
+      let timeOutSeconds = 3
       timeout (timeOutSeconds * 1_000_000) (waitBarrier reactorConfirmBarrier) >>= \case
         Just () -> pure ()
         -- If we don't get confirmation within 2 seconds, we log a warning and shutdown anyway.
@@ -250,6 +250,7 @@ setupLSP recorder defaultRoot getHieDbLoc userHandlers getIdeState clientMsgVar 
         [ userHandlers
         , cancelHandler cancelRequest
         , shutdownHandler recorder requestReactorShutdown
+        , exitHandler recorder exit
         ]
         -- Cancel requests are special since they need to be handled
         -- out of order to be useful. Existing handlers are run afterwards.
@@ -381,6 +382,11 @@ shutdownHandler _recorder requestReactorShutdown = LSP.requestHandler SMethod_Sh
     -- stop the reactor to free up the hiedb connection and shut down shake
     liftIO requestReactorShutdown
     resp $ Right Null
+
+exitHandler :: Recorder (WithPriority Log) -> IO () -> LSP.Handlers (ServerM c)
+exitHandler _recorder exit = LSP.notificationHandler SMethod_Exit $ \_ -> do
+    -- stop the reactor to free up the hiedb connection and shut down shake
+    liftIO exit
 
 modifyOptions :: LSP.Options -> LSP.Options
 modifyOptions x = x{ LSP.optTextDocumentSync   = Just $ tweakTDS origTDS
