@@ -133,7 +133,7 @@ test-suite tests
     -threaded -rtsopts -with-rtsopts=-N -fno-ignore-asserts
 
   build-depends:
-    , transformers ^>=0.6.1.2
+    , transformers
     , base
     , extra
     , hls-graph
@@ -143,6 +143,5 @@ test-suite tests
     , tasty
     , tasty-hspec >= 1.2
     , tasty-rerun
-    , transformers
 
   build-tool-depends: hspec-discover:hspec-discover
