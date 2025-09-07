@@ -357,8 +357,8 @@ runShakeThread :: Recorder (WithPriority Log) -> MVar IdeState -> ContT () IO DB
 runShakeThread recorder mide =
   withWorkerQueue
     (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug)
-    "ShakeRestartQueue"
-    (eitherWorker (runRestartTaskDync (cmapWithPrio LogShake recorder) mide) id)
+    "ShakeShakeControlQueue"
+    (eitherWorker (runRestartTaskDyn (cmapWithPrio LogShake recorder) mide) id)
 -- | runWithWorkerThreads
 -- create several threads to run the session, db and session loader
 -- see Note [Serializing runs in separate thread]

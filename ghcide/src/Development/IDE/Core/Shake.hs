@@ -27,7 +27,7 @@ module Development.IDE.Core.Shake(
     KnownTargets(..), Target(..), toKnownFiles, unionKnownTargets, mkKnownTargets,
     ShakeRestartArgs(..),
     shakeRestart,
-    IdeRule, IdeResult, RestartQueue,
+    IdeRule, IdeResult, ShakeControlQueue,
     GetModificationTime(GetModificationTime, GetModificationTime_, missingFileDiagnostics),
     shakeOpen, shakeShut,
     shakeEnqueue,
@@ -78,7 +78,7 @@ module Development.IDE.Core.Shake(
     Log(..),
     VFSModified(..), getClientConfigAction,
     ThreadQueue(..),
-    runWithSignal, runRestartTask, runRestartTaskDync, dynShakeRestart
+    runWithSignal, runRestartTask, runRestartTaskDyn, dynShakeRestart
     ) where
 
 import           Control.Concurrent.Async
@@ -289,16 +289,16 @@ data HieDbWriter
 -- The inner `(HieDb -> IO ()) -> IO ()` wraps `HieDb -> IO ()`
 -- with (currently) retry functionality
 type IndexQueue = TaskQueue (((HieDb -> IO ()) -> IO ()) -> IO ())
--- type RestartQueue = TaskQueue ShakeRestartArgs
+-- type ShakeControlQueue = TaskQueue ShakeRestartArgs
 type ShakeQueue = DBQue
-type RestartQueue = ShakeQueue
+type ShakeControlQueue = ShakeQueue
 type LoaderQueue = TaskQueue (IO ())
 
 
 data ThreadQueue = ThreadQueue {
-    tIndexQueue     :: IndexQueue
-    , tRestartQueue :: RestartQueue
-    , tLoaderQueue  :: LoaderQueue
+    tIndexQueue          :: IndexQueue
+    , tShakeControlQueue :: ShakeControlQueue
+    , tLoaderQueue       :: LoaderQueue
 }
 
 -- Note [Semantic Tokens Cache Location]
@@ -369,7 +369,7 @@ data ShakeExtras = ShakeExtras
       -- ^ Default HLS config, only relevant if the client does not provide any Config
     , dirtyKeys :: TVar KeySet
       -- ^ Set of dirty rule keys since the last Shake run
-    , restartQueue :: RestartQueue
+    , shakeControlQueue :: ShakeControlQueue
       -- ^ Queue of restart actions to be run.
     , loaderQueue :: LoaderQueue
       -- ^ Queue of loader actions to be run.
@@ -707,7 +707,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
   withHieDb threadQueue opts argMonitoring rules rootDir = mdo
     -- see Note [Serializing runs in separate thread]
     let indexQueue = tIndexQueue threadQueue
-        restartQueue = tRestartQueue threadQueue
+        shakeControlQueue = tShakeControlQueue threadQueue
         loaderQueue = tLoaderQueue threadQueue
 
     ideNc <- initNameCache 'r' knownKeyNames
@@ -720,7 +720,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         semanticTokensCache <- STM.newIO
         positionMapping <- STM.newIO
         knownTargetsVar <- newTVarIO $ hashed emptyKnownTargets
-        let restartShakeSession = shakeRestart restartQueue
+        let restartShakeSession = shakeRestart shakeControlQueue
         persistentKeys <- newTVarIO mempty
         indexPending <- newTVarIO HMap.empty
         indexCompleted <- newTVarIO 0
@@ -751,7 +751,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         pure ShakeExtras{shakeRecorder = recorder, ..}
     shakeDb  <-
         shakeNewDatabase
-            restartQueue
+            shakeControlQueue
             opts { shakeExtra = newShakeExtra shakeExtras }
             rules
     shakeSession <- newEmptyMVar
@@ -855,13 +855,13 @@ delayedAction a = do
 
 
 data ShakeRestartArgs = ShakeRestartArgs
-    { sraVfs             :: !VFSModified
-    , sraReason          :: !String
-    , sraActions         :: ![DelayedAction ()]
-    , sraBetweenSessions :: IO [Key]
-    , sraReStartQueue    :: !RestartQueue
-    , sraCount           :: !Int
-    , sraWaitMVars       :: ![MVar ()]
+    { sraVfs               :: !VFSModified
+    , sraReason            :: !String
+    , sraActions           :: ![DelayedAction ()]
+    , sraBetweenSessions   :: IO [Key]
+    , sraShakeControlQueue :: !ShakeControlQueue
+    , sraCount             :: !Int
+    , sraWaitMVars         :: ![MVar ()]
     -- ^ Just for debugging, how many restarts have been requested so far
     }
 
@@ -878,7 +878,7 @@ instance Semigroup ShakeRestartArgs where
             , sraReason = sraReason a ++ "; " ++ sraReason b
             , sraActions = sraActions a ++ sraActions b
             , sraBetweenSessions = (++) <$> sraBetweenSessions a <*> sraBetweenSessions b
-            , sraReStartQueue = sraReStartQueue a
+            , sraShakeControlQueue = sraShakeControlQueue a
             , sraCount = sraCount a + sraCount b
             , sraWaitMVars = sraWaitMVars a ++ sraWaitMVars b
             }
@@ -886,10 +886,12 @@ instance Semigroup ShakeRestartArgs where
 -- | Restart the current 'ShakeSession' with the given system actions.
 --   Any actions running in the current session will be aborted,
 --   but actions added via 'shakeEnqueue' will be requeued.
-shakeRestart :: RestartQueue ->  VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
+shakeRestart :: ShakeControlQueue ->  VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
 shakeRestart rts vfs reason acts ioActionBetweenShakeSession = do
     waitMVar <- newEmptyMVar
-    void $ submitWork rts $ Left $
+    -- submit at the head of the queue,
+    -- prefer restart request over any pending actions
+    void $ submitWorkAtHead rts $ Left $
         toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession rts 1 [waitMVar]
     -- Wait until the restart is done
     takeMVar waitMVar
@@ -901,8 +903,8 @@ dynShakeRestart dy = case fromDynamic dy of
 
 -- runRestartTask :: Recorder (WithPriority Log) -> IdeState -> VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
 -- runRestartTask recorder IdeState{..} vfs reason acts ioActionBetweenShakeSession =
-runRestartTaskDync :: Recorder (WithPriority Log) -> MVar IdeState -> Dynamic -> IO ()
-runRestartTaskDync recorder ideStateVar dy = runRestartTask recorder ideStateVar (dynShakeRestart dy)
+runRestartTaskDyn :: Recorder (WithPriority Log) -> MVar IdeState -> Dynamic -> IO ()
+runRestartTaskDyn recorder ideStateVar dy = runRestartTask recorder ideStateVar (dynShakeRestart dy)
 
 runRestartTask :: Recorder (WithPriority Log) -> MVar IdeState -> ShakeRestartArgs -> IO ()
 runRestartTask recorder ideStateVar shakeRestartArgs = do
@@ -913,15 +915,15 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
         atomically $ modifyTVar' (dirtyKeys shakeExtras) $ \x -> foldl' (flip insertKeySet) x keys
         -- Check if there is another restart request pending, if so, we run that one too
-        readAndGo sra sraReStartQueue
-      readAndGo sra sraReStartQueue = do
-        nextRestartArg <- atomically $ tryReadTaskQueue sraReStartQueue
+        readAndGo sra sraShakeControlQueue
+      readAndGo sra sraShakeControlQueue = do
+        nextRestartArg <- atomically $ tryReadTaskQueue sraShakeControlQueue
         case nextRestartArg of
           Nothing -> return sra
           Just (Left dy) -> do
             res <- prepareRestart $ dynShakeRestart dy
             return $ sra <> res
-          Just (Right _) -> readAndGo sra sraReStartQueue
+          Just (Right _) -> readAndGo sra sraShakeControlQueue
   withMVar'
     shakeSession
     ( \runner -> do

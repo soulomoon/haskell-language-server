@@ -26,7 +26,8 @@ module Development.IDE.WorkerThread
     Worker,
     tryReadTaskQueue,
     awaitRunInThreadAtHead,
-    withWorkerQueueSimpleRight
+    withWorkerQueueSimpleRight,
+    submitWorkAtHead
   ) where
 
 import           Control.Concurrent.Async (Async, async, withAsync)
@@ -157,10 +158,12 @@ eitherWorker w1 w2 = \case
 
 -- submitWork without waiting for the result
 submitWork :: TaskQueue arg -> arg -> IO ()
-submitWork (TaskQueue q) arg = do
-  -- Take an action from TQueue, run it and
-  -- use barrier to wait for the result
-  atomically $ writeTQueue q arg
+submitWork (TaskQueue q) arg = do atomically $ writeTQueue q arg
+
+-- submit work at the head of the queue, so it will be executed next
+submitWorkAtHead :: TaskQueue arg -> arg -> IO ()
+submitWorkAtHead (TaskQueue q) arg = do
+  atomically $ unGetTQueue q arg
 
 awaitRunInThread :: TaskQueue (IO ()) -> IO result -> IO result
 awaitRunInThread (TaskQueue q) act = do
