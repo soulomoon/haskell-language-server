@@ -19,7 +19,8 @@ module Development.IDE.WorkerThread
     withWorkerQueueSimple,
     runInThreadStmInNewThreads,
     isEmptyTaskQueue,
-    counTaskQueue
+    counTaskQueue,
+    awaitRunInThreadAtHead
   ) where
 
 import           Control.Concurrent.Async (Async, async, withAsync)
@@ -142,6 +143,17 @@ awaitRunInThread (TaskQueue q) act = do
   -- Take an action from TQueue, run it and
   -- use barrier to wait for the result
   atomically $ writeTQueue q (try act >>= atomically . putTMVar barrier)
+  resultOrException <- atomically $ takeTMVar barrier
+  case resultOrException of
+    Left e  -> throw (e :: SomeException)
+    Right r -> return r
+
+awaitRunInThreadAtHead :: TaskQueue (IO ()) -> IO result -> IO result
+awaitRunInThreadAtHead (TaskQueue q) act = do
+  barrier <- newEmptyTMVarIO
+  -- Take an action from TQueue, run it and
+  -- use barrier to wait for the result
+  atomically $ unGetTQueue q (try act >>= atomically . putTMVar barrier)
   resultOrException <- atomically $ takeTMVar barrier
   case resultOrException of
     Left e  -> throw (e :: SomeException)
