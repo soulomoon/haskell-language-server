@@ -109,32 +109,44 @@ build db stack keys = do
 --  Otherwise, a blocking computation is returned *which must be evaluated asynchronously* to avoid deadlock.
 builder :: Database -> Stack -> [Key] -> IO [(Key, Result)]
 -- builder _ st kk | traceShow ("builder", st,kk) False = undefined
-builder db stack keys = for keys $ \k -> builderOne db stack k
+builder db stack [k]  = return <$> builderOne IsSingleton db stack k
+builder db stack keys = for keys $ \k -> builderOne NotSingleton db stack k
+data IsSingletonTask = IsSingleton | NotSingleton
+data BuildContinue = BCContinue | BCStop Result | BCRead (IO Result)
 
-builderOne :: Database -> Stack -> Key -> IO (Key, Result)
-builderOne db@Database {..} stack id = do
+builderOne :: IsSingletonTask -> Database -> Stack -> Key -> IO (Key, Result)
+builderOne isSingletonTask db@Database {..} stack id = do
   traceEvent ("builderOne: " ++ show id) return ()
   res <- liftIO $ atomicallyNamed "builder" $ do
     -- Spawn the id if needed
     status <- SMap.lookup id databaseValues
     current <- readTVar databaseStep
 
-    val <- case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
+    case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
       Dirty s -> do
         SMap.focus (updateStatus $ Running current s) id databaseValues
-        traceEvent ("Starting build of key: " ++ show id ++ ", step "++ show current)
-            $ runOneInDataBase (show id) db (refresh db stack id s) $ \e -> atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
-        return Nothing
-      Clean r -> return $ Just r
+        case isSingletonTask of
+          IsSingleton ->
+            return $
+              BCRead $
+                refresh db stack id s `catch` \e@(SomeException _) -> do
+                  atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
+                  throw e
+          NotSingleton -> do
+            traceEvent ("Starting build of key: " ++ show id ++ ", step " ++ show current) $
+              runOneInDataBase (show id) db (refresh db stack id s) $
+                \e -> atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
+            return BCContinue
+      Clean r -> return $ BCStop r
       -- force here might contains async exceptions from previous runs
       Running _step _s
         | memberStack id stack -> throw $ StackException stack
         | otherwise -> retry
       Exception _ e _s -> throw e
-    pure val
   case res of
-    Just r  -> return (id, r)
-    Nothing -> builderOne db stack id
+    BCStop r   -> return (id, r)
+    BCContinue -> builderOne isSingletonTask db stack id
+    BCRead ioR -> (id,) <$> ioR
 
 -- | isDirty
 -- only dirty when it's build time is older than the changed time of one of its dependencies
