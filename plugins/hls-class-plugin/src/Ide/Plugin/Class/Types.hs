@@ -22,6 +22,7 @@ import           Development.IDE
 import           Development.IDE.Core.PluginUtils (useMT)
 import qualified Development.IDE.Core.Shake       as Shake
 import           Development.IDE.GHC.Compat       hiding (newUnique, (<+>))
+import           Development.IDE.GHC.Compat.Util  (bagToList)
 import           Development.IDE.Graph.Classes
 import           GHC.Generics
 import           Ide.Plugin.Class.Utils

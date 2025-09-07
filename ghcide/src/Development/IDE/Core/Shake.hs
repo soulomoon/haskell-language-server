@@ -107,7 +107,8 @@ import           Data.Hashable
 import qualified Data.HashMap.Strict                     as HMap
 import           Data.HashSet                            (HashSet)
 import qualified Data.HashSet                            as HSet
-import           Data.List.Extra                         (partition, takeEnd)
+import           Data.List.Extra                         (foldl', partition,
+                                                          takeEnd)
 import qualified Data.Map.Strict                         as Map
 import           Data.Maybe
 import qualified Data.SortedList                         as SL

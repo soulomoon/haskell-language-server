@@ -5,6 +5,7 @@ import           Control.Monad.Except             (ExceptT, MonadError,
                                                    throwError)
 import           Control.Monad.IO.Class           (liftIO)
 import qualified Data.Array                       as A
+import           Data.Foldable                    (foldl')
 import           Data.HashMap.Strict              (HashMap)
 import qualified Data.HashMap.Strict              as HM
 import qualified Data.HashSet                     as HS

@@ -54,7 +54,7 @@ import           Ide.Logger
 import           Language.LSP.Server                   (LanguageContextEnv,
                                                         LspServerLog,
                                                         type (<~>))
-import           System.Time.Extra                     (Seconds, sleep)
+import           System.Time.Extra                     (Seconds)
 import           System.Timeout                        (timeout)
 data Log
   = LogRegisteringIdeConfig !IdeConfiguration

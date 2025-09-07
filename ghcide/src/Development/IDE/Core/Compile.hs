@@ -115,8 +115,13 @@ import           GHC.Tc.Gen.Splice
 import           GHC.Types.Error
 import           GHC.Types.ForeignStubs
 import           GHC.Types.TypeEnv
+import           Development.IDE.WorkerThread (writeTaskQueue)
 
 -- See Note [Guidelines For Using CPP In GHCIDE Import Statements]
+
+#if !MIN_VERSION_ghc(9,11,0)
+import           GHC.Types.HpcInfo
+#endif
 
 #if MIN_VERSION_ghc(9,7,0)
 import           Data.Foldable                                (toList)
@@ -150,7 +155,6 @@ import           GHC.Iface.Ext.Types                          (NameEntityInfo)
 
 #if MIN_VERSION_ghc(9,12,0)
 import           Development.IDE.Import.FindImports
-import Development.IDE.WorkerThread (writeTaskQueue)
 #endif
 
 --Simple constants to make sure the source is consistently named
