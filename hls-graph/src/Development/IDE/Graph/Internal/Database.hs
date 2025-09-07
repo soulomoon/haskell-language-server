@@ -115,7 +115,7 @@ data IsSingletonTask = IsSingleton | NotSingleton
 data BuildContinue = BCContinue | BCStop Result | BCRead (IO Result)
 
 builderOne :: IsSingletonTask -> Database -> Stack -> Key -> IO (Key, Result)
-builderOne isSingletonTask db@Database {..} stack id = do
+builderOne isSingletonTask db@Database {..} stack id = mask $ \restore -> do
   traceEvent ("builderOne: " ++ show id) return ()
   res <- liftIO $ atomicallyNamed "builder" $ do
     -- Spawn the id if needed
@@ -129,7 +129,7 @@ builderOne isSingletonTask db@Database {..} stack id = do
           IsSingleton ->
             return $
               BCRead $
-                refresh db stack id s `catch` \e@(SomeException _) -> do
+                restore (refresh db stack id s) `catch` \e@(SomeException _) -> do
                   atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
                   throw e
           NotSingleton -> do
@@ -145,7 +145,7 @@ builderOne isSingletonTask db@Database {..} stack id = do
       Exception _ e _s -> throw e
   case res of
     BCStop r   -> return (id, r)
-    BCContinue -> builderOne isSingletonTask db stack id
+    BCContinue -> restore $ builderOne isSingletonTask db stack id
     BCRead ioR -> (id,) <$> ioR
 
 -- | isDirty
