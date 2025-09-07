@@ -2,9 +2,8 @@
 
 module DatabaseSpec where
 
+import           ActionSpec                              (itInThread)
 import           Control.Exception                       (SomeException, throw)
-import           Control.Monad.IO.Class                  (MonadIO (..))
-import           Control.Monad.Trans.Cont                (evalContT)
 import           Development.IDE.Graph                   (newKey, shakeOptions)
 import           Development.IDE.Graph.Database          (shakeNewDatabase,
                                                           shakeRunDatabase)
@@ -12,16 +11,10 @@ import           Development.IDE.Graph.Internal.Action   (apply1)
 import           Development.IDE.Graph.Internal.Database (compute, incDatabase)
 import           Development.IDE.Graph.Internal.Rules    (addRule)
 import           Development.IDE.Graph.Internal.Types
-import           Development.IDE.WorkerThread
 import           Example
 import           System.Time.Extra                       (timeout)
 import           Test.Hspec
 
-
-itInThread :: String -> (TaskQueue (IO ()) -> IO ()) -> SpecWith ()
-itInThread name ex = it name $ evalContT $ do
-    thread <- withWorkerQueueSimple (const $ return ()) "hls-graph test"
-    liftIO $ ex thread
 
 exractException :: [Either SomeException ()] -> Maybe StackException
 exractException [] = Nothing

@@ -122,11 +122,13 @@ onKeyReverseDeps :: (KeySet -> KeySet) -> KeyDetails -> KeyDetails
 onKeyReverseDeps f it@KeyDetails{..} =
     it{keyReverseDeps = f keyReverseDeps}
 
+
+type DBQue = TaskQueue (Either Dynamic (IO ()))
 data Database = Database {
     databaseExtra   :: Dynamic,
 
     databaseThreads :: TVar [Async ()],
-    databaseQueue   :: TaskQueue (IO ()),
+    databaseQueue   :: DBQue,
 
     databaseRules   :: TheRules,
     databaseStep    :: !(TVar Step),

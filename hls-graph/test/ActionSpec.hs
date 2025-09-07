@@ -16,17 +16,17 @@ import           Development.IDE.Graph.Internal.Database (build, incDatabase)
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Types
 import           Development.IDE.Graph.Rule
-import           Development.IDE.WorkerThread            (TaskQueue,
-                                                          withWorkerQueueSimple)
+import           Development.IDE.WorkerThread
 import           Example
 import qualified StmContainers.Map                       as STM
 import           Test.Hspec
 
 
 
-itInThread :: String -> (TaskQueue (IO ()) -> IO ()) -> SpecWith ()
+
+itInThread :: String -> (DBQue -> IO ()) -> SpecWith ()
 itInThread name ex = it name $ evalContT $ do
-    thread <- withWorkerQueueSimple (const $ return ()) "hls-graph test"
+    thread <- withWorkerQueueSimpleRight (const $ return ()) "hls-graph test"
     liftIO $ ex thread
 
 shakeRunDatabaseFromRight :: ShakeDatabase -> [Action a] -> IO [a]

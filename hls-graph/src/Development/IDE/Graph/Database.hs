@@ -27,7 +27,6 @@ import           Development.IDE.Graph.Internal.Options
 import           Development.IDE.Graph.Internal.Profile  (writeProfile)
 import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
-import           Development.IDE.WorkerThread            (TaskQueue)
 
 
 -- Placeholder to be the 'extra' if the user doesn't set it
@@ -36,7 +35,7 @@ data NonExportedType = NonExportedType
 shakeShutDatabase :: ShakeDatabase -> IO ()
 shakeShutDatabase (ShakeDatabase _ _ db) = shutDatabase db
 
-shakeNewDatabase :: TaskQueue (IO ()) -> ShakeOptions -> Rules () -> IO ShakeDatabase
+shakeNewDatabase :: DBQue -> ShakeOptions -> Rules () -> IO ShakeDatabase
 shakeNewDatabase que opts rules = do
     let extra = fromMaybe (toDyn NonExportedType) $ shakeExtra opts
     (theRules, actions) <- runRules extra rules
@@ -79,7 +78,7 @@ shakeRunDatabaseForKeys
       -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
     -> ShakeDatabase
     -> [Action a]
-    -> (IO [Either SomeException a])
+    -> IO [Either SomeException a]
 shakeRunDatabaseForKeys keysChanged sdb as2 = join $ shakeRunDatabaseForKeysSep keysChanged sdb as2
 
 

@@ -41,11 +41,13 @@ import           Control.Concurrent.Extra              (newBarrier,
                                                         signalBarrier,
                                                         waitBarrier)
 import           Control.Monad.IO.Unlift               (MonadUnliftIO)
-import           Control.Monad.Trans.Cont              (evalContT)
+import           Control.Monad.Trans.Cont              (ContT, evalContT)
 import           Development.IDE.Core.IdeConfiguration
 import           Development.IDE.Core.Service          (shutdown)
 import           Development.IDE.Core.Shake            hiding (Log)
+import qualified Development.IDE.Core.Shake            as Shake
 import           Development.IDE.Core.Tracing
+import           Development.IDE.Graph.Internal.Types  (DBQue)
 import qualified Development.IDE.Session               as Session
 import           Development.IDE.Types.Shake           (WithHieDb,
                                                         WithHieDbShield (..))
@@ -63,6 +65,7 @@ data Log
   | LogReactorThreadStopped Int
   | LogCancelledRequest !SomeLspId
   | LogSession Session.Log
+  | LogShake Shake.Log
   | LogLspServer LspServerLog
   | LogReactorShutdownRequested Bool
   | LogShutDownTimeout Int
@@ -73,6 +76,7 @@ data Log
 
 instance Pretty Log where
   pretty = \case
+    LogShake msg      -> pretty msg
     LogInitializeIdeStateTookTooLong seconds ->
         "Building the initial session took more than" <+> pretty seconds <+> "seconds"
     LogReactorShutdownRequested b ->
@@ -330,7 +334,7 @@ handleInit initParams env (TRequestMessage _ _ m params) = otTracedHandler "Init
                     exceptionInHandler e
                     k $ TResponseError (InR ErrorCodes_InternalError) (T.pack $ show e) Nothing
     _ <- flip forkFinally handleServerExceptionOrShutDown $ do
-            runWithWorkerThreads (cmapWithPrio LogSession recorder) dbLoc $ \withHieDb' threadQueue' ->
+            runWithWorkerThreads recorder ideMVar dbLoc $ \withHieDb' threadQueue' ->
                 do
                 ide <- ctxGetIdeState initParams env root withHieDb' threadQueue'
                 putMVar ideMVar ide
@@ -349,14 +353,20 @@ handleInit initParams env (TRequestMessage _ _ m params) = otTracedHandler "Init
     pure $ Right (env,ide)
 
 
+runShakeThread :: Recorder (WithPriority Log) -> MVar IdeState -> ContT () IO DBQue
+runShakeThread recorder mide =
+  withWorkerQueue
+    (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug)
+    "ShakeRestartQueue"
+    (eitherWorker (runRestartTaskDync (cmapWithPrio LogShake recorder) mide) id)
 -- | runWithWorkerThreads
 -- create several threads to run the session, db and session loader
 -- see Note [Serializing runs in separate thread]
-runWithWorkerThreads :: Recorder (WithPriority Session.Log) -> FilePath -> (WithHieDb -> ThreadQueue -> IO ()) -> IO ()
-runWithWorkerThreads recorder dbLoc f = evalContT $ do
-            (WithHieDbShield hiedb, threadQueue) <- runWithDb recorder dbLoc
-            sessionRestartTQueue <- withWorkerQueueSimple (logWith (cmapWithPrio Session.LogSessionWorkerThread recorder) Debug) "RestartTQueue"
-            sessionLoaderTQueue <- withWorkerQueueSimple (logWith (cmapWithPrio Session.LogSessionWorkerThread recorder) Debug) "SessionLoaderTQueue"
+runWithWorkerThreads :: Recorder (WithPriority Log) -> MVar IdeState -> FilePath -> (WithHieDb -> ThreadQueue -> IO ()) -> IO ()
+runWithWorkerThreads recorder mide  dbLoc f = evalContT $ do
+            (WithHieDbShield hiedb, threadQueue) <- runWithDb (cmapWithPrio LogSession recorder) dbLoc
+            sessionRestartTQueue <- runShakeThread recorder mide
+            sessionLoaderTQueue <- withWorkerQueueSimple (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug) "SessionLoaderTQueue"
             liftIO $ f hiedb (ThreadQueue threadQueue sessionRestartTQueue sessionLoaderTQueue)
 
 -- | Runs the action until it ends or until the given MVar is put.

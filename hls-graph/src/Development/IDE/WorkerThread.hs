@@ -8,19 +8,25 @@ see Note [Serializing runs in separate thread]
 -}
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeFamilies      #-}
 
 module Development.IDE.WorkerThread
   ( LogWorkerThread (..),
     DeliverStatus(..),
     withWorkerQueue,
     awaitRunInThread,
-    TaskQueue,
+    TaskQueue(..),
     writeTaskQueue,
     withWorkerQueueSimple,
     runInThreadStmInNewThreads,
     isEmptyTaskQueue,
     counTaskQueue,
-    awaitRunInThreadAtHead
+    submitWork,
+    eitherWorker,
+    Worker,
+    tryReadTaskQueue,
+    awaitRunInThreadAtHead,
+    withWorkerQueueSimpleRight
   ) where
 
 import           Control.Concurrent.Async (Async, async, withAsync)
@@ -34,6 +40,7 @@ import qualified Data.Text                as T
 import           Control.Concurrent
 import           Control.Exception        (catch)
 import           Control.Monad            (when)
+import           Data.Dynamic             (Dynamic)
 import           Prettyprinter
 
 data LogWorkerThread
@@ -74,6 +81,9 @@ type Logger = LogWorkerThread -> IO ()
 -- function on them.
 withWorkerQueueSimple :: Logger -> T.Text -> ContT () IO (TaskQueue (IO ()))
 withWorkerQueueSimple log title = withWorkerQueue log title id
+
+withWorkerQueueSimpleRight :: Logger -> T.Text -> ContT () IO (TaskQueue (Either Dynamic (IO ())))
+withWorkerQueueSimpleRight log title = withWorkerQueue log title $ eitherWorker (const $ return ()) id
 withWorkerQueue :: Logger -> T.Text -> (t -> IO ()) -> ContT () IO (TaskQueue t)
 withWorkerQueue log title workerAction = ContT $ \mainAction -> do
   tid <- myThreadId
@@ -124,18 +134,33 @@ data DeliverStatus = DeliverStatus
     , deliverName :: String
   } deriving (Show)
 
-runInThreadStmInNewThreads :: STM Int -> DeliverStatus -> TaskQueue (IO ()) -> TVar [Async ()] -> [(IO result, Either SomeException result -> IO ())] -> STM ()
+runInThreadStmInNewThreads :: STM Int -> DeliverStatus -> TaskQueue (Either Dynamic (IO ())) -> TVar [Async ()] -> [(IO result, Either SomeException result -> IO ())] -> STM ()
 runInThreadStmInNewThreads getStep deliver (TaskQueue q) tthreads acts = do
   -- Take an action from TQueue, run it and
   -- use barrier to wait for the result
-  writeTQueue q (uninterruptibleMask $ \restore -> do
-    curStep <- atomically getStep
-    -- traceM ("runInThreadStmInNewThreads: current step: " ++ show curStep ++ " deliver step: " ++ show deliver)
-    when (curStep == deliverStep deliver) $ do
-        syncs <- mapM (\(act, handler) ->
-            async (handler =<< (restore $ Right <$> act) `catch` \e@(SomeException _) -> return (Left e))) acts
-        atomically $ modifyTVar' tthreads (syncs++)
-    )
+    writeTQueue q $ Right $ do
+        uninterruptibleMask $ \restore -> do
+            do
+                curStep <- atomically getStep
+                -- traceM ("runInThreadStmInNewThreads: current step: " ++ show curStep ++ " deliver step: " ++ show deliver)
+                when (curStep == deliverStep deliver) $ do
+                    syncs <- mapM (\(act, handler) ->
+                        async (handler =<< (restore $ Right <$> act) `catch` \e@(SomeException _) -> return (Left e))) acts
+                    atomically $ modifyTVar' tthreads (syncs++)
+
+type Worker arg = arg -> IO ()
+
+eitherWorker :: Worker a -> Worker b -> Worker (Either a b)
+eitherWorker w1 w2 = \case
+  Left a  -> w1 a
+  Right b -> w2 b
+
+-- submitWork without waiting for the result
+submitWork :: TaskQueue arg -> arg -> IO ()
+submitWork (TaskQueue q) arg = do
+  -- Take an action from TQueue, run it and
+  -- use barrier to wait for the result
+  atomically $ writeTQueue q arg
 
 awaitRunInThread :: TaskQueue (IO ()) -> IO result -> IO result
 awaitRunInThread (TaskQueue q) act = do
