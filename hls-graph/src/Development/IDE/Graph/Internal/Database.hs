@@ -83,8 +83,8 @@ updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
             in KeyDetails status' rdeps
 -- | Unwrap and build a list of keys in parallel
 build
-    :: forall f key value . (Traversable f, RuleResult key ~ value, Typeable key, Show key, Hashable key, Eq key, Typeable value)
-    => Database -> Stack -> f key -> IO (f Key, f value)
+    :: forall key value . (RuleResult key ~ value, Typeable key, Show key, Hashable key, Eq key, Typeable value)
+    => Database -> Stack -> [key] -> IO ([Key], [value])
 -- build _ st k | traceShow ("build", st, k) False = undefined
 build db stack keys = do
     step <- readTVarIO $ databaseStep db
@@ -107,7 +107,7 @@ build db stack keys = do
 -- | Build a list of keys and return their results.
 --  If none of the keys are dirty, we can return the results immediately.
 --  Otherwise, a blocking computation is returned *which must be evaluated asynchronously* to avoid deadlock.
-builder :: (Traversable f) => Database -> Stack -> f Key -> IO (f (Key, Result))
+builder :: Database -> Stack -> [Key] -> IO [(Key, Result)]
 -- builder _ st kk | traceShow ("builder", st,kk) False = undefined
 builder db stack keys = for keys $ \k -> builderOne db stack k
 

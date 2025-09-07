@@ -88,11 +88,11 @@ useMT :: IdeRule k v => k -> NormalizedFilePath -> MaybeT Action v
 useMT k = MaybeT . Shake.use k
 
 -- |ExceptT version of `uses` that throws a PluginRuleFailed upon failure
-usesE :: (Traversable f, IdeRule k v) => k -> f NormalizedFilePath -> ExceptT PluginError Action (f v)
+usesE :: (IdeRule k v) => k -> [NormalizedFilePath] -> ExceptT PluginError Action [v]
 usesE k = maybeToExceptT (PluginRuleFailed (T.pack $ show k)) . usesMT k
 
 -- |MaybeT version of `uses`
-usesMT :: (Traversable f, IdeRule k v) => k -> f NormalizedFilePath -> MaybeT Action (f v)
+usesMT :: (IdeRule k v) => k -> [NormalizedFilePath] -> MaybeT Action [v]
 usesMT k xs = MaybeT $ sequence <$> Shake.uses k xs
 
 -- |ExceptT version of `useWithStale` that throws a PluginRuleFailed upon
@@ -104,7 +104,9 @@ useWithStaleE key = maybeToExceptT (PluginRuleFailed (T.pack $ show key)) . useW
 -- |MaybeT version of `useWithStale`
 useWithStaleMT :: IdeRule k v
     => k -> NormalizedFilePath -> MaybeT Action (v, PositionMapping)
-useWithStaleMT key file = MaybeT $ runIdentity <$> Shake.usesWithStale key (Identity file)
+useWithStaleMT key file = MaybeT $ do
+    [r] <- Shake.usesWithStale key [file]
+    return r
 
 -- ----------------------------------------------------------------------------
 -- IdeAction wrappers

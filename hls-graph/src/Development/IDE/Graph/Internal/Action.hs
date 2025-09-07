@@ -114,9 +114,12 @@ actionFinally a b = do
     Action $ lift $ finally (runReaderT (fromAction a) v) b
 
 apply1 :: (RuleResult key ~ value, ShakeValue key, Typeable value) => key -> Action value
-apply1 k = runIdentity <$> apply (Identity k)
+apply1 k = do
+    [r] <- apply [k]
+    return r
 
-apply :: (Traversable f, RuleResult key ~ value, ShakeValue key, Typeable value) => f key -> Action (f value)
+
+apply :: (RuleResult key ~ value, ShakeValue key, Typeable value) => [key] -> Action [value]
 apply ks = do
     db <- Action $ asks actionDatabase
     stack <- Action $ asks actionStack
@@ -127,7 +130,7 @@ apply ks = do
     pure vs
 
 -- | Evaluate a list of keys without recording any dependencies.
-applyWithoutDependency :: (Traversable f, RuleResult key ~ value, ShakeValue key, Typeable value) => f key -> Action (f value)
+applyWithoutDependency :: (RuleResult key ~ value, ShakeValue key, Typeable value) => [key] -> Action [value]
 applyWithoutDependency ks = do
     db <- Action $ asks actionDatabase
     stack <- Action $ asks actionStack

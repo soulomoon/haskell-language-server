@@ -165,6 +165,7 @@ import           Development.IDE.Types.Monitoring        (Monitoring (..))
 import           Development.IDE.Types.Shake
 import           Development.IDE.WorkerThread
 import qualified Focus
+import           GHC.Base                                (undefined)
 import           GHC.Fingerprint
 import           GHC.Stack                               (HasCallStack)
 import           GHC.TypeLits                            (KnownSymbol)
@@ -1095,12 +1096,16 @@ defineNoDiagnostics recorder op = defineEarlyCutoff recorder $ RuleNoDiagnostics
 -- | Request a Rule result if available
 use :: IdeRule k v
     => k -> NormalizedFilePath -> Action (Maybe v)
-use key file = runIdentity <$> uses key (Identity file)
+use key file = do
+    [r] <- uses key [file]
+    return r
 
 -- | Request a Rule result, it not available return the last computed result, if any, which may be stale
 useWithStale :: IdeRule k v
     => k -> NormalizedFilePath -> Action (Maybe (v, PositionMapping))
-useWithStale key file = runIdentity <$> usesWithStale key (Identity file)
+useWithStale key file = do
+    [r] <-usesWithStale key [file]
+    return r
 
 -- |Request a Rule result, it not available return the last computed result
 --  which may be stale.
@@ -1111,7 +1116,9 @@ useWithStale key file = runIdentity <$> usesWithStale key (Identity file)
 -- WARNING: Not suitable for PluginHandlers. Use `useWithStaleE` instead.
 useWithStale_ :: IdeRule k v
     => k -> NormalizedFilePath -> Action (v, PositionMapping)
-useWithStale_ key file = runIdentity <$> usesWithStale_ key (Identity file)
+useWithStale_ key file = do
+    [r] <- usesWithStale_ key [file]
+    return r
 
 -- |Plural version of 'useWithStale_'
 --
@@ -1119,7 +1126,7 @@ useWithStale_ key file = runIdentity <$> usesWithStale_ key (Identity file)
 -- none available.
 --
 -- WARNING: Not suitable for PluginHandlers.
-usesWithStale_ :: (Traversable f, IdeRule k v) => k -> f NormalizedFilePath -> Action (f (v, PositionMapping))
+usesWithStale_ :: (IdeRule k v) => k -> [NormalizedFilePath] -> Action [(v, PositionMapping)]
 usesWithStale_ key files = do
     res <- usesWithStale key files
     case sequence res of
@@ -1191,7 +1198,9 @@ useNoFile key = use key emptyFilePath
 --
 -- WARNING: Not suitable for PluginHandlers. Use `useE` instead.
 use_ :: IdeRule k v => k -> NormalizedFilePath -> Action v
-use_ key file = runIdentity <$> uses_ key (Identity file)
+use_ key file = do
+    [r] <- uses_ key [file]
+    return r
 
 useNoFile_ :: IdeRule k v => k -> Action v
 useNoFile_ key = use_ key emptyFilePath
@@ -1202,7 +1211,7 @@ useNoFile_ key = use_ key emptyFilePath
 -- none available.
 --
 -- WARNING: Not suitable for PluginHandlers. Use `usesE` instead.
-uses_ :: (Traversable f, IdeRule k v) => k -> f NormalizedFilePath -> Action (f v)
+uses_ :: (IdeRule k v) => k -> [NormalizedFilePath] -> Action [v]
 uses_ key files = do
     res <- uses key files
     case sequence res of
@@ -1210,13 +1219,13 @@ uses_ key files = do
         Just v  -> return v
 
 -- | Plural version of 'use'
-uses :: (Traversable f, IdeRule k v)
-    => k -> f NormalizedFilePath -> Action (f (Maybe v))
+uses :: (IdeRule k v)
+    => k -> [NormalizedFilePath] -> Action [(Maybe v)]
 uses key files = fmap (\(A value) -> currentValue value) <$> apply (fmap (Q . (key,)) files)
 
 -- | Return the last computed result which might be stale.
-usesWithStale :: (Traversable f, IdeRule k v)
-    => k -> f NormalizedFilePath -> Action (f (Maybe (v, PositionMapping)))
+usesWithStale :: (IdeRule k v)
+    => k -> [NormalizedFilePath] -> Action [(Maybe (v, PositionMapping))]
 usesWithStale key files = do
     _ <- apply (fmap (Q . (key,)) files)
     -- We don't look at the result of the 'apply' since 'lastValue' will
@@ -1243,8 +1252,10 @@ useWithSeparateFingerprintRule_ fingerKey key file = do
 
 useWithoutDependency :: IdeRule k v
     => k -> NormalizedFilePath -> Action (Maybe v)
-useWithoutDependency key file =
-    (\(Identity (A value)) -> currentValue value) <$> applyWithoutDependency (Identity (Q (key, file)))
+useWithoutDependency key file = do
+    [A x] <- applyWithoutDependency [Q (key, file)]
+    return $ currentValue x
+
 
 data RuleBody k v
   = Rule (k -> NormalizedFilePath -> Action (Maybe BS.ByteString, IdeResult v))
