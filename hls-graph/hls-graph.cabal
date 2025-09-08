@@ -133,8 +133,7 @@ test-suite tests
     -threaded -rtsopts -with-rtsopts=-N -fno-ignore-asserts
 
   build-depends:
-    , transformers
-    , base
+    base
     , extra
     , hls-graph
     , hspec

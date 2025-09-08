@@ -154,7 +154,8 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
 import           Development.IDE.Graph.Internal.Action   (runActionInDbCb)
 import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
 import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
-                                                          getShakeStep)
+                                                          getShakeStep,
+                                                          withLockInShakeDatabase)
 import           Development.IDE.Graph.Rule
 import           Development.IDE.Types.Action
 import           Development.IDE.Types.Diagnostics
@@ -615,7 +616,6 @@ data IdeState = IdeState
     }
 
 
-
 -- This is debugging code that generates a series of profiles, if the Boolean is true
 shakeDatabaseProfileIO :: Maybe FilePath -> IO(ShakeDatabase -> IO (Maybe FilePath))
 shakeDatabaseProfileIO mbProfileDir = do
@@ -754,7 +754,6 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         pure ShakeExtras{shakeRecorder = recorder, ..}
     shakeDb  <-
         shakeNewDatabase
-            shakeControlQueue
             opts { shakeExtra = newShakeExtra shakeExtras }
             rules
     shakeSession <- newEmptyMVar
@@ -912,43 +911,44 @@ runRestartTaskDyn recorder ideStateVar dy = runRestartTask recorder ideStateVar 
 runRestartTask :: Recorder (WithPriority Log) -> MVar IdeState -> ShakeRestartArgs -> IO ()
 runRestartTask recorder ideStateVar shakeRestartArgs = do
   IdeState {shakeDb, shakeSession, shakeExtras, shakeDatabaseProfile} <- readMVar ideStateVar
-  let prepareRestart sra@ShakeRestartArgs {..} = do
-        keys <- sraBetweenSessions
-        -- it is every important to update the dirty keys after we enter the critical section
-        -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
-        atomically $ modifyTVar' (dirtyKeys shakeExtras) $ \x -> foldl' (flip insertKeySet) x keys
-        -- Check if there is another restart request pending, if so, we run that one too
-        readAndGo sra sraShakeControlQueue
-      readAndGo sra sraShakeControlQueue = do
-        nextRestartArg <- atomically $ tryReadTaskQueue sraShakeControlQueue
-        case nextRestartArg of
-          Nothing -> return sra
-          Just (Left dy) -> do
-            res <- prepareRestart $ dynShakeRestart dy
-            return $ sra <> res
-          Just (Right _) -> readAndGo sra sraShakeControlQueue
-  withMVar'
-    shakeSession
-    ( \runner -> do
-        -- takeShakeLock shakeDb
-        (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner
-        restartArgs <- prepareRestart shakeRestartArgs
-        queue <- atomicallyNamed "actionQueue - peek" $ peekInProgress $ actionQueue shakeExtras
-        res <- shakeDatabaseProfile shakeDb
-        backlog <- readTVarIO $ dirtyKeys shakeExtras
-        -- this log is required by tests
-        step <- shakeGetBuildStep shakeDb
-        logWith recorder Info $ LogBuildSessionRestart restartArgs queue backlog stopTime res step
-        return restartArgs
-    )
-    -- It is crucial to be masked here, otherwise we can get killed
-    -- between spawning the new thread and updating shakeSession.
-    -- See https://github.com/haskell/ghcide/issues/79
-    ( \(ShakeRestartArgs {..}) ->
-        do
-          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason
-          `finally` for_ sraWaitMVars (`putMVar` ())
-    )
+  withLockInShakeDatabase shakeDb $ do
+    let prepareRestart sra@ShakeRestartArgs {..} = do
+            keys <- sraBetweenSessions
+            -- it is every important to update the dirty keys after we enter the critical section
+            -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
+            atomically $ modifyTVar' (dirtyKeys shakeExtras) $ \x -> foldl' (flip insertKeySet) x keys
+            -- Check if there is another restart request pending, if so, we run that one too
+            readAndGo sra sraShakeControlQueue
+        readAndGo sra sraShakeControlQueue = do
+            nextRestartArg <- atomically $ tryReadTaskQueue sraShakeControlQueue
+            case nextRestartArg of
+                Nothing -> return sra
+                Just (Left dy) -> do
+                    res <- prepareRestart $ dynShakeRestart dy
+                    return $ sra <> res
+                Just (Right _) -> readAndGo sra sraShakeControlQueue
+    withMVar'
+        shakeSession
+        ( \runner -> do
+            -- takeShakeLock shakeDb
+            (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner
+            restartArgs <- prepareRestart shakeRestartArgs
+            queue <- atomicallyNamed "actionQueue - peek" $ peekInProgress $ actionQueue shakeExtras
+            res <- shakeDatabaseProfile shakeDb
+            backlog <- readTVarIO $ dirtyKeys shakeExtras
+            -- this log is required by tests
+            step <- shakeGetBuildStep shakeDb
+            logWith recorder Info $ LogBuildSessionRestart restartArgs queue backlog stopTime res step
+            return restartArgs
+        )
+        -- It is crucial to be masked here, otherwise we can get killed
+        -- between spawning the new thread and updating shakeSession.
+        -- See https://github.com/haskell/ghcide/issues/79
+        ( \(ShakeRestartArgs {..}) ->
+            do
+            (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason
+            `finally` for_ sraWaitMVars (`putMVar` ())
+        )
   where
     logErrorAfter :: Seconds -> IO () -> IO ()
     logErrorAfter seconds action = flip withAsync (const action) $ do

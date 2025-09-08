@@ -35,11 +35,11 @@ data NonExportedType = NonExportedType
 shakeShutDatabase :: ShakeDatabase -> IO ()
 shakeShutDatabase (ShakeDatabase _ _ db) = shutDatabase db
 
-shakeNewDatabase :: DBQue -> ShakeOptions -> Rules () -> IO ShakeDatabase
-shakeNewDatabase que opts rules = do
+shakeNewDatabase :: ShakeOptions -> Rules () -> IO ShakeDatabase
+shakeNewDatabase opts rules = do
     let extra = fromMaybe (toDyn NonExportedType) $ shakeExtra opts
     (theRules, actions) <- runRules extra rules
-    db <- newDatabase que extra theRules
+    db <- newDatabase extra theRules
     pure $ ShakeDatabase (length actions) actions db
 
 shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [Either SomeException a]

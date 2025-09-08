@@ -59,22 +59,24 @@ parallel xs = do
             -- return ()
 
 -- non-blocking version of runActionInDb
+-- inline
+{-# INLINE runActionInDbCb #-}
 runActionInDbCb :: (a -> String) -> (a -> Action result) -> STM a -> (Either SomeException result -> IO ()) -> Action a
 runActionInDbCb getTitle work getAct handler = do
     a <- Action ask
-    liftIO $ atomicallyNamed "action queue - pop" $ do
-        act <- getAct
-        runInDataBase (getTitle act) (actionDatabase a) [(ignoreState a $ work act, handler)]
-        return act
+    act <- liftIO $ atomicallyNamed "action queue - pop" getAct
+    liftIO $ runInDataBase (getTitle act) (actionDatabase a) [(ignoreState a $ work act, handler)]
+    return act
 
+-- inline
+{-# INLINE runActionInDb #-}
 runActionInDb :: String -> [Action a] -> Action [Either SomeException a]
 runActionInDb title acts = do
     a <- Action ask
     xs <- mapM (\x -> do
         barrier <- newEmptyTMVarIO
         return (x, barrier)) acts
-    liftIO $ atomically $ runInDataBase title (actionDatabase a)
-        (map (\(x, b) -> (ignoreState a x, atomically . putTMVar b)) xs)
+    liftIO $ runInDataBase title (actionDatabase a) (map (\(x, b) -> (ignoreState a x, atomically . putTMVar b)) xs)
     results <- liftIO $ mapM (atomically . readTMVar) $ fmap snd xs
     return results
 

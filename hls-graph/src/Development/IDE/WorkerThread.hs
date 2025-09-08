@@ -27,7 +27,11 @@ module Development.IDE.WorkerThread
     tryReadTaskQueue,
     awaitRunInThreadAtHead,
     withWorkerQueueSimpleRight,
-    submitWorkAtHead
+    submitWorkAtHead,
+    withDbLocked,
+    doIfNotLocked,
+    DbLock(..),
+    newDbLock
   ) where
 
 import           Control.Concurrent.Async (Async, async, withAsync)
@@ -40,9 +44,9 @@ import qualified Data.Text                as T
 
 import           Control.Concurrent
 import           Control.Exception        (catch)
-import           Control.Monad            (when)
 import           Data.Dynamic             (Dynamic)
 import           Prettyprinter
+import qualified UnliftIO.Exception       as UE
 
 data LogWorkerThread
   = LogThreadEnding !T.Text
@@ -135,19 +139,26 @@ data DeliverStatus = DeliverStatus
     , deliverName :: String
   } deriving (Show)
 
-runInThreadStmInNewThreads :: STM Int -> DeliverStatus -> TaskQueue (Either Dynamic (IO ())) -> TVar [Async ()] -> [(IO result, Either SomeException result -> IO ())] -> STM ()
-runInThreadStmInNewThreads getStep deliver (TaskQueue q) tthreads acts = do
+-- inline
+{-# INLINE runInThreadStmInNewThreads #-}
+runInThreadStmInNewThreads :: STM Int -> DeliverStatus -> DbLock -> TVar [Async ()] -> [(IO result, Either SomeException result -> IO ())] -> IO ()
+runInThreadStmInNewThreads getStep deliver lock tthreads acts = do
   -- Take an action from TQueue, run it and
   -- use barrier to wait for the result
-    writeTQueue q $ Right $ do
+    doIfNotLocked lock (do
         uninterruptibleMask $ \restore -> do
-            do
-                curStep <- atomically getStep
-                -- traceM ("runInThreadStmInNewThreads: current step: " ++ show curStep ++ " deliver step: " ++ show deliver)
-                when (curStep == deliverStep deliver) $ do
-                    syncs <- mapM (\(act, handler) ->
-                        async (handler =<< (restore $ Right <$> act) `catch` \e@(SomeException _) -> return (Left e))) acts
-                    atomically $ modifyTVar' tthreads (syncs++)
+        --     do
+                -- curStep <- atomically getStep
+                -- -- traceM ("runInThreadStmInNewThreads: current step: " ++ show curStep ++ " deliver step: " ++ show deliver)
+                -- when (curStep == deliverStep deliver) $ do
+            syncs <-
+                mapM (\(act, handler) ->
+                async (handler =<< (restore $ Right <$> act) `catch` \e@(SomeException _) -> return (Left e))) acts
+            atomically $ modifyTVar' tthreads (syncs++))
+        -- already locked, waits here for it to be killed
+        -- if not killed in 10s, we throw an error
+        (threadDelay (10 * 1_000_000) >> error ("runInThreadStmInNewThreads: waited 10s for current runs to be ended, something is wrong, deliver: " ++ show deliver))
+        -- (handle)
 
 type Worker arg = arg -> IO ()
 
@@ -204,3 +215,39 @@ counTaskQueue (TaskQueue q) = do
     mapM_ (unGetTQueue q) (reverse xs)
     return $ length xs
 
+
+
+data DbLock = DbLock (TVar Bool) (TVar Int)
+
+-- if not locked, increment counter, run action, decrement counter
+-- use bracket
+doIfNotLocked :: DbLock -> IO () -> IO () -> IO ()
+doIfNotLocked (DbLock lockVar counterVar) action altAction = UE.bracket acquire release run
+  where
+    acquire = atomically $ do
+        locked <- readTVar lockVar
+        if locked
+            then return False
+            else do
+                modifyTVar' counterVar (+1)
+                return True
+    release True  = atomically $ modifyTVar' counterVar (subtract 1)
+    release False = return ()
+    run True  = action
+    run False = altAction
+
+-- lock it db, wait until counter is 0
+-- run action, unlock itb
+withDbLocked :: DbLock -> IO a -> IO a
+withDbLocked (DbLock lockVar counterVar) action = UE.bracket acquire release run
+  where
+    acquire = atomically $ writeTVar lockVar True
+    release _ = atomically $ writeTVar lockVar False
+    run _ = do
+        atomically $ do
+            count <- readTVar counterVar
+            check (count == 0)
+        action
+
+newDbLock :: IO DbLock
+newDbLock = DbLock <$> newTVarIO False <*> newTVarIO 0

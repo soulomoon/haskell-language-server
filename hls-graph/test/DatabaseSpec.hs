@@ -2,7 +2,6 @@
 
 module DatabaseSpec where
 
-import           ActionSpec                              (itInThread)
 import           Control.Exception                       (SomeException, throw)
 import           Development.IDE.Graph                   (newKey, shakeOptions)
 import           Development.IDE.Graph.Database          (shakeNewDatabase,
@@ -25,8 +24,8 @@ exractException (_: xs) = exractException xs
 spec :: Spec
 spec = do
     describe "Evaluation" $ do
-        itInThread "detects cycles" $ \q -> do
-            db <- shakeNewDatabase q shakeOptions $ do
+        it "detects cycles" $ do
+            db <- shakeNewDatabase shakeOptions $ do
                 ruleBool
                 addRule $ \Rule _old _mode -> do
                     True <- apply1 (Rule @Bool)
@@ -39,8 +38,8 @@ spec = do
             throwStack x `shouldThrow` \StackException{} -> True
 
     describe "compute" $ do
-      itInThread "build step and changed step updated correctly" $ \q -> do
-        (ShakeDatabase _ _ theDb) <- shakeNewDatabase q shakeOptions $ do
+      it "build step and changed step updated correctly" $ do
+        (ShakeDatabase _ _ theDb) <- shakeNewDatabase shakeOptions $ do
           ruleStep
         let k = newKey $ Rule @()
         -- ChangedRecomputeSame

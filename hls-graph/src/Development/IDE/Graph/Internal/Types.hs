@@ -24,10 +24,11 @@ import           Data.Typeable
 import           Debug.Trace                        (traceEventIO, traceM)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
-import           Development.IDE.WorkerThread       (DeliverStatus (..),
-                                                     TaskQueue, counTaskQueue,
-                                                     runInThreadStmInNewThreads)
-import           GHC.Conc                           (TVar, atomically)
+import           Development.IDE.WorkerThread       (DbLock, DeliverStatus (..),
+                                                     TaskQueue,
+                                                     runInThreadStmInNewThreads,
+                                                     withDbLocked)
+import           GHC.Conc                           (TVar)
 import           GHC.Generics                       (Generic)
 import qualified ListT
 import qualified StmContainers.Map                  as SMap
@@ -37,9 +38,9 @@ import           UnliftIO                           (Async (asyncThreadId),
                                                      MonadUnliftIO,
                                                      asyncExceptionFromException,
                                                      asyncExceptionToException,
-                                                     readTVar, readTVarIO,
-                                                     throwTo, waitCatch,
-                                                     withAsync)
+                                                     atomically, readTVar,
+                                                     readTVarIO, throwTo,
+                                                     waitCatch, withAsync)
 import           UnliftIO.Concurrent                (ThreadId, myThreadId)
 
 #if !MIN_VERSION_base(4,18,0)
@@ -100,6 +101,11 @@ getDatabase = Action $ asks actionDatabase
 
 data ShakeDatabase = ShakeDatabase !Int [Action ()] Database
 
+withLockInShakeDatabase :: ShakeDatabase -> IO a -> IO a
+withLockInShakeDatabase (ShakeDatabase _ _ db) io =
+    withDbLocked (databaseLock db) io
+
+
 newtype Step = Step Int
     deriving newtype (Eq,Ord,Hashable,Show)
 
@@ -123,12 +129,14 @@ onKeyReverseDeps f it@KeyDetails{..} =
     it{keyReverseDeps = f keyReverseDeps}
 
 
+
 type DBQue = TaskQueue (Either Dynamic (IO ()))
 data Database = Database {
     databaseExtra   :: Dynamic,
 
     databaseThreads :: TVar [Async ()],
-    databaseQueue   :: DBQue,
+    -- databaseQueue   :: DBQue,
+    databaseLock    :: DbLock,
 
     databaseRules   :: TheRules,
     databaseStep    :: !(TVar Step),
@@ -138,20 +146,24 @@ data Database = Database {
 
 databaseGetActionQueueLength :: Database -> STM Int
 databaseGetActionQueueLength db = do
-    counTaskQueue (databaseQueue db)
+    length <$> readTVar (databaseThreads db)
 
-runInDataBase :: String -> Database -> [(IO result, Either SomeException result -> IO ())] -> STM ()
+-- inline
+{-# INLINE runInDataBase #-}
+runInDataBase :: String -> Database -> [(IO result, Either SomeException result -> IO ())] -> IO ()
 runInDataBase title db acts = do
-    s <- getDataBaseStepInt db
-    runInThreadStmInNewThreads (getDataBaseStepInt db) (DeliverStatus s title) (databaseQueue db) (databaseThreads db) acts
+    s <- atomically $ getDataBaseStepInt db
+    runInThreadStmInNewThreads (getDataBaseStepInt db) (DeliverStatus s title) (databaseLock db) (databaseThreads db) acts
 
-runOneInDataBase :: String -> Database -> IO result -> (SomeException -> IO ()) -> STM ()
+-- inline
+{-# INLINE runOneInDataBase #-}
+runOneInDataBase :: String -> Database -> IO result -> (SomeException -> IO ()) -> IO ()
 runOneInDataBase title db act handler = do
-  s <- getDataBaseStepInt db
+  s <- atomically $ getDataBaseStepInt db
   runInThreadStmInNewThreads
     (getDataBaseStepInt db)
     (DeliverStatus s title)
-    (databaseQueue db)
+    (databaseLock db)
     (databaseThreads db)
     [ ( act,
         \case

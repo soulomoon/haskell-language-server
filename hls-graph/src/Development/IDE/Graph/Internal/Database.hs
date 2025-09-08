@@ -34,6 +34,7 @@ import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
+import           Development.IDE.WorkerThread         (newDbLock)
 import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                    as SMap
@@ -46,11 +47,12 @@ import           Data.List.NonEmpty                   (unzip)
 #endif
 
 
-newDatabase :: DBQue -> Dynamic -> TheRules -> IO Database
-newDatabase databaseQueue databaseExtra databaseRules = do
+newDatabase :: Dynamic -> TheRules -> IO Database
+newDatabase databaseExtra databaseRules = do
     databaseStep <- newTVarIO $ Step 0
     databaseThreads <- newTVarIO []
     databaseValues <- atomically SMap.new
+    databaseLock <- newDbLock
     pure Database{..}
 
 -- | Increment the step and mark dirty.
@@ -116,11 +118,11 @@ builder db stack keys = do
 data IsSingletonTask = IsSingleton | NotSingleton
 -- the first run should not block
 data RunFirst = RunFirst | RunLater deriving stock (Eq, Show)
-data BuildContinue = BCContinue (IO BuildContinue) | BCStop Key Result
+data BuildContinue = BCContinue (Maybe (IO ())) (IO BuildContinue) | BCStop Key Result
 
 interpreBuildContinue :: BuildContinue -> IO (Key, Result)
-interpreBuildContinue (BCStop k v)     = return (k, v)
-interpreBuildContinue (BCContinue ioR) = ioR >>= interpreBuildContinue
+interpreBuildContinue (BCStop k v)       = return (k, v)
+interpreBuildContinue (BCContinue _ ioR) = ioR >>= interpreBuildContinue
 
 builderOneCoroutine :: IsSingletonTask -> Database -> Stack -> Key -> IO BuildContinue
 builderOneCoroutine isSingletonTask db stack id =
@@ -129,7 +131,7 @@ builderOneCoroutine isSingletonTask db stack id =
     builderOneCoroutine' :: RunFirst -> IsSingletonTask -> Database -> Stack -> Key -> IO BuildContinue
     builderOneCoroutine' rf isSingletonTask db@Database {..} stack id = mask $ \restore -> do
         traceEvent ("builderOne: " ++ show id) return ()
-        liftIO $ atomicallyNamed "builder" $ do
+        r <- liftIO $ atomicallyNamed "builder" $ do
             -- Spawn the id if needed
             status <- SMap.lookup id databaseValues
             current <- readTVar databaseStep
@@ -139,23 +141,30 @@ builderOneCoroutine isSingletonTask db stack id =
                     case isSingletonTask of
                         IsSingleton ->
                             return $
-                            BCContinue $ fmap (BCStop id) $
+                            BCContinue Nothing $ fmap (BCStop id) $
                                 restore (refresh db stack id s) `catch` \e@(SomeException _) -> do
                                 atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
                                 throw e
                         NotSingleton -> do
-                            traceEvent ("Starting build of key: " ++ show id ++ ", step " ++ show current) $
-                                runOneInDataBase (show id) db (refresh db stack id s) $
-                                    \e -> atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
-                            return $ BCContinue $ builderOneCoroutine' RunLater isSingletonTask db stack id
+                            return $ BCContinue
+                                (Just $ traceEvent ("Starting build of key: " ++ show id ++ ", step " ++ show current) $
+                                    runOneInDataBase (show id) db (refresh db stack id s) $
+                                        \e -> atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues)
+                                $ builderOneCoroutine' RunLater isSingletonTask db stack id
                 Clean r -> return $ BCStop id r
                 -- force here might contains async exceptions from previous runs
                 Running _step _s
                     | memberStack id stack -> throw $ StackException stack
                     | otherwise -> if rf == RunFirst
-                        then return $ BCContinue $ builderOneCoroutine' RunLater isSingletonTask db stack id
+                        then return $ BCContinue Nothing $ builderOneCoroutine' RunLater isSingletonTask db stack id
                         else retry
                 Exception _ e _s -> throw e
+        case r of
+            BCContinue (Just mbAct) ioR -> do
+                mbAct
+                return $ BCContinue Nothing ioR
+            _ -> return r
+
 
 -- | isDirty
 -- only dirty when it's build time is older than the changed time of one of its dependencies
