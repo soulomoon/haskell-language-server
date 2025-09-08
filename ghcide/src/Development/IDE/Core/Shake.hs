@@ -190,6 +190,9 @@ import           System.Time.Extra
 import           UnliftIO                                (MonadUnliftIO (withRunInIO),
                                                           newIORef, readIORef)
 
+#if !MIN_VERSION_ghc(9,9,0)
+import           Data.Foldable                           (foldl')
+#endif
 
 
 data Log
@@ -341,7 +344,8 @@ data ShakeExtras = ShakeExtras
     ,ideTesting :: IdeTesting
     -- ^ Whether to enable additional lsp messages used by the test suite for checking invariants
     ,restartShakeSession
-        :: VFSModified
+        :: ShouldWait
+        -> VFSModified
         -> String
         -> [DelayedAction ()]
         -> IO [Key]
@@ -886,15 +890,21 @@ instance Semigroup ShakeRestartArgs where
 -- | Restart the current 'ShakeSession' with the given system actions.
 --   Any actions running in the current session will be aborted,
 --   but actions added via 'shakeEnqueue' will be requeued.
-shakeRestart :: ShakeControlQueue ->  VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
-shakeRestart rts vfs reason acts ioActionBetweenShakeSession = do
-    waitMVar <- newEmptyMVar
-    -- submit at the head of the queue,
-    -- prefer restart request over any pending actions
-    void $ submitWorkAtHead rts $ Left $
-        toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession rts 1 [waitMVar]
-    -- Wait until the restart is done
-    takeMVar waitMVar
+shakeRestart :: ShakeControlQueue -> ShouldWait ->  VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
+shakeRestart rts b vfs reason acts ioActionBetweenShakeSession = case b of
+    ShouldWait ->
+        do
+        waitMVar <- newEmptyMVar
+        -- submit at the head of the queue,
+        -- prefer restart request over any pending actions
+        void $ submitWorkAtHead rts $ Left $
+            toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession rts 1 [waitMVar]
+        -- Wait until the restart is done
+        takeMVar waitMVar
+    ShouldNotWait ->
+        void $ submitWorkAtHead rts $ Left $
+            toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession rts 1 []
+
 
 dynShakeRestart :: Dynamic -> ShakeRestartArgs
 dynShakeRestart dy = case fromDynamic dy of
