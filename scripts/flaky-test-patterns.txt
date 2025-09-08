@@ -4,7 +4,7 @@
 # open close
 # non local variable
 # Notification Handlers
-# bidirectional module dependency with hs-boot
+bidirectional module dependency with hs-boot
 
 # InternalError over InvalidParams
 # ghcide restarts shake session on config changes:
@@ -19,7 +19,7 @@
 # hls-class-plugin-tests::Creates a placeholder for fmap
 # hls-rename-plugin-tests::Rename
 # th-linking-test-unboxed
-update syntax error
+# update syntax error
 # iface-error-test-1
 
 # update syntax error

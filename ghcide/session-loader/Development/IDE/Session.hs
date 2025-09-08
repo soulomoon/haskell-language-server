@@ -68,7 +68,6 @@ import           Ide.Logger                          (Pretty (pretty),
                                                       vcat, viaShow, (<+>))
 import           Ide.Types                           (Config,
                                                       SessionLoadingPreferenceConfig (..),
-                                                      ShouldWait (..),
                                                       sessionLoading)
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Server
@@ -626,7 +625,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
             , ..
             }
           sessionShake = SessionShake
-            { restartSession = restartShakeSession extras ShouldWait
+            { restartSession = restartShakeSession extras
             , invalidateCache = invalidateShakeCache
             , enqueueActions = shakeEnqueue extras
             }
