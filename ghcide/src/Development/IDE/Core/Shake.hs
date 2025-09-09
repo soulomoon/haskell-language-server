@@ -931,21 +931,23 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
         atomically $ modifyTVar' (dirtyKeys shakeExtras) $ \x -> foldl' (flip insertKeySet) x keys
         -- Check if there is another restart request pending, if so, we run that one too
-        readAndGo sra
+        readAndGo sra >>= finalCheck
       readAndGo sra = do
         nextRestartArg <- atomically $ tryReadTaskQueue shakeControlQueue
         case nextRestartArg of
           Nothing -> return sra
           Just (Left dy) -> do
             res <- prepareRestart $ dynShakeRestart dy
-            -- final check
-            -- if still something pending, we go again
-            sleep 0.2
-            b <- atomically $ isEmptyTaskQueue shakeControlQueue
-            if b
-              then return $ sra <> res
-              else readAndGo $ sra <> res
+            return $ sra <> res
           Just (Right _) -> readAndGo sra
+      finalCheck sra = do
+        -- final check
+        sleep 0.2
+        b <- atomically $ isEmptyTaskQueue shakeControlQueue
+        if b
+          then return sra
+          -- there is something new, read and go again
+          else readAndGo sra
   withMVar'
     shakeSession
     ( \runner -> do
@@ -973,7 +975,6 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
     logErrorAfter seconds action = flip withAsync (const action) $ do
       sleep seconds
       logWith recorder Error (LogBuildSessionRestartTakingTooLong seconds)
-
 
 -- | Enqueue an action in the existing 'ShakeSession'.
 --   Returns a computation to block until the action is run, propagating exceptions.
