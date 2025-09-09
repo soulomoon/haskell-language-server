@@ -345,7 +345,8 @@ data ShakeExtras = ShakeExtras
     ,ideTesting :: IdeTesting
     -- ^ Whether to enable additional lsp messages used by the test suite for checking invariants
     ,restartShakeSession
-        :: VFSModified
+        :: ShouldWait
+        -> VFSModified
         -> String
         -> [DelayedAction ()]
         -> IO [Key]
@@ -888,16 +889,18 @@ instance Semigroup ShakeRestartArgs where
 -- | Restart the current 'ShakeSession' with the given system actions.
 --   Any actions running in the current session will be aborted,
 --   but actions added via 'shakeEnqueue' will be requeued.
-shakeRestart :: ShakeControlQueue ->  VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
-shakeRestart rts vfs reason acts ioActionBetweenShakeSession = do
-    waitMVar <- newEmptyMVar
-    -- submit at the head of the queue,
-    -- prefer restart request over any pending actions
-    void $ submitWorkAtHead rts $ Left $
-        toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession 1 [waitMVar]
-    -- Wait until the restart is done
-    takeMVar waitMVar
-
+shakeRestart :: ShakeControlQueue -> ShouldWait ->  VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
+shakeRestart rts shouldWait vfs reason acts ioActionBetweenShakeSession = case shouldWait of
+    ShouldWait -> do
+        waitMVar <- newEmptyMVar
+        -- submit at the head of the queue,
+        -- prefer restart request over any pending actions
+        void $ submitWorkAtHead rts $ Left $ toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession 1 [waitMVar]
+        -- Wait until the restart is done
+        takeMVar waitMVar
+    ShouldNotWait ->
+         void $ submitWorkAtHead rts $ Left $
+            toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession 1 []
 
 runRestartTaskDyn :: Recorder (WithPriority Log) -> MVar IdeState -> Dynamic -> IO ()
 runRestartTaskDyn recorder ideStateVar dy = runRestartTask recorder ideStateVar (dynShakeRestart dy)
