@@ -136,6 +136,9 @@ data Database = Database {
     }
 
 
+shakeDataBaseQueue :: ShakeDatabase -> DBQue
+shakeDataBaseQueue = databaseQueue . (\(ShakeDatabase _ _ db) -> db)
+
 databaseGetActionQueueLength :: Database -> STM Int
 databaseGetActionQueueLength db = do
     counTaskQueue (databaseQueue db)

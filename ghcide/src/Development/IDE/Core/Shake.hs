@@ -154,7 +154,8 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
 import           Development.IDE.Graph.Internal.Action   (runActionInDbCb)
 import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
 import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
-                                                          getShakeStep)
+                                                          getShakeStep,
+                                                          shakeDataBaseQueue)
 import           Development.IDE.Graph.Rule
 import           Development.IDE.Types.Action
 import           Development.IDE.Types.Diagnostics
@@ -858,14 +859,13 @@ delayedAction a = do
 
 
 data ShakeRestartArgs = ShakeRestartArgs
-    { sraVfs               :: !VFSModified
-    , sraReason            :: !String
-    , sraActions           :: ![DelayedAction ()]
-    , sraBetweenSessions   :: IO [Key]
-    , sraShakeControlQueue :: !ShakeControlQueue
-    , sraCount             :: !Int
-    , sraWaitMVars         :: ![MVar ()]
+    { sraVfs             :: !VFSModified
+    , sraReason          :: !String
+    , sraActions         :: ![DelayedAction ()]
+    , sraBetweenSessions :: IO [Key]
+    , sraCount           :: !Int
     -- ^ Just for debugging, how many restarts have been requested so far
+    , sraWaitMVars       :: ![MVar ()]
     }
 
 instance Show ShakeRestartArgs where
@@ -881,7 +881,6 @@ instance Semigroup ShakeRestartArgs where
             , sraReason = sraReason a ++ "; " ++ sraReason b
             , sraActions = sraActions a ++ sraActions b
             , sraBetweenSessions = (++) <$> sraBetweenSessions a <*> sraBetweenSessions b
-            , sraShakeControlQueue = sraShakeControlQueue a
             , sraCount = sraCount a + sraCount b
             , sraWaitMVars = sraWaitMVars a ++ sraWaitMVars b
             }
@@ -895,7 +894,7 @@ shakeRestart rts vfs reason acts ioActionBetweenShakeSession = do
     -- submit at the head of the queue,
     -- prefer restart request over any pending actions
     void $ submitWorkAtHead rts $ Left $
-        toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession rts 1 [waitMVar]
+        toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession 1 [waitMVar]
     -- Wait until the restart is done
     takeMVar waitMVar
 
@@ -911,21 +910,23 @@ dynShakeRestart dy = case fromDynamic dy of
 runRestartTask :: Recorder (WithPriority Log) -> MVar IdeState -> ShakeRestartArgs -> IO ()
 runRestartTask recorder ideStateVar shakeRestartArgs = do
   IdeState {shakeDb, shakeSession, shakeExtras, shakeDatabaseProfile} <- readMVar ideStateVar
+  let shakeControlQueue = shakeDataBaseQueue shakeDb
   let prepareRestart sra@ShakeRestartArgs {..} = do
         keys <- sraBetweenSessions
         -- it is every important to update the dirty keys after we enter the critical section
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
         atomically $ modifyTVar' (dirtyKeys shakeExtras) $ \x -> foldl' (flip insertKeySet) x keys
+        sleep 0.2
         -- Check if there is another restart request pending, if so, we run that one too
-        readAndGo sra sraShakeControlQueue
-      readAndGo sra sraShakeControlQueue = do
-        nextRestartArg <- atomically $ tryReadTaskQueue sraShakeControlQueue
+        readAndGo sra
+      readAndGo sra = do
+        nextRestartArg <- atomically $ tryReadTaskQueue shakeControlQueue
         case nextRestartArg of
           Nothing -> return sra
           Just (Left dy) -> do
             res <- prepareRestart $ dynShakeRestart dy
             return $ sra <> res
-          Just (Right _) -> readAndGo sra sraShakeControlQueue
+          Just (Right _) -> readAndGo sra
   withMVar'
     shakeSession
     ( \runner -> do
@@ -1049,7 +1050,7 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
     parentTid <- myThreadId
     workThread <- asyncWithUnmask $ \x -> do
         childThreadId <- myThreadId
-        logWith recorder Info $ LogShakeText ("Starting shake thread: " <> T.pack (show childThreadId) <> " (parent: " <> T.pack (show parentTid) <> ")")
+        -- logWith recorder Info $ LogShakeText ("shake thread: " <> T.pack (show childThreadId) <> " (parent: " <> T.pack (show parentTid) <> ")")
         workRun start x
 
     --  Cancelling is required to flush the Shake database when either

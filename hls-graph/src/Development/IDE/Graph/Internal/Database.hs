@@ -127,7 +127,7 @@ builderOneCoroutine isSingletonTask db stack id =
     builderOneCoroutine' RunFirst isSingletonTask db stack id
     where
     builderOneCoroutine' :: RunFirst -> IsSingletonTask -> Database -> Stack -> Key -> IO BuildContinue
-    builderOneCoroutine' rf isSingletonTask db@Database {..} stack id = mask $ \restore -> do
+    builderOneCoroutine' rf isSingletonTask db@Database {..} stack id = do
         traceEvent ("builderOne: " ++ show id) return ()
         liftIO $ atomicallyNamed "builder" $ do
             -- Spawn the id if needed
@@ -140,7 +140,7 @@ builderOneCoroutine isSingletonTask db stack id =
                         IsSingleton ->
                             return $
                             BCContinue $ fmap (BCStop id) $
-                                restore (refresh db stack id s) `catch` \e@(SomeException _) -> do
+                                refresh db stack id s `catch` \e@(SomeException _) -> do
                                 atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
                                 throw e
                         NotSingleton -> do
@@ -149,7 +149,6 @@ builderOneCoroutine isSingletonTask db stack id =
                                     \e -> atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
                             return $ BCContinue $ builderOneCoroutine' RunLater isSingletonTask db stack id
                 Clean r -> return $ BCStop id r
-                -- force here might contains async exceptions from previous runs
                 Running _step _s
                     | memberStack id stack -> throw $ StackException stack
                     | otherwise -> if rf == RunFirst
