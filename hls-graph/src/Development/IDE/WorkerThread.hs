@@ -14,7 +14,6 @@ module Development.IDE.WorkerThread
   ( LogWorkerThread (..),
     DeliverStatus(..),
     withWorkerQueue,
-    awaitRunInThread,
     TaskQueue(..),
     writeTaskQueue,
     withWorkerQueueSimple,
@@ -25,7 +24,6 @@ module Development.IDE.WorkerThread
     eitherWorker,
     Worker,
     tryReadTaskQueue,
-    awaitRunInThreadAtHead,
     withWorkerQueueSimpleRight,
     submitWorkAtHead
   ) where
@@ -158,34 +156,12 @@ eitherWorker w1 w2 = \case
 
 -- submitWork without waiting for the result
 submitWork :: TaskQueue arg -> arg -> IO ()
-submitWork (TaskQueue q) arg = do atomically $ writeTQueue q arg
+submitWork (TaskQueue q) arg = atomically $ writeTQueue q arg
 
 -- submit work at the head of the queue, so it will be executed next
 submitWorkAtHead :: TaskQueue arg -> arg -> IO ()
 submitWorkAtHead (TaskQueue q) arg = do
   atomically $ unGetTQueue q arg
-
-awaitRunInThread :: TaskQueue (IO ()) -> IO result -> IO result
-awaitRunInThread (TaskQueue q) act = do
-  barrier <- newEmptyTMVarIO
-  -- Take an action from TQueue, run it and
-  -- use barrier to wait for the result
-  atomically $ writeTQueue q (try act >>= atomically . putTMVar barrier)
-  resultOrException <- atomically $ takeTMVar barrier
-  case resultOrException of
-    Left e  -> throw (e :: SomeException)
-    Right r -> return r
-
-awaitRunInThreadAtHead :: TaskQueue (IO ()) -> IO result -> IO result
-awaitRunInThreadAtHead (TaskQueue q) act = do
-  barrier <- newEmptyTMVarIO
-  -- Take an action from TQueue, run it and
-  -- use barrier to wait for the result
-  atomically $ unGetTQueue q (try act >>= atomically . putTMVar barrier)
-  resultOrException <- atomically $ takeTMVar barrier
-  case resultOrException of
-    Left e  -> throw (e :: SomeException)
-    Right r -> return r
 
 writeTaskQueue :: TaskQueue a -> a -> STM ()
 writeTaskQueue (TaskQueue q) = writeTQueue q

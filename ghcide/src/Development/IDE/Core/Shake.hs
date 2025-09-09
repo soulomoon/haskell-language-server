@@ -899,15 +899,14 @@ shakeRestart rts vfs reason acts ioActionBetweenShakeSession = do
     -- Wait until the restart is done
     takeMVar waitMVar
 
+
+runRestartTaskDyn :: Recorder (WithPriority Log) -> MVar IdeState -> Dynamic -> IO ()
+runRestartTaskDyn recorder ideStateVar dy = runRestartTask recorder ideStateVar (dynShakeRestart dy)
+
 dynShakeRestart :: Dynamic -> ShakeRestartArgs
 dynShakeRestart dy = case fromDynamic dy of
     Just shakeRestartArgs -> shakeRestartArgs
     Nothing -> error "Internal error, dynShakeRestart, got invalid dynamic type"
-
--- runRestartTask :: Recorder (WithPriority Log) -> IdeState -> VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
--- runRestartTask recorder IdeState{..} vfs reason acts ioActionBetweenShakeSession =
-runRestartTaskDyn :: Recorder (WithPriority Log) -> MVar IdeState -> Dynamic -> IO ()
-runRestartTaskDyn recorder ideStateVar dy = runRestartTask recorder ideStateVar (dynShakeRestart dy)
 
 runRestartTask :: Recorder (WithPriority Log) -> MVar IdeState -> ShakeRestartArgs -> IO ()
 runRestartTask recorder ideStateVar shakeRestartArgs = do
