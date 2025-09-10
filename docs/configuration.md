@@ -52,7 +52,7 @@ Here is a list of the additional settings currently supported by `haskell-langua
 Plugins have a generic config to control their behaviour. The schema of such config is:
 
 - `haskell.plugin.${pluginName}.globalOn`: usually with default true. Whether the plugin is enabled at runtime or it is not. That is the option you might use if you want to disable completely a plugin.
-  - Actual plugin names are: `ghcide-code-actions-fill-holes`, `ghcide-completions`, `ghcide-hover-and-symbols`, `ghcide-type-lenses`, `ghcide-code-actions-type-signatures`, `ghcide-code-actions-bindings`, `ghcide-code-actions-imports-exports`, `eval`, `moduleName`, `pragmas`, `importLens`, `class`, `hlint`, `retrie`, `rename`, `splice`, `stan`.
+  - Actual plugin names are: `ghcide-code-actions-fill-holes`, `ghcide-completions`, `ghcide-hover-and-symbols`, `ghcide-type-lenses`, `ghcide-code-actions-type-signatures`, `ghcide-code-actions-bindings`, `ghcide-code-actions-imports-exports`, `eval`, `moduleName`, `pragmas`, `importLens`, `class`, `hlint`, `retrie`, `rename`, `splice`, `stan`, `signatureHelp`.
   - So to disable the import lens with an explicit list of module definitions you could set `haskell.plugin.importLens.globalOn: false`
 - `haskell.plugin.${pluginName}.${lspCapability}On`: usually with default true. Whether a concrete plugin capability is enabled.
   - Capabilities are the different ways a lsp server can interact with the editor. The current available capabilities of the server are: `callHierarchy`, `codeActions`, `codeLens`, `diagnostics`, `hover`, `symbols`, `completion`, `rename`.
@@ -443,22 +443,20 @@ This will install `eglot` and enable it by default in `haskell-mode`.
 To configure `haskell-language-server` we use the `eglot-workspace-configuration` variable.
 With `M-x eglot-show-workspace-configuration` you can see the JSON that `eglot` will send to `haskell-language-server`.
 See <https://joaotavora.github.io/eglot/#Customizing-Eglot> for more information.
-As an example, the setting below will disable the `stan` plugin.
+As an example, the setting below will disable the `stan` plugin and use `fourmolu` for formatting:
 
 ```emacs-lisp
 (use-package eglot
   :ensure t
   :config
-  (add-hook 'haskell-mode-hook 'eglot-ensure)
+  (add-hook 'haskell-mode-hook 'eglot-ensure) ; start eglot automatically in haskell projects
   :config
   (setq-default eglot-workspace-configuration
-                '((haskell
-                   (plugin
-                    (stan
-                     (globalOn . :json-false))))))  ;; disable stan
+                '(:haskell (:plugin (:stan (:globalOn :json-false)) ; disable stan
+                            :formattingProvider "fourmolu")))       ; use fourmolu instead of ormolu
   :custom
-  (eglot-autoshutdown t)  ;; shutdown language server after closing last file
-  (eglot-confirm-server-initiated-edits nil)  ;; allow edits without confirmation
+  (eglot-autoshutdown t)  ; shutdown language server after closing last file
+  (eglot-confirm-server-initiated-edits nil)  ; allow edits without confirmation
   )
 ```
 
