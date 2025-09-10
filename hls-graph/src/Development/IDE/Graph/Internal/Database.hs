@@ -39,7 +39,6 @@ import           Development.IDE.Graph.Internal.Types
 import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                    as SMap
-import           System.IO.Unsafe
 import           System.Time.Extra                    (duration, sleep)
 import           UnliftIO                             (MonadUnliftIO (withRunInIO))
 import qualified UnliftIO.Exception                   as UE
