@@ -349,8 +349,7 @@ data ShakeExtras = ShakeExtras
     ,ideTesting :: IdeTesting
     -- ^ Whether to enable additional lsp messages used by the test suite for checking invariants
     ,restartShakeSession
-        :: ShouldWait
-        -> VFSModified
+        :: VFSModified
         -> String
         -> [DelayedAction ()]
         -> IO [Key]
@@ -900,24 +899,22 @@ instance Semigroup ShakeRestartArgs where
 -- | Restart the current 'ShakeSession' with the given system actions.
 --   Any actions running in the current session will be aborted,
 --   but actions added via 'shakeEnqueue' will be requeued.
-shakeRestart :: TVar Int -> ShakeDatabase -> ShouldWait -> VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
-shakeRestart version db shouldWait vfs reason acts ioActionBetweenShakeSession = do
+shakeRestart :: TVar Int -> ShakeDatabase ->  VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
+shakeRestart version db vfs reason acts ioActionBetweenShakeSession = do
     lockShakeDatabaseValues db
     let rts = getShakeQueue db
     v <- atomically $ do
         modifyTVar' version (+1)
         readTVar version
-    case shouldWait of
-        ShouldWait -> do
-            waitMVar <- newEmptyMVar
-            -- submit at the head of the queue,
-            -- prefer restart request over any pending actions
-            void $ submitWorkAtHead rts $ Left $ toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession 1 [waitMVar] v
-            -- Wait until the restart is done
-            takeMVar waitMVar
-        ShouldNotWait ->
-            void $ submitWorkAtHead rts $ Left $
-                toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession 1 [] v
+    let rts = shakeDataBaseQueue db
+    waitMVar <- newEmptyMVar
+    -- submit at the head of the queue,
+    -- prefer restart request over any pending actions
+    void $ submitWorkAtHead rts $ Left $
+        toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession 1 [waitMVar]
+    -- Wait until the restart is done
+    takeMVar waitMVar
+
 
 runRestartTaskDyn :: Recorder (WithPriority Log) -> MVar IdeState -> Dynamic -> IO ()
 runRestartTaskDyn recorder ideStateVar dy = runRestartTask recorder ideStateVar (dynShakeRestart dy)
