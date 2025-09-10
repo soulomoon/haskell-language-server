@@ -42,7 +42,7 @@ module Ide.Types
 , installSigUsr1Handler
 , lookupCommandProvider
 , ResolveFunction
-, mkResolveHandler
+, mkResolveHandler, ShouldWait(..)
 )
     where
 
@@ -1302,3 +1302,6 @@ installSigUsr1Handler h = void $ installHandler sigUSR1 (Catch h) Nothing
   resolve handlers for the same method, than our assumptions that we never have
   two responses break, and behavior is undefined.
   -}
+
+data ShouldWait = ShouldWait | ShouldNotWait
+    deriving Eq

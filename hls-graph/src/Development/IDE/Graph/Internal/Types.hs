@@ -1,12 +1,13 @@
 {-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveAnyClass     #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE LambdaCase         #-}
 {-# LANGUAGE RecordWildCards    #-}
 
 module Development.IDE.Graph.Internal.Types where
 
-import           Control.Concurrent.STM             (STM)
-import           Control.Monad                      ((>=>))
+import           Control.Concurrent.STM             (STM, modifyTVar')
+import           Control.Monad                      (forever, unless)
 import           Control.Monad.Catch
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Reader
@@ -20,15 +21,26 @@ import           Data.IORef
 import           Data.List                          (intercalate)
 import           Data.Maybe
 import           Data.Typeable
+import           Debug.Trace                        (traceEventIO, traceM)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
+import           Development.IDE.WorkerThread       (DeliverStatus (..),
+                                                     TaskQueue, counTaskQueue,
+                                                     runInThreadStmInNewThreads)
 import           GHC.Conc                           (TVar, atomically)
 import           GHC.Generics                       (Generic)
 import qualified ListT
 import qualified StmContainers.Map                  as SMap
 import           StmContainers.Map                  (Map)
-import           System.Time.Extra                  (Seconds)
-import           UnliftIO                           (MonadUnliftIO)
+import           System.Time.Extra                  (Seconds, sleep)
+import           UnliftIO                           (Async (asyncThreadId),
+                                                     MonadUnliftIO,
+                                                     asyncExceptionFromException,
+                                                     asyncExceptionToException,
+                                                     readTVar, readTVarIO,
+                                                     throwTo, waitCatch,
+                                                     withAsync)
+import           UnliftIO.Concurrent                (ThreadId, myThreadId)
 
 #if !MIN_VERSION_base(4,18,0)
 import           Control.Applicative                (liftA2)
@@ -80,8 +92,8 @@ getDatabase :: Action Database
 getDatabase = Action $ asks actionDatabase
 
 -- | waitForDatabaseRunningKeysAction waits for all keys in the database to finish running.
-waitForDatabaseRunningKeysAction :: Action ()
-waitForDatabaseRunningKeysAction = getDatabase >>= liftIO . waitForDatabaseRunningKeys
+-- waitForDatabaseRunningKeysAction :: Action ()
+-- waitForDatabaseRunningKeysAction = getDatabase >>= liftIO . waitForDatabaseRunningKeys
 
 ---------------------------------------------------------------------
 -- DATABASE
@@ -91,12 +103,14 @@ data ShakeDatabase = ShakeDatabase !Int [Action ()] Database
 newtype Step = Step Int
     deriving newtype (Eq,Ord,Hashable,Show)
 
+
+getShakeStep :: MonadIO m => ShakeDatabase -> m Step
+getShakeStep (ShakeDatabase _ _ db) = do
+    s <- readTVarIO $ databaseStep db
+    return s
+
 ---------------------------------------------------------------------
 -- Keys
-
-
-
-
 newtype Value = Value Dynamic
 
 data KeyDetails = KeyDetails {
@@ -108,15 +122,80 @@ onKeyReverseDeps :: (KeySet -> KeySet) -> KeyDetails -> KeyDetails
 onKeyReverseDeps f it@KeyDetails{..} =
     it{keyReverseDeps = f keyReverseDeps}
 
+
+type DBQue = TaskQueue (Either Dynamic (IO ()))
 data Database = Database {
-    databaseExtra  :: Dynamic,
-    databaseRules  :: TheRules,
-    databaseStep   :: !(TVar Step),
-    databaseValues :: !(Map Key KeyDetails)
+    databaseExtra   :: Dynamic,
+
+    databaseThreads :: TVar [Async ()],
+    databaseQueue   :: DBQue,
+
+    databaseRules   :: TheRules,
+    databaseStep    :: !(TVar Step),
+    databaseValues  :: !(Map Key KeyDetails)
     }
 
-waitForDatabaseRunningKeys :: Database -> IO ()
-waitForDatabaseRunningKeys = getDatabaseValues >=> mapM_ (waitRunning . snd)
+
+shakeDataBaseQueue :: ShakeDatabase -> DBQue
+shakeDataBaseQueue = databaseQueue . (\(ShakeDatabase _ _ db) -> db)
+
+databaseGetActionQueueLength :: Database -> STM Int
+databaseGetActionQueueLength db = do
+    counTaskQueue (databaseQueue db)
+
+runInDataBase :: String -> Database -> [(IO result, Either SomeException result -> IO ())] -> STM ()
+runInDataBase title db acts = do
+    s <- getDataBaseStepInt db
+    runInThreadStmInNewThreads (getDataBaseStepInt db) (DeliverStatus s title) (databaseQueue db) (databaseThreads db) acts
+
+runOneInDataBase :: String -> Database -> IO result -> (SomeException -> IO ()) -> STM ()
+runOneInDataBase title db act handler = do
+  s <- getDataBaseStepInt db
+  runInThreadStmInNewThreads
+    (getDataBaseStepInt db)
+    (DeliverStatus s title)
+    (databaseQueue db)
+    (databaseThreads db)
+    [ ( act,
+        \case
+          Left e -> handler e
+          Right _ -> return ()
+      )
+    ]
+
+
+getDataBaseStepInt :: Database -> STM Int
+getDataBaseStepInt db = do
+    Step s <- readTVar $ databaseStep db
+    return s
+
+data AsyncParentKill = AsyncParentKill ThreadId Step
+    deriving (Show, Eq)
+
+instance Exception AsyncParentKill where
+  toException = asyncExceptionToException
+  fromException = asyncExceptionFromException
+
+shutDatabase :: Database -> IO ()
+shutDatabase Database{..} = uninterruptibleMask $ \unmask -> do
+    -- wait for all threads to finish
+    asyncs <- readTVarIO databaseThreads
+    step <- readTVarIO databaseStep
+    tid <- myThreadId
+    traceEventIO ("shutDatabase: cancelling " ++ show (length asyncs) ++ " asyncs, step " ++ show step)
+    mapM_ (\a -> throwTo (asyncThreadId a) $ AsyncParentKill tid step) asyncs
+    atomically $ modifyTVar' databaseThreads (const [])
+    -- Wait until all the asyncs are done
+    -- But if it takes more than 10 seconds, log to stderr
+    unless (null asyncs) $ do
+        let warnIfTakingTooLong = unmask $ forever $ do
+                sleep 10
+                traceM "cleanupAsync: waiting for asyncs to finish"
+        withAsync warnIfTakingTooLong $ \_ ->
+            mapM_ waitCatch asyncs
+
+-- waitForDatabaseRunningKeys :: Database -> IO ()
+-- waitForDatabaseRunningKeys = getDatabaseValues >=> mapM_ (waitRunning . snd)
 
 getDatabaseValues :: Database -> IO [(Key, Status)]
 getDatabaseValues = atomically
@@ -128,25 +207,28 @@ getDatabaseValues = atomically
 data Status
     = Clean !Result
     | Dirty (Maybe Result)
+    | Exception !Step !SomeException !(Maybe Result)
     | Running {
-        runningStep   :: !Step,
-        runningWait   :: !(IO ()),
-        runningResult :: Result,     -- LAZY
-        runningPrev   :: !(Maybe Result)
+        runningStep :: !Step,
+        -- runningWait   :: !(IO ()),
+        -- runningResult :: Result,     -- LAZY
+        runningPrev :: !(Maybe Result)
         }
 
 viewDirty :: Step -> Status -> Status
-viewDirty currentStep (Running s _ _ re) | currentStep /= s = Dirty re
+viewDirty currentStep (Running s re) | currentStep /= s = Dirty re
+viewDirty currentStep (Exception s _ re) | currentStep /= s = Dirty re
 viewDirty _ other = other
 
 getResult :: Status -> Maybe Result
 getResult (Clean re)           = Just re
 getResult (Dirty m_re)         = m_re
-getResult (Running _ _ _ m_re) = m_re -- watch out: this returns the previous result
+getResult (Running _ m_re)     = m_re -- watch out: this returns the previous result
+getResult (Exception _ _ m_re) = m_re
 
-waitRunning :: Status -> IO ()
-waitRunning Running{..} = runningWait
-waitRunning _           = return ()
+-- waitRunning :: Status -> IO ()
+-- waitRunning Running{..} = runningWait
+-- waitRunning _           = return ()
 
 data Result = Result {
     resultValue     :: !Value,

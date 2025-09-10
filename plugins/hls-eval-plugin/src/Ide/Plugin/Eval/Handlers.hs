@@ -41,7 +41,7 @@ import           Data.String                                  (IsString)
 import           Data.Text                                    (Text)
 import qualified Data.Text                                    as T
 import qualified Data.Text.Utf16.Rope.Mixed                   as Rope
-import           Development.IDE.Core.FileStore               (getUriContents, setSomethingModified)
+import           Development.IDE.Core.FileStore               (getUriContents, setSomethingModifiedWait)
 import           Development.IDE.Core.Rules                   (IdeState,
                                                                runAction)
 import           Development.IDE.Core.Shake                   (use_, uses_, VFSModified (VFSUnmodified), useWithSeparateFingerprintRule_)
@@ -214,11 +214,11 @@ runEvalCmd recorder plId st mtoken EvalParams{..} =
 
             -- enable codegen for the module which we need to evaluate.
             final_hscEnv <- liftIO $ bracket_
-              (setSomethingModified VFSUnmodified st "Eval" $ do
+              (setSomethingModifiedWait VFSUnmodified st "Eval" $ do
                 queueForEvaluation st nfp
                 return [toKey IsEvaluating nfp]
                 )
-              (setSomethingModified VFSUnmodified st "Eval" $ do
+              (setSomethingModifiedWait VFSUnmodified st "Eval" $ do
                 unqueueForEvaluation st nfp
                 return [toKey IsEvaluating nfp]
                 )
