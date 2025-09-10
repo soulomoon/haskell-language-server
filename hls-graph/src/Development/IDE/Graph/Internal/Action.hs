@@ -120,7 +120,8 @@ apply :: (Traversable f, RuleResult key ~ value, ShakeValue key, Typeable value)
 apply ks = do
     db <- Action $ asks actionDatabase
     stack <- Action $ asks actionStack
-    (is, vs) <- liftIO $ build db stack ks
+    pk <- getActionKey
+    (is, vs) <- liftIO $ build pk db stack ks
     ref <- Action $ asks actionDeps
     let !ks = force $ fromListKeySet $ toList is
     liftIO $ modifyIORef' ref (ResultDeps [ks] <>)
@@ -131,13 +132,14 @@ applyWithoutDependency :: (Traversable f, RuleResult key ~ value, ShakeValue key
 applyWithoutDependency ks = do
     db <- Action $ asks actionDatabase
     stack <- Action $ asks actionStack
-    (_, vs) <- liftIO $ build db stack ks
+    pk <- getActionKey
+    (_, vs) <- liftIO $ build pk db stack ks
     pure vs
 
-runActions :: Database -> [Action a] -> IO [Either SomeException a]
-runActions db xs = do
+runActions :: Key -> Database -> [Action a] -> IO [Either SomeException a]
+runActions pk db xs = do
     deps <- newIORef mempty
-    runReaderT (fromAction $ parallel xs) $ SAction db deps emptyStack
+    runReaderT (fromAction $ parallel xs) $ SAction pk db deps emptyStack
 
 -- | Returns the set of dirty keys annotated with their age (in # of builds)
 getDirtySet  :: Action [(Key, Int)]

@@ -12,11 +12,12 @@ module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabas
 
 import           Prelude                              hiding (unzip)
 
-import           Control.Concurrent.STM.Stats         (STM, atomically,
-                                                       atomicallyNamed,
-                                                       modifyTVar', newTVarIO,
-                                                       readTVar, readTVarIO,
-                                                       retry)
+import           Control.Concurrent.STM.Stats         (STM, atomicallyNamed,
+                                                       check, modifyTVar',
+                                                       newEmptyTMVarIO,
+                                                       newTVarIO, putTMVar,
+                                                       readTMVar, readTVar,
+                                                       readTVarIO, retry)
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class               (MonadIO (liftIO))
@@ -38,6 +39,7 @@ import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                    as SMap
 import           System.Time.Extra                    (duration)
+import           UnliftIO                             (async, atomically)
 
 #if MIN_VERSION_base(4,19,0)
 import           Data.Functor                         (unzip)
@@ -50,7 +52,9 @@ newDatabase :: DBQue -> Dynamic -> TheRules -> IO Database
 newDatabase databaseQueue databaseExtra databaseRules = do
     databaseStep <- newTVarIO $ Step 0
     databaseThreads <- newTVarIO []
+    databaseValuesLock <- newTVarIO False
     databaseValues <- atomically SMap.new
+    databaseReverseDep <- atomically SMap.new
     pure Database{..}
 
 -- | Increment the step and mark dirty.
@@ -76,16 +80,16 @@ incDatabase db Nothing = do
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
             let status'
-                  | Running _ x <- status = Dirty x
+                  | Running _ x _ <- status = Dirty x
                   | Clean x <- status = Dirty (Just x)
                   | otherwise = status
             in KeyDetails status' rdeps
 -- | Unwrap and build a list of keys in parallel
 build
     :: forall f key value . (Traversable f, RuleResult key ~ value, Typeable key, Show key, Hashable key, Eq key, Typeable value)
-    => Database -> Stack -> f key -> IO (f Key, f value)
+    => Key -> Database -> Stack -> f key -> IO (f Key, f value)
 -- build _ st k | traceShow ("build", st, k) False = undefined
-build db stack keys = do
+build pk db stack keys = do
     step <- readTVarIO $ databaseStep db
     go `catch` \e@(AsyncParentKill i s) -> do
         if s == step
@@ -95,7 +99,7 @@ build db stack keys = do
     go = do
         -- step <- readTVarIO $ databaseStep db
         -- built <- mapConcurrently (builderOne db stack) (fmap newKey keys)
-        built <- builder db stack (fmap newKey keys)
+        built <- builder pk db stack (fmap newKey keys)
         let (ids, vs) = unzip built
         pure (ids, fmap (asV . resultValue) vs)
         where
@@ -106,10 +110,10 @@ build db stack keys = do
 -- | Build a list of keys and return their results.
 --  If none of the keys are dirty, we can return the results immediately.
 --  Otherwise, a blocking computation is returned *which must be evaluated asynchronously* to avoid deadlock.
-builder :: (Traversable f) => Database -> Stack -> f Key -> IO (f (Key, Result))
+builder :: (Traversable f) => Key -> Database -> Stack -> f Key -> IO (f (Key, Result))
 -- builder _ st kk | traceShow ("builder", st,kk) False = undefined
-builder db stack keys = do
-    waits <- for keys (\k -> builderOneCoroutine skipThread db stack k)
+builder pk db stack keys = do
+    waits <- for keys (\k -> builderOneCoroutine pk skipThread db stack k)
     for waits interpreBuildContinue
     where skipThread = if length keys == 1 then IsSingleton else NotSingleton
 
@@ -122,8 +126,41 @@ interpreBuildContinue :: BuildContinue -> IO (Key, Result)
 interpreBuildContinue (BCStop k v)     = return (k, v)
 interpreBuildContinue (BCContinue ioR) = ioR >>= interpreBuildContinue
 
-builderOneCoroutine :: IsSingletonTask -> Database -> Stack -> Key -> IO BuildContinue
-builderOneCoroutine isSingletonTask db stack id =
+-- possible improvements:
+-- suppose it is in the direct dirty set. We have already recorded the parent key as its reverse dep.
+-- fource possible situation
+-- running stage1, we have line up the run but it is scheduled after the restart. Clean.
+-- running stage2, all of it have gone before the restart. Dirty
+-- clean or exception, we picked old value. Dirty
+-- dirty, impossible situation, should throw errors.
+
+-- stage 1 to stage 2 transition, run in serial
+
+-- first we marked we have reached stage2, annotate the current step
+-- then spawn the thread to do the actual work
+-- finally, catch any (async) exception and mark the key as exception
+
+-- submmittBuildInDb :: Database -> IO a -> IO a
+submmittBuildInDb :: Database -> Stack -> Key -> Maybe Result -> IO ()
+submmittBuildInDb db stack id s = do
+  uninterruptibleMask_ $ do
+    do
+      curStep <- readTVarIO $ databaseStep db
+      startBarrier <- newEmptyTMVarIO
+      newAsync <-
+        async
+          (do
+            uninterruptibleMask_ $ atomically $ readTMVar startBarrier
+            void (refresh db stack id s) `catch` \e@(SomeException _) ->
+              atomically $ SMap.focus (updateStatus $ Exception curStep e s) id (databaseValues db)
+          )
+      -- todo should only update if still at stage 1
+      atomically $ SMap.focus (updateStatus $ Running curStep s $ RunningStage2 newAsync) id (databaseValues db)
+      atomically $ putTMVar startBarrier ()
+      atomically $ modifyTVar' (databaseThreads db) (newAsync :)
+
+builderOneCoroutine :: Key -> IsSingletonTask -> Database -> Stack -> Key -> IO BuildContinue
+builderOneCoroutine parentKey isSingletonTask db stack id =
     builderOneCoroutine' RunFirst isSingletonTask db stack id
     where
     builderOneCoroutine' :: RunFirst -> IsSingletonTask -> Database -> Stack -> Key -> IO BuildContinue
@@ -131,11 +168,18 @@ builderOneCoroutine isSingletonTask db stack id =
         traceEvent ("builderOne: " ++ show id) return ()
         liftIO $ atomicallyNamed "builder" $ do
             -- Spawn the id if needed
+            void $ check <$> readTVar databaseValuesLock
+
+            insertDatabaseReverseDepOne id parentKey db
+
+            -- if a build is running, wait
+            -- it will either be killed or continue
+            -- depending on wether it is marked as dirty
             status <- SMap.lookup id databaseValues
             current <- readTVar databaseStep
             case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
                 Dirty s -> do
-                    SMap.focus (updateStatus $ Running current s) id databaseValues
+                    SMap.focus (updateStatus $ Running current s RunningStage1) id databaseValues
                     case isSingletonTask of
                         IsSingleton ->
                             return $
@@ -145,11 +189,15 @@ builderOneCoroutine isSingletonTask db stack id =
                                 throw e
                         NotSingleton -> do
                             traceEvent ("Starting build of key: " ++ show id ++ ", step " ++ show current) $
-                                runOneInDataBase (show id) db (refresh db stack id s) $
+                                -- we need to run serially to avoid summiting run but killed in the middle
+                                runOneInDataBase (show id) db (do
+                                    refresh db stack id s
+                                    ) $
+                                    -- we might want it to be able to be killed since we might want to preserve the database
                                     \e -> atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
                             return $ BCContinue $ builderOneCoroutine' RunLater isSingletonTask db stack id
                 Clean r -> return $ BCStop id r
-                Running _step _s
+                Running _step _s _
                     | memberStack id stack -> throw $ StackException stack
                     | otherwise -> if rf == RunFirst
                         then return $ BCContinue $ builderOneCoroutine' RunLater isSingletonTask db stack id
@@ -174,7 +222,7 @@ refreshDeps visited db stack key result = \case
     [] -> compute db stack key RunDependenciesSame (Just result)
     (dep:deps) -> do
         let newVisited = dep <> visited
-        res <- builder db stack (toListKeySet (dep `differenceKeySet` visited))
+        res <- builder key db stack (toListKeySet (dep `differenceKeySet` visited))
         if isDirty result res
                 -- restart the computation if any of the deps are dirty
                 then compute db stack key RunDependenciesChanged (Just result)
@@ -196,7 +244,7 @@ compute db@Database{..} stack key mode result = do
     let act = runRule databaseRules key (fmap resultData result) mode
     deps <- liftIO $ newIORef UnknownDeps
     (execution, RunResult{..}) <-
-        liftIO $ duration $ runReaderT (fromAction act) $ SAction db deps stack
+        liftIO $ duration $ runReaderT (fromAction act) $ SAction key db deps stack
     curStep <- liftIO $ readTVarIO databaseStep
     deps <- liftIO $ readIORef deps
     let lastChanged = maybe curStep resultChanged result
@@ -227,6 +275,7 @@ compute db@Database{..} stack key mode result = do
                     deps
         _ -> pure ()
     liftIO $ atomicallyNamed "compute and run hook" $ do
+        void $ check <$> readTVar databaseValuesLock
         runHook
         SMap.focus (updateStatus $ Clean res) key databaseValues
     pure res
@@ -235,6 +284,11 @@ updateStatus :: Monad m => Status -> Focus.Focus KeyDetails m ()
 updateStatus res = Focus.alter
     (Just . maybe (KeyDetails res mempty)
     (\it -> it{keyStatus = res}))
+
+-- alterStatus :: Monad m => (Status -> Status) -> Focus.Focus KeyDetails m ()
+-- alterStatus f = Focus.alter
+--     (Just . maybe (KeyDetails res mempty)
+--     (\it -> it{keyStatus = res}))
 
 -- | Returns the set of dirty keys annotated with their age (in # of builds)
 getDirtySet :: Database -> IO [(Key, Int)]

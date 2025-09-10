@@ -7,7 +7,8 @@
 module Development.IDE.Graph.Internal.Types where
 
 import           Control.Concurrent.STM             (STM, modifyTVar')
-import           Control.Monad                      (forever, unless)
+import           Control.Monad                      (forM, forM_, forever,
+                                                     unless)
 import           Control.Monad.Catch
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Reader
@@ -20,13 +21,18 @@ import qualified Data.HashMap.Strict                as Map
 import           Data.IORef
 import           Data.List                          (intercalate)
 import           Data.Maybe
+import           Data.Set                           (Set)
+import qualified Data.Set                           as S
 import           Data.Typeable
 import           Debug.Trace                        (traceEventIO, traceM)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.WorkerThread       (DeliverStatus (..),
-                                                     TaskQueue, counTaskQueue,
+                                                     TaskQueue,
+                                                     awaitRunInThread,
+                                                     counTaskQueue,
                                                      runInThreadStmInNewThreads)
+import qualified Focus
 import           GHC.Conc                           (TVar, atomically)
 import           GHC.Generics                       (Generic)
 import qualified ListT
@@ -83,6 +89,7 @@ newtype Action a = Action {fromAction :: ReaderT SAction IO a}
     deriving newtype (Monad, Applicative, Functor, MonadIO, MonadFail, MonadThrow, MonadCatch, MonadMask, MonadUnliftIO)
 
 data SAction = SAction {
+    actionKey      :: !Key,
     actionDatabase :: !Database,
     actionDeps     :: !(IORef ResultDeps),
     actionStack    :: !Stack
@@ -90,6 +97,10 @@ data SAction = SAction {
 
 getDatabase :: Action Database
 getDatabase = Action $ asks actionDatabase
+
+getActionKey :: Action Key
+getActionKey = Action $ asks actionKey
+
 
 -- | waitForDatabaseRunningKeysAction waits for all keys in the database to finish running.
 -- waitForDatabaseRunningKeysAction :: Action ()
@@ -109,6 +120,16 @@ getShakeStep (ShakeDatabase _ _ db) = do
     s <- readTVarIO $ databaseStep db
     return s
 
+lockShakeDatabaseValues :: MonadIO m => ShakeDatabase -> m ()
+lockShakeDatabaseValues (ShakeDatabase _ _ db) = do
+    liftIO $ atomically $ modifyTVar' (databaseValuesLock db) (const False)
+
+unlockShakeDatabaseValues :: MonadIO m => ShakeDatabase -> m ()
+unlockShakeDatabaseValues (ShakeDatabase _ _ db) = do
+    liftIO $ atomically $ modifyTVar' (databaseValuesLock db) (const True)
+
+getShakeQueue :: ShakeDatabase -> DBQue
+getShakeQueue (ShakeDatabase _ _ db) = databaseQueue db
 ---------------------------------------------------------------------
 -- Keys
 newtype Value = Value Dynamic
@@ -125,16 +146,86 @@ onKeyReverseDeps f it@KeyDetails{..} =
 
 type DBQue = TaskQueue (Either Dynamic (IO ()))
 data Database = Database {
-    databaseExtra   :: Dynamic,
+    databaseExtra      :: Dynamic,
 
-    databaseThreads :: TVar [Async ()],
-    databaseQueue   :: DBQue,
+    databaseThreads    :: TVar [Async ()],
 
-    databaseRules   :: TheRules,
-    databaseStep    :: !(TVar Step),
-    databaseValues  :: !(Map Key KeyDetails)
+    databaseReverseDep :: SMap.Map Key KeySet,
+    -- For each key, the set of keys that depend on it directly.
+
+    -- it is used to compute the transitive reverse deps, so
+    -- if not in any of the transitive reverse deps of a dirty node, it is clean
+    -- we can skip clean the threads.
+    -- this is update right before we query the database for the key result.
+
+
+
+    databaseQueue      :: DBQue,
+
+    databaseRules      :: TheRules,
+    databaseStep       :: !(TVar Step),
+
+    databaseValuesLock :: !(TVar Bool),
+    -- when we restart a build, we set this to False to block any other
+    -- threads from reading databaseValues
+    databaseValues     :: !(Map Key KeyDetails)
+
     }
+---------------------------------------------------------------------
+-- compute clean running asyncs
+-- clean running asyncs are those runnings keys at stage 2 that are not
+-- at reverse dependency of any dirty keys
 
+-- we also need to update not dirty running keys to a new step
+-- for stage 1 non-dirty keys, since its computing thread is not started,
+-- we can just update its step to the new step
+-- for stage 2 non-dirty keys, we need to cancel its computing thread
+computeCleanRunningAsyncs :: Database -> KeySet -> STM [Async ()]
+computeCleanRunningAsyncs db dirtySet = do
+    -- All keys that depend (directly or transitively) on any dirty key
+    affected <- computeTransitiveReverseDeps db dirtySet
+    -- Running stage-2 keys are eligible to be considered for cleanup
+    running  <- getRunningStage2Keys db
+    -- Keep only those whose key is NOT affected by the dirty set
+    pure [async | (k, async) <- running, not (memberKeySet k affected)]
+
+getRunningStage2Keys :: Database -> STM [(Key, Async ())]
+getRunningStage2Keys db = do
+    pairs <- ListT.toList $ SMap.listT (databaseValues db)
+    return [(k, async) | (k, v) <- pairs, Running _ _ (RunningStage2 async) <- [keyStatus v]]
+
+-- compute the transitive reverse dependencies of a set of keys
+-- using databaseReverseDep in the Database
+computeTransitiveReverseDeps :: Database -> KeySet -> STM KeySet
+computeTransitiveReverseDeps db seeds = do
+  let rev = databaseReverseDep db
+
+      -- BFS worklist starting from all seed keys.
+      -- visited contains everything we've already enqueued (including seeds).
+      go :: KeySet -> [Key] -> STM KeySet
+      go visited []       = pure visited
+      go visited (k:todo) = do
+        mDeps <- SMap.lookup k rev
+        case mDeps of
+          Nothing     -> go visited todo
+          Just direct ->
+            -- new keys = direct dependents not seen before
+            let newKs    = filter (\x -> not (memberKeySet x visited)) (toListKeySet direct)
+                visited' = foldr insertKeySet visited newKs
+            in go visited' (newKs ++ todo)
+
+  -- Start with seeds already marked visited to prevent self-revisit.
+  go seeds (toListKeySet seeds)
+
+
+
+insertDatabaseReverseDepOne :: Key -> Key -> Database -> STM ()
+insertDatabaseReverseDepOne k a db = do
+    SMap.focus (Focus.alter (Just . maybe mempty (insertKeySet a))) k (databaseReverseDep db)
+
+
+awaitRunInDb :: Database -> IO result -> IO result
+awaitRunInDb db act = awaitRunInThread (databaseQueue db) act
 
 shakeDataBaseQueue :: ShakeDatabase -> DBQue
 shakeDataBaseQueue = databaseQueue . (\(ShakeDatabase _ _ db) -> db)
@@ -176,15 +267,17 @@ instance Exception AsyncParentKill where
   toException = asyncExceptionToException
   fromException = asyncExceptionFromException
 
-shutDatabase :: Database -> IO ()
-shutDatabase Database{..} = uninterruptibleMask $ \unmask -> do
+shutDatabase ::Set (Async ()) -> Database -> IO ()
+shutDatabase preserve Database{..} = uninterruptibleMask $ \unmask -> do
     -- wait for all threads to finish
     asyncs <- readTVarIO databaseThreads
     step <- readTVarIO databaseStep
     tid <- myThreadId
     traceEventIO ("shutDatabase: cancelling " ++ show (length asyncs) ++ " asyncs, step " ++ show step)
-    mapM_ (\a -> throwTo (asyncThreadId a) $ AsyncParentKill tid step) asyncs
-    atomically $ modifyTVar' databaseThreads (const [])
+    let remains = filter (`S.member` preserve) asyncs
+    let toCancel = filter (`S.notMember` preserve) asyncs
+    mapM_ (\a -> throwTo (asyncThreadId a) $ AsyncParentKill tid step) toCancel
+    atomically $ modifyTVar' databaseThreads (const remains)
     -- Wait until all the asyncs are done
     -- But if it takes more than 10 seconds, log to stderr
     unless (null asyncs) $ do
@@ -204,26 +297,28 @@ getDatabaseValues = atomically
                   . SMap.listT
                   . databaseValues
 
+data RunningStage = RunningStage1 | RunningStage2 (Async ())
+    deriving (Eq, Ord)
 data Status
     = Clean !Result
     | Dirty (Maybe Result)
     | Exception !Step !SomeException !(Maybe Result)
     | Running {
-        runningStep :: !Step,
-        -- runningWait   :: !(IO ()),
+        runningStep  :: !Step,
         -- runningResult :: Result,     -- LAZY
-        runningPrev :: !(Maybe Result)
+        runningPrev  :: !(Maybe Result),
+        runningStage :: !RunningStage
         }
 
 viewDirty :: Step -> Status -> Status
-viewDirty currentStep (Running s re) | currentStep /= s = Dirty re
+viewDirty currentStep (Running s re _) | currentStep /= s = Dirty re
 viewDirty currentStep (Exception s _ re) | currentStep /= s = Dirty re
 viewDirty _ other = other
 
 getResult :: Status -> Maybe Result
 getResult (Clean re)           = Just re
 getResult (Dirty m_re)         = m_re
-getResult (Running _ m_re)     = m_re -- watch out: this returns the previous result
+getResult (Running _ m_re _)   = m_re -- watch out: this returns the previous result
 getResult (Exception _ _ m_re) = m_re
 
 -- waitRunning :: Status -> IO ()

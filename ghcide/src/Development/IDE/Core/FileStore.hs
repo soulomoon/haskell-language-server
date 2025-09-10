@@ -280,7 +280,7 @@ setFileModified recorder vfs state saved nfp actionBefore = do
           AlwaysCheck -> True
           CheckOnSave -> saved
           _           -> False
-    restartShakeSession (shakeExtras state) ShouldNotWait  vfs (fromNormalizedFilePath nfp ++ " (modified)") ([mkDelayedAction "ParentTC" L.Debug (typecheckParentsAction recorder nfp) | checkParents]) $ do
+    restartShakeSession (shakeExtras state) ShouldWait vfs (fromNormalizedFilePath nfp ++ " (modified)") ([mkDelayedAction "ParentTC" L.Debug (typecheckParentsAction recorder nfp) | checkParents]) $ do
         keys<-actionBefore
         return (toKey GetModificationTime nfp:keys)
 
@@ -306,7 +306,7 @@ setSomethingModified' shouldWait vfs state reason actionBetweenSession = do
     atomically $ writeTaskQueue (indexQueue $ hiedbWriter $ shakeExtras state) (\withHieDb -> withHieDb deleteMissingRealFiles)
     void $ restartShakeSession (shakeExtras state) shouldWait vfs reason [] actionBetweenSession
 setSomethingModified :: VFSModified -> IdeState -> String -> IO [Key] -> IO ()
-setSomethingModified vfs state reason actionBetweenSession = setSomethingModified' ShouldNotWait vfs state reason actionBetweenSession
+setSomethingModified vfs state reason actionBetweenSession = setSomethingModified' ShouldWait vfs state reason actionBetweenSession
 
 setSomethingModifiedWait :: VFSModified -> IdeState -> String -> IO [Key] -> IO ()
 setSomethingModifiedWait vfs state reason actionBetweenSession = setSomethingModified' ShouldWait vfs state reason actionBetweenSession

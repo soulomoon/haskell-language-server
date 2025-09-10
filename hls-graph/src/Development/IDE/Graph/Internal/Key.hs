@@ -31,6 +31,7 @@ module Development.IDE.Graph.Internal.Key
     , fromListKeySet
     , deleteKeySet
     , differenceKeySet
+    , unionKyeSet
     ) where
 
 --import Control.Monad.IO.Class ()
@@ -130,6 +131,10 @@ nullKeySet = coerce IS.null
 
 differenceKeySet :: KeySet -> KeySet -> KeySet
 differenceKeySet = coerce IS.difference
+
+
+unionKyeSet :: KeySet -> KeySet -> KeySet
+unionKyeSet = coerce IS.union
 
 deleteKeySet :: Key -> KeySet -> KeySet
 deleteKeySet = coerce IS.delete

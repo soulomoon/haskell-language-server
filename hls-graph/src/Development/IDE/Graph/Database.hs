@@ -13,12 +13,14 @@ module Development.IDE.Graph.Database(
     ,shakeGetBuildEdges,
     shakeShutDatabase,
     shakeGetActionQueueLength) where
+import           Control.Concurrent.Async                (Async)
 import           Control.Concurrent.STM.Stats            (atomically,
                                                           readTVarIO)
 import           Control.Exception                       (SomeException)
 import           Control.Monad                           (join)
 import           Data.Dynamic
 import           Data.Maybe
+import           Data.Set                                (Set)
 import           Development.IDE.Graph.Classes           ()
 import           Development.IDE.Graph.Internal.Action
 import           Development.IDE.Graph.Internal.Database
@@ -32,8 +34,8 @@ import           Development.IDE.Graph.Internal.Types
 -- Placeholder to be the 'extra' if the user doesn't set it
 data NonExportedType = NonExportedType
 
-shakeShutDatabase :: ShakeDatabase -> IO ()
-shakeShutDatabase (ShakeDatabase _ _ db) = shutDatabase db
+shakeShutDatabase :: Set (Async ()) -> ShakeDatabase -> IO ()
+shakeShutDatabase preserve (ShakeDatabase _ _ db) = shutDatabase preserve db
 
 shakeNewDatabase :: DBQue -> ShakeOptions -> Rules () -> IO ShakeDatabase
 shakeNewDatabase que opts rules = do
@@ -71,7 +73,7 @@ shakeRunDatabaseForKeysSep
     -> IO (IO [Either SomeException a])
 shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
     incDatabase db keysChanged
-    return $ drop lenAs1 <$> runActions db (map unvoid as1 ++ as2)
+    return $ drop lenAs1 <$> runActions (newKey "root") db (map unvoid as1 ++ as2)
 
 shakeRunDatabaseForKeys
     :: Maybe [Key]

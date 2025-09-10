@@ -134,6 +134,7 @@ import qualified Language.LSP.Server                     as LSP
 import           Data.Either                             (isRight, lefts)
 import           Data.Int                                (Int64)
 import           Data.IORef.Extra                        (atomicModifyIORef'_)
+import           Data.Set                                (Set)
 import           Development.IDE.Core.Tracing
 import           Development.IDE.GHC.Compat              (NameCache,
                                                           NameCacheUpdater,
@@ -154,8 +155,11 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
 import           Development.IDE.Graph.Internal.Action   (runActionInDbCb)
 import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
 import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
+                                                          getShakeQueue,
                                                           getShakeStep,
-                                                          shakeDataBaseQueue)
+                                                          lockShakeDatabaseValues,
+                                                          shakeDataBaseQueue,
+                                                          unlockShakeDatabaseValues)
 import           Development.IDE.Graph.Rule
 import           Development.IDE.Types.Action
 import           Development.IDE.Types.Diagnostics
@@ -573,7 +577,7 @@ type IdeRule k v =
 -- | A live Shake session with the ability to enqueue Actions for running.
 --   Keeps the 'ShakeDatabase' open, so at most one 'ShakeSession' per database.
 newtype ShakeSession = ShakeSession
-  { cancelShakeSession :: IO ()
+  { cancelShakeSession :: Set (Async ()) -> IO ()
     -- ^ Closes the Shake session
   }
 
@@ -726,7 +730,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         positionMapping <- STM.newIO
         knownTargetsVar <- newTVarIO $ hashed emptyKnownTargets
         restartVersion <- newTVarIO 0
-        let restartShakeSession = shakeRestart restartVersion shakeControlQueue
+        let restartShakeSession = shakeRestart restartVersion shakeDb
         persistentKeys <- newTVarIO mempty
         indexPending <- newTVarIO HMap.empty
         indexCompleted <- newTVarIO 0
@@ -830,7 +834,7 @@ shakeShut IdeState{..} = do
     runner <- tryReadMVar shakeSession
     -- Shake gets unhappy if you try to close when there is a running
     -- request so we first abort that.
-    for_ runner cancelShakeSession
+    for_ runner (flip cancelShakeSession mempty)
     void $ shakeDatabaseProfile shakeDb
     progressStop $ progress shakeExtras
     progressStop $ indexProgressReporting $ hiedbWriter shakeExtras
@@ -896,8 +900,10 @@ instance Semigroup ShakeRestartArgs where
 -- | Restart the current 'ShakeSession' with the given system actions.
 --   Any actions running in the current session will be aborted,
 --   but actions added via 'shakeEnqueue' will be requeued.
-shakeRestart :: TVar Int -> ShakeControlQueue -> ShouldWait -> VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
-shakeRestart version rts shouldWait vfs reason acts ioActionBetweenShakeSession = do
+shakeRestart :: TVar Int -> ShakeDatabase -> ShouldWait -> VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
+shakeRestart version db shouldWait vfs reason acts ioActionBetweenShakeSession = do
+    lockShakeDatabaseValues db
+    let rts = getShakeQueue db
     v <- atomically $ do
         modifyTVar' version (+1)
         readTVar version
@@ -921,6 +927,9 @@ dynShakeRestart dy = case fromDynamic dy of
     Just shakeRestartArgs -> shakeRestartArgs
     Nothing -> error "Internal error, dynShakeRestart, got invalid dynamic type"
 
+computePreserveAsyncs :: ShakeDatabase -> Set (Async ())
+computePreserveAsyncs shakeDb = mempty
+
 runRestartTask :: Recorder (WithPriority Log) -> MVar IdeState -> ShakeRestartArgs -> IO ()
 runRestartTask recorder ideStateVar shakeRestartArgs = do
   IdeState {shakeDb, shakeSession, shakeExtras, shakeDatabaseProfile} <- readMVar ideStateVar
@@ -942,7 +951,7 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
           Just (Right _) -> readAndGo sra
       finalCheck sra = do
         -- final check
-        sleep 0.2
+        -- sleep 0.2
         b <- atomically $ isEmptyTaskQueue shakeControlQueue
         if b
           then return sra
@@ -952,7 +961,8 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
     shakeSession
     ( \runner -> do
         -- takeShakeLock shakeDb
-        (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner
+        let preserveAsyncs = computePreserveAsyncs shakeDb
+        (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner preserveAsyncs
         restartArgs <- prepareRestart shakeRestartArgs
         queue <- atomicallyNamed "actionQueue - peek" $ peekInProgress $ actionQueue shakeExtras
         res <- shakeDatabaseProfile shakeDb
@@ -968,7 +978,7 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
     ( \(ShakeRestartArgs {..}) ->
         do
           (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason
-          `finally` for_ sraWaitMVars (`putMVar` ())
+          `finally` (for_ sraWaitMVars (`putMVar` ()) >> unlockShakeDatabaseValues shakeDb)
     )
   where
     logErrorAfter :: Seconds -> IO () -> IO ()
@@ -1076,12 +1086,12 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
     --  Cancelling is required to flush the Shake database when either
     --  the filesystem or the Ghc configuration have changed
 
-    let cancelShakeSession :: IO ()
-        cancelShakeSession = do
+    let cancelShakeSession :: Set (Async ()) -> IO ()
+        cancelShakeSession preserve = do
             logWith recorder Info $ LogShakeText ("Starting shake cancellation: " <> " (" <> T.pack (show reason) <> ")")
             tid <- myThreadId
             cancelWith workThread $ AsyncParentKill tid step
-            shakeShutDatabase shakeDb
+            shakeShutDatabase preserve shakeDb
 
     -- should wait until the step has increased
     pure (ShakeSession{..})

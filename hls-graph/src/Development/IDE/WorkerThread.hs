@@ -25,7 +25,8 @@ module Development.IDE.WorkerThread
     Worker,
     tryReadTaskQueue,
     withWorkerQueueSimpleRight,
-    submitWorkAtHead
+    submitWorkAtHead,
+    awaitRunInThread
   ) where
 
 import           Control.Concurrent.Async (Async, async, withAsync)
@@ -153,6 +154,18 @@ eitherWorker :: Worker a -> Worker b -> Worker (Either a b)
 eitherWorker w1 w2 = \case
   Left a  -> w1 a
   Right b -> w2 b
+
+awaitRunInThread :: TaskQueue (Either Dynamic (IO ())) -> IO result -> IO result
+awaitRunInThread (TaskQueue q) act = do
+  barrier <- newEmptyTMVarIO
+  -- Take an action from TQueue, run it and
+  -- use barrier to wait for the result
+  atomically $ writeTQueue q (Right $ try act >>= atomically . putTMVar barrier)
+  resultOrException <- atomically $ takeTMVar barrier
+  case resultOrException of
+    Left e  -> throw (e :: SomeException)
+    Right r -> return r
+
 
 -- submitWork without waiting for the result
 submitWork :: TaskQueue arg -> arg -> IO ()
