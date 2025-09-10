@@ -5,13 +5,13 @@ import           Control.Arrow                            ((>>>))
 import           Control.Exception                        (throw)
 import           Control.Lens                             ((^.))
 import           Data.Maybe                               (fromJust)
-import           Data.String.Interpolate                  (__i)
 import           Data.Text                                (Text)
 import qualified Data.Text                                as T
 import           Development.IDE.Plugin.Completions.Types (PosPrefixInfo (PosPrefixInfo))
 import           Ide.Plugin.SignatureHelp                 (descriptor)
 import qualified Language.LSP.Protocol.Lens               as L
-import           Test.Hls
+import           Test.Hls                                 hiding
+                                                          (getSignatureHelp)
 import           Test.Hls.FileSystem                      (VirtualFileTree,
                                                            directCradle, file,
                                                            mkVirtualFileTree,

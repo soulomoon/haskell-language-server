@@ -5,7 +5,7 @@ module Development.IDE.Graph(
     Action, action,
     pattern Key,
     newKey, renderKey,
-    actionFinally, actionBracket, actionCatch, actionFork,
+    actionFinally, actionBracket, actionCatch,
     -- * Configuration
     ShakeOptions(shakeAllowRedefineRules, shakeExtra),
     getShakeExtra, getShakeExtraRules, newShakeExtra,
@@ -18,6 +18,7 @@ module Development.IDE.Graph(
     -- * Actions for inspecting the keys in the database
     getDirtySet,
     getKeysAndVisitedAge,
+
     module Development.IDE.Graph.KeyMap,
     module Development.IDE.Graph.KeySet,
     ) where
