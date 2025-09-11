@@ -14,11 +14,10 @@ import           Prelude                              hiding (unzip)
 
 import           Control.Concurrent.Async
 import           Control.Concurrent.Extra
-import           Control.Concurrent.STM.Stats         (STM, TVar, atomically,
+import           Control.Concurrent.STM.Stats         (STM, atomically,
                                                        atomicallyNamed,
                                                        modifyTVar', newTVarIO,
-                                                       readTVar, readTVarIO,
-                                                       retry)
+                                                       readTVarIO, retry)
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class               (MonadIO (liftIO))
@@ -280,7 +279,7 @@ transitiveDirtySet database = flip State.execStateT mempty . traverse_ loop
 
 -- | A simple monad to implement cancellation on top of 'Async',
 --   generalizing 'withAsync' to monadic scopes.
-newtype AIO a = AIO { unAIO :: ReaderT (TVar [Async ()]) IO a }
+newtype AIO a = AIO { unAIO :: ReaderT (IORef [Async ()]) IO a }
   deriving newtype (Applicative, Functor, Monad, MonadIO)
 
 data AsyncParentKill = AsyncParentKill ThreadId Step
@@ -293,14 +292,11 @@ instance Exception AsyncParentKill where
 -- | Run the monadic computation, cancelling all the spawned asyncs if an exception arises
 runAIO :: Step -> AIO a -> IO a
 runAIO s (AIO act) = do
-    asyncsRef <- newTVarIO []
+    asyncsRef <- newIORef []
     -- Log the exact exception (including async exceptions) before cleanup,
     -- then rethrow to preserve previous semantics.
     runReaderT act asyncsRef `onException` do
-        asyncs <- atomically $ do
-            r <- readTVar asyncsRef
-            modifyTVar' asyncsRef $ const []
-            return r
+        asyncs <- atomicModifyIORef' asyncsRef ([],)
         tid <- myThreadId
         cleanupAsync asyncs tid s
 
@@ -313,7 +309,7 @@ asyncWithCleanUp act = do
     -- mask to make sure we keep track of the spawned async
     liftIO $ uninterruptibleMask $ \restore -> do
         a <- async $ restore io
-        atomically $ modifyTVar' st (void a :)
+        atomicModifyIORef'_ st (void a:)
         return $ wait a
 
 unliftAIO :: AIO a -> AIO (IO a)
