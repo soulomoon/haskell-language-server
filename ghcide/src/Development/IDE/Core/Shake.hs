@@ -911,7 +911,7 @@ shakeRestart version db vfs reason acts ioActionBetweenShakeSession = do
     -- submit at the head of the queue,
     -- prefer restart request over any pending actions
     void $ submitWorkAtHead rts $ Left $
-        toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession 1 [waitMVar]
+        toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession 1 [waitMVar] v
     -- Wait until the restart is done
     takeMVar waitMVar
 
