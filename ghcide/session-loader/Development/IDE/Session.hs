@@ -852,7 +852,7 @@ packageSetup recorder sessionState newEmptyHscEnv (hieYaml, cfp, opts) = do
   rootDir <- asks sessionRootDir
   -- Parse DynFlags for the newly discovered component
   hscEnv <- newEmptyHscEnv
-  newTargetDfs <- liftIO $ evalGhcEnv hscEnv $ setOptions haddockparse cfp opts (hsc_dflags hscEnv) rootDir
+  newTargetDfs <- liftIO $ mask_ $ evalGhcEnv hscEnv $ setOptions haddockparse cfp opts (hsc_dflags hscEnv) rootDir
   let deps = componentDependencies opts ++ maybeToList hieYaml
   dep_info <- liftIO $ getDependencyInfo (fmap (toAbsolute rootDir) deps)
   -- Now lookup to see whether we are combining with an existing HscEnv

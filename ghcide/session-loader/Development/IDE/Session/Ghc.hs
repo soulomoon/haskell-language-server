@@ -43,7 +43,7 @@ import           System.Info
 
 
 import           Control.DeepSeq
-import           Control.Exception                  (evaluate)
+import           Control.Exception                  (evaluate, mask_)
 import           Control.Monad.IO.Unlift            (MonadUnliftIO)
 import qualified Data.Set                           as OS
 import qualified Development.IDE.GHC.Compat.Util    as Compat
@@ -433,7 +433,7 @@ emptyHscEnv :: NameCache -> FilePath -> IO HscEnv
 emptyHscEnv nc libDir = do
     -- We call setSessionDynFlags so that the loader is initialised
     -- We need to do this before we call initUnits.
-    env <- liftIO $ runGhc (Just libDir) $
+    env <- mask_ $ liftIO $ runGhc (Just libDir) $
       getSessionDynFlags >>= setSessionDynFlags >> getSession
     pure $ setNameCache nc (hscSetFlags ((hsc_dflags env){useUnicode = True }) env)
 
