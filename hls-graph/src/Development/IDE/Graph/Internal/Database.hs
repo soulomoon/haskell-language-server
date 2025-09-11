@@ -96,20 +96,22 @@ build db stack keys = do
         asV :: Value -> value
         asV (Value x) = unwrapDynamic x
 
+data BuildArity = BuildUnary | BuildNary
 -- | Build a list of keys and return their results.
 --  If none of the keys are dirty, we can return the results immediately.
 --  Otherwise, a blocking computation is returned *which must be evaluated asynchronously* to avoid deadlock.
 builder :: (Traversable f) => Database -> Stack -> f Key -> AIO (f (Key, Result))
 -- builder _ st kk | traceShow ("builder", st,kk) False = undefined
 builder db stack keys = do
-    keyWaits <- for keys $ \k -> builderOne db stack k
+    let ba = if length keys == 1 then BuildUnary else BuildNary
+    keyWaits <- for keys $ \k -> builderOne ba db stack k
     !res <- for keyWaits $ \(k, waitR) -> do
         !v<- liftIO waitR
         return (k, v)
     return res
 
-builderOne :: Database -> Stack -> Key -> AIO (Key, IO Result)
-builderOne db@Database {..} stack id = UE.mask $ \restore -> do
+builderOne :: BuildArity -> Database -> Stack -> Key -> AIO (Key, IO Result)
+builderOne ba db@Database {..} stack id = UE.mask $ \restore -> do
   current <- liftIO $ readTVarIO databaseStep
   (k, registerWaitResult) <- liftIO $ atomicallyNamed "builder" $ do
     -- Spawn the id if needed
@@ -117,10 +119,12 @@ builderOne db@Database {..} stack id = UE.mask $ \restore -> do
     val <-
       let refreshRsult s = do
             let act =
-                  restore $ asyncWithCleanUp $
-                    refresh db stack id s
-                      `UE.onException` (UE.uninterruptibleMask_ $ liftIO (atomicallyNamed "builder - onException" (SMap.focus updateDirty id databaseValues)))
-
+                    case ba of
+                        BuildNary -> restore $ asyncWithCleanUp $
+                                        refresh db stack id s
+                                          `UE.onException` (UE.uninterruptibleMask_ $ liftIO (atomicallyNamed "builder - onException" (SMap.focus updateDirty id databaseValues)))
+                        BuildUnary -> fmap return $ refresh db stack id s
+                    -- Mark the key as running
             SMap.focus (updateStatus $ Running current s) id databaseValues
             return act
        in case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
