@@ -189,8 +189,8 @@ builderOneCoroutine parentKey isSingletonTask db stack id =
                     runOneInDataBase (do {
                        status <- atomically (SMap.lookup id databaseValues)
                        ; let cur = fromIntegral $ case keyStatus <$> status of
-                                        Just (Running current _s _wait RunningStage1) -> current
-                                        _ -> error "only RunningStage1 can continue"
+                                        Just (Running entryStep _s _wait RunningStage1) -> entryStep
+                                        _ -> current
                        ; return $ DeliverStatus cur (show (parentKey, id))}) db
                         (\adyncH ->
                         -- it is safe from worker thread
