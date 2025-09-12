@@ -32,6 +32,7 @@ import           Control.Monad.IO.Class
 import qualified Data.Binary                                  as B
 import qualified Data.ByteString                              as BS
 import qualified Data.ByteString.Lazy                         as LBS
+import           Data.Foldable                                (traverse_)
 import qualified Data.HashMap.Strict                          as HashMap
 import           Data.IORef
 import qualified Data.Text                                    as T
@@ -279,12 +280,14 @@ setFileModified recorder vfs state saved nfp actionBefore = do
           AlwaysCheck -> True
           CheckOnSave -> saved
           _           -> False
-    restartShakeSession (shakeExtras state) vfs (fromNormalizedFilePath nfp ++ " (modified)") ([mkDelayedAction "ParentTC" L.Debug (typecheckParentsAction recorder nfp) | checkParents]) $ do
+    actions <- sequence [mkDelayedAction "ParentTC" L.Debug (typecheckParentsAction recorder nfp) | checkParents]
+    restartShakeSession (shakeExtras state) vfs (fromNormalizedFilePath nfp ++ " (modified)") [] $ do
         keys<-actionBefore
+        traverse_ (shakeEnqueue (shakeExtras state)) actions
         return (toKey GetModificationTime nfp:keys)
 
 typecheckParents :: Recorder (WithPriority Log) -> IdeState -> NormalizedFilePath -> IO ()
-typecheckParents recorder state nfp = void $ shakeEnqueue (shakeExtras state) parents
+typecheckParents recorder state nfp = void $ shakeEnqueue (shakeExtras state) =<< parents
   where parents = mkDelayedAction "ParentTC" L.Debug (typecheckParentsAction recorder nfp)
 
 typecheckParentsAction :: Recorder (WithPriority Log) -> NormalizedFilePath -> Action ()

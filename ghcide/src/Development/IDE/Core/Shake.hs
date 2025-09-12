@@ -157,6 +157,7 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
                                                           shakedatabaseRuntimeRevDep)
 import           Development.IDE.Graph.Internal.Action   (runActionInDbCb)
 import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
+import           Development.IDE.Graph.Internal.Key      (memberKeySet)
 import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
                                                           getShakeQueue,
                                                           getShakeStep,
@@ -166,6 +167,7 @@ import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
                                                           withShakeDatabaseValuesLock)
 import           Development.IDE.Graph.Rule
 import           Development.IDE.Types.Action
+import           Development.IDE.Types.Action            (delayedActionKey)
 import           Development.IDE.Types.Diagnostics
 import           Development.IDE.Types.Exports           hiding (exportsMapSize)
 import qualified Development.IDE.Types.Exports           as ExportsMap
@@ -839,7 +841,7 @@ shakeSessionInit recorder IdeState{..} = do
     -- Take a snapshot of the VFS - it should be empty as we've received no notifications
     -- till now, but it can't hurt to be in sync with the `lsp` library.
     vfs <- vfsSnapshot (lspEnv shakeExtras)
-    initSession <- newSession recorder shakeExtras (VFSModified vfs) shakeDb [] "shakeSessionInit"
+    initSession <- newSession recorder shakeExtras (VFSModified vfs) shakeDb [] "shakeSessionInit" mempty
     putMVar shakeSession initSession
     logWith recorder Debug LogSessionInitialised
 
@@ -867,8 +869,10 @@ withMVar' var unmasked masked = uninterruptibleMask $ \restore -> do
     pure c
 
 
-mkDelayedAction :: String -> Logger.Priority -> Action a -> DelayedAction a
-mkDelayedAction = DelayedAction Nothing
+mkDelayedAction :: String -> Logger.Priority -> Action a -> IO (DelayedAction a)
+mkDelayedAction name pri act = do
+    u <- newUnique
+    return $ DelayedAction u name pri  act
 
 -- | These actions are run asynchronously after the current action is
 -- finished running. For example, to trigger a key build after a rule
@@ -949,7 +953,8 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         newDirtyKeys <- sraBetweenSessions shakeRestartArgs
         reverseMap <- shakedatabaseRuntimeRevDep shakeDb
         (preservekvs, allRunning2) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
-        logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys allRunning2 reverseMap
+        let uneffected = fst <$> preservekvs
+        logWith recorder Debug $ LogPreserveKeys uneffected newDirtyKeys allRunning2 reverseMap
         (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
         -- it is every important to update the dirty keys after we enter the critical section
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
@@ -962,14 +967,14 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         step <- shakeGetBuildStep shakeDb
 
         logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime res step
-        return shakeRestartArgs
+        return (shakeRestartArgs, uneffected)
     )
     -- It is crucial to be masked here, otherwise we can get killed
     -- between spawning the new thread and updating shakeSession.
     -- See https://github.com/haskell/ghcide/issues/79
-    ( \(ShakeRestartArgs {..}) ->
+    ( \(ShakeRestartArgs {..}, affected) ->
         do
-          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason
+          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason (fromListKeySet affected)
           `finally` for_ sraWaitMVars (`putMVar` ())
     )
   where
@@ -1016,8 +1021,9 @@ newSession
     -> ShakeDatabase
     -> [DelayedActionInternal]
     -> String
+    -> KeySet
     -> IO ShakeSession
-newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
+newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason notAffected = do
 
     -- Take a new VFS snapshot
     case vfsMod of
@@ -1026,7 +1032,9 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
 
     IdeOptions{optRunSubset} <- getIdeOptionsIO extras
 
-    reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress actionQueue
+    -- only the affected keys are dirty, the rest are clean
+    pendings <- atomicallyNamed "actionQueue - peek" $ peekInProgress actionQueue
+    let reenqueued = filter (not . (`memberKeySet` notAffected) . delayedActionKey) pendings
     step <- getShakeStep shakeDb
     allPendingKeys <-
         if optRunSubset
@@ -1040,11 +1048,14 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
             Left e | Just (AsyncParentKill _ _) <- fromException e  -> logWith recorder Debug $ LogShakeText (T.pack $ label ++ " failed: " ++ show e)
             Left e  -> logWith recorder Error $ LogShakeText (T.pack $ label ++ " failed: " ++ show e)
             Right r -> logWith recorder Debug $ LogShakeText (T.pack $ label ++ " finished: " ++ show r)
+
         pumpActionThread = do
-            logWith recorder Debug $ LogShakeText (T.pack $ "Starting action" ++ "(step: " <> show step)
-            d <- runActionInDbCb actionName run (popQueue actionQueue) (logResult "pumpActionThread" . return)
-            step <- getShakeStep shakeDb
-            logWith recorder Debug $ LogShakeText (T.pack $ "started action" ++ "(step: " <> show step <> "): " <> actionName d)
+            -- logWith recorder Debug $ LogShakeText (T.pack $ "Starting action" ++ "(step: " <> show step)
+            -- let getKey :: DelayedAction a -> Key
+            --     getKey (DelayedAction uid nm _ _) = k
+            d <- runActionInDbCb (\x -> delayedActionKey x) run (popQueue actionQueue) (logResult "pumpActionThread" . return)
+            -- step <- getShakeStep shakeDb
+            -- logWith recorder Debug $ LogShakeText (T.pack $ "started action" ++ "(step: " <> show step <> "): " <> actionName d)
             pumpActionThread
 
         -- TODO figure out how to thread the otSpan into defineEarlyCutoff
@@ -1088,8 +1099,7 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
 instantiateDelayedAction
     :: DelayedAction a
     -> IO (Barrier (Either SomeException a), DelayedActionInternal)
-instantiateDelayedAction (DelayedAction _ s p a) = do
-  u <- newUnique
+instantiateDelayedAction (DelayedAction u s p a) = do
   b <- newBarrier
   let a' = do
         -- work gets reenqueued when the Shake session is restarted
@@ -1100,7 +1110,7 @@ instantiateDelayedAction (DelayedAction _ s p a) = do
           x <- actionCatch @SomeException (Right <$> a) (pure . Left)
           -- ignore exceptions if the barrier has been filled concurrently
           liftIO $ void $ try @SomeException $ signalBarrier b x
-      d' = DelayedAction (Just u) s p a'
+      d' = DelayedAction u s p a'
   return (b, d')
 
 getDiagnostics :: IdeState -> STM [FileDiagnostic]
@@ -1260,7 +1270,8 @@ useWithStaleFast' key file = do
 
   -- Async trigger the key to be built anyway because we want to
   -- keep updating the value in the key.
-  waitValue <- delayedAction $ mkDelayedAction ("C:" ++ show key ++ ":" ++ fromNormalizedFilePath file) Debug $ use key file
+  act <- liftIO $ mkDelayedAction ("C:" ++ show key ++ ":" ++ fromNormalizedFilePath file) Debug $ use key file
+  waitValue <- delayedAction act
 
   s@ShakeExtras{stateValues} <- askShake
   r <- liftIO $ atomicallyNamed "useStateFast" $ getValues stateValues key file

@@ -88,8 +88,9 @@ shakedatabaseRuntimeRevDep (ShakeDatabase _ _ db) =
 
 -- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO (Set (Async ()))
 -- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO [(Key, Async ())]
-shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], [Key])
-shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
+-- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], [Key])
+-- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], KeySet, [Key])
+shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve1 db ks)
 
 shakeRunDatabaseForKeys
     :: Maybe [Key]

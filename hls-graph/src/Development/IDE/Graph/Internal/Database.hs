@@ -126,6 +126,7 @@ interpreBuildContinue :: BuildContinue -> IO (Key, Result)
 interpreBuildContinue (BCStop k v)     = return (k, v)
 interpreBuildContinue (BCContinue ioR) = ioR
 
+-- fdsfdsfsdfsfdsfsfsdfsdfsdfd
 builderOne :: Key -> Database -> Stack -> Key -> IO BuildContinue
 builderOne parentKey db@Database {..} stack id = do
   traceEvent ("builderOne: " ++ show id) return ()
@@ -151,7 +152,7 @@ builderOne parentKey db@Database {..} stack id = do
                     -- after an restart to skipped an rerun
                     Just (Running entryStep _s _wait RunningStage1) -> entryStep
                     _                                               -> current
-              return $ DeliverStatus cur (show (parentKey, id))
+              return $ DeliverStatus cur id
           )
           db
           ( \adyncH ->

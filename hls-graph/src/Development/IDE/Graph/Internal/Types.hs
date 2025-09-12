@@ -24,7 +24,7 @@ import           Data.Maybe                         (fromMaybe, isNothing)
 import           Data.Set                           (Set)
 import qualified Data.Set                           as S
 import           Data.Typeable
-import           Debug.Trace                        (traceEventIO, traceM)
+import           Debug.Trace                        (traceEventIO)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.WorkerThread       (DeliverStatus (..),
@@ -45,7 +45,7 @@ import           UnliftIO                           (Async (asyncThreadId),
                                                      asyncExceptionToException,
                                                      poll, readTVar, readTVarIO,
                                                      throwTo, waitCatch,
-                                                     withAsync, writeTQueue)
+                                                     withAsync)
 import           UnliftIO.Concurrent                (ThreadId, myThreadId)
 import qualified UnliftIO.Exception                 as UE
 
@@ -192,8 +192,7 @@ data Database = Database {
 -- to acompany with this,
 -- all non-dirty running need to have an updated step,
 -- so it won't be view as dirty when we restart the build
--- computeToPreserve :: Database -> KeySet -> STM [(Key, Async ())]
-computeToPreserve :: Database -> KeySet -> STM ([(Key, Async ())], [Key])
+-- computeToPreserve :: Database -> KeySet -> STM ([(Key, Async ())], KeySet, [Key])
 computeToPreserve db dirtySet = do
   -- All keys that depend (directly or transitively) on any dirty key
   affected <- computeTransitiveReverseDeps db dirtySet
@@ -213,6 +212,29 @@ computeToPreserve db dirtySet = do
         (databaseValues db)
   -- Keep only those whose key is NOT affected by the dirty set
   pure ([kv | kv@(k, _async) <- running2UnAffected, not (memberKeySet k affected)], allRuningkeys)
+
+-- computeToPreserve1 :: Database -> KeySet -> STM ([(Key, Async ())], KeySet, [Key])
+computeToPreserve1 db dirtySet = do
+  -- All keys that depend (directly or transitively) on any dirty key
+  affected <- computeTransitiveReverseDeps db dirtySet
+  let rootKey = newKey "root"
+  threads <- readTVar $ databaseThreads db
+  -- not root and not effected
+  let uneffected = [(k, async) | (DeliverStatus _ k, async) <- threads, not (memberKeySet k affected), k /= rootKey]
+  let allRuningkeys = map (deliverName. fst) threads
+  forM_ allRuningkeys $ \k -> do
+    -- if not dirty, bump its step
+    unless (memberKeySet k affected) $ do
+      SMap.focus
+        ( Focus.adjust $ \case
+            kd@KeyDetails {keyStatus = Running {runningStep, runningPrev, runningWait, runningStage}} ->
+              (kd {keyStatus = Running (runningStep + 1) runningPrev runningWait runningStage})
+            kd -> kd
+        )
+        k
+        (databaseValues db)
+  -- Keep only those whose key is NOT affected by the dirty set
+  pure (uneffected, allRuningkeys)
 
 getRunningKeys :: Database -> STM [(Key, KeyDetails)]
 getRunningKeys db = do
@@ -259,11 +281,10 @@ databaseGetActionQueueLength :: Database -> STM Int
 databaseGetActionQueueLength db = do
     counTaskQueue (databaseQueue db)
 
-runInDataBase :: String -> Database -> [(IO result, Either SomeException result -> IO ())] -> STM ()
-runInDataBase title db acts = do
-    s <- getDataBaseStepInt db
+runInDataBase :: IO DeliverStatus -> Database -> [(IO result, Either SomeException result -> IO ())] -> STM ()
+runInDataBase delivery db acts = do
     let actWithEmptyHook = map (\(x, y) -> (const $ return (), x, y)) acts
-    runInThreadStmInNewThreads db (return $ DeliverStatus s title)  actWithEmptyHook
+    runInThreadStmInNewThreads db delivery actWithEmptyHook
 
 runInThreadStmInNewThreads ::  Database -> IO DeliverStatus -> [(Async () -> IO (), IO result, Either SomeException result -> IO ())] -> STM ()
 runInThreadStmInNewThreads db mkDeliver acts = do
@@ -274,7 +295,7 @@ runInThreadStmInNewThreads db mkDeliver acts = do
         uninterruptibleMask $ \restore -> do
             do
                 deliver <- mkDeliver
-                log "runInThreadStmInNewThreads submit begin " (deliverName deliver)
+                log "runInThreadStmInNewThreads submit begin " (show $ deliverName deliver)
                 curStep <- atomically $ getDataBaseStepInt db
                 when (curStep == deliverStep deliver) $ do
                     syncs <- mapM (\(preHook, act, handler) -> do
@@ -283,7 +304,7 @@ runInThreadStmInNewThreads db mkDeliver acts = do
                         return (deliver, a)
                         ) acts
                     atomically $ modifyTVar' (databaseThreads db) (syncs++)
-                log "runInThreadStmInNewThreads submit end " (deliverName deliver)
+                log "runInThreadStmInNewThreads submit end " (show $ deliverName deliver)
 
 runOneInDataBase :: IO DeliverStatus -> Database -> (Async () -> IO ()) -> IO result -> (SomeException -> IO ()) -> STM ()
 runOneInDataBase mkDelivery db registerAsync act handler = do
