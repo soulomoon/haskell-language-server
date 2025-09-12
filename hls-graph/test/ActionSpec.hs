@@ -119,15 +119,15 @@ spec = do
       -- build the one with the condition True
       -- This should call the SubBranchRule once
       -- cond rule would return different results each time
-      res0 <- build theDb emptyStack [BranchedRule]
+      res0 <- build (newKey ("root" :: [Char])) theDb emptyStack [BranchedRule]
       snd res0 `shouldBe` [1 :: Int]
       incDatabase theDb Nothing
       -- build the one with the condition False
       -- This should not call the SubBranchRule
-      res1 <- build theDb emptyStack [BranchedRule]
+      res1 <- build (newKey ("root" :: [Char])) theDb emptyStack [BranchedRule]
       snd res1 `shouldBe` [2 :: Int]
      -- SubBranchRule should be recomputed once before this (when the condition was True)
-      countRes <- build theDb emptyStack [SubBranchRule]
+      countRes <- build (newKey ("root" :: [Char])) theDb emptyStack [SubBranchRule]
       snd countRes `shouldBe` [1 :: Int]
 
   describe "applyWithoutDependency" $ itInThread "does not track dependencies" $ \q -> do

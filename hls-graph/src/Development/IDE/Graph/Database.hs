@@ -14,7 +14,8 @@ module Development.IDE.Graph.Database(
     shakeShutDatabase,
     shakeGetActionQueueLength,
     shakeComputeToPreserve,
-    shakedatabaseRuntimeDep) where
+    shakedatabaseRuntimeDep,
+    shakeNewDatabaseWithLogger) where
 import           Control.Concurrent.Async                (Async)
 import           Control.Concurrent.STM.Stats            (atomically,
                                                           readTVarIO)
@@ -41,13 +42,16 @@ data NonExportedType = NonExportedType
 shakeShutDatabase :: Set (Async ()) -> ShakeDatabase -> IO ()
 shakeShutDatabase preserve (ShakeDatabase _ _ db) = shutDatabase preserve db
 
-shakeNewDatabase :: (String -> IO ()) -> DBQue -> ShakeOptions -> Rules () -> IO ShakeDatabase
-shakeNewDatabase l que opts rules = do
+shakeNewDatabaseWithLogger :: (String -> IO ()) -> DBQue -> ShakeOptions -> Rules () -> IO ShakeDatabase
+shakeNewDatabaseWithLogger l que opts rules = do
     let extra = fromMaybe (toDyn NonExportedType) $ shakeExtra opts
     (theRules, actions) <- runRules extra rules
     -- give unique names to each action
     db <- newDatabase l que extra theRules
     pure $ ShakeDatabase (length actions) actions db
+
+shakeNewDatabase :: DBQue -> ShakeOptions -> Rules () -> IO ShakeDatabase
+shakeNewDatabase que opts rules = shakeNewDatabaseWithLogger (\_ -> return ()) que opts rules
 
 shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [Either SomeException a]
 shakeRunDatabase s xs = shakeRunDatabaseForKeys Nothing s xs

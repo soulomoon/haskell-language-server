@@ -150,24 +150,18 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
                                                           shakeGetActionQueueLength,
                                                           shakeGetBuildStep,
                                                           shakeGetDatabaseKeys,
-                                                          shakeNewDatabase,
+                                                          shakeNewDatabaseWithLogger,
                                                           shakeProfileDatabase,
                                                           shakeRunDatabaseForKeysSep,
-                                                          shakeShutDatabase,
-                                                          shakedatabaseRuntimeDep)
+                                                          shakeShutDatabase)
 import           Development.IDE.Graph.Internal.Action   (runActionInDbCb)
 import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
-import           Development.IDE.Graph.Internal.Key      (memberKeySet)
 import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
-                                                          getShakeQueue,
                                                           getShakeStep,
-                                                          lockShakeDatabaseValues,
                                                           shakeDataBaseQueue,
-                                                          unlockShakeDatabaseValues,
                                                           withShakeDatabaseValuesLock)
 import           Development.IDE.Graph.Rule
 import           Development.IDE.Types.Action
-import           Development.IDE.Types.Action            (delayedActionKey)
 import           Development.IDE.Types.Diagnostics
 import           Development.IDE.Types.Exports           hiding (exportsMapSize)
 import qualified Development.IDE.Types.Exports           as ExportsMap
@@ -775,7 +769,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         vfsVar <- newTVarIO =<< vfsSnapshot lspEnv
         pure ShakeExtras{shakeRecorder = recorder, ..}
     shakeDb  <-
-        shakeNewDatabase
+        shakeNewDatabaseWithLogger
             (\logText -> logWith recorder Debug (LogShakeText $ T.pack logText))
             shakeControlQueue
             opts { shakeExtra = newShakeExtra shakeExtras }
