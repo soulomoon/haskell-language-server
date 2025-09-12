@@ -974,8 +974,8 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         -- takeShakeLock shakeDb
         (restartArgs,  newDirtyKeys) <- prepareRestart shakeRestartArgs
         reverseMap <- shakeDatabaseReverseDep shakeDb
-        (preservekvs, allRunning2) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
-        let preservekvs = []
+        -- (preservekvs, allRunning2) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
+        let (preservekvs, allRunning2) = ([], [])
         logWith recorder Info $ LogPreserveKeys (map fst preservekvs) newDirtyKeys allRunning2 reverseMap
         (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
 
