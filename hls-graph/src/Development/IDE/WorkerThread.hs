@@ -134,14 +134,15 @@ data DeliverStatus = DeliverStatus
     , deliverName :: String
   } deriving (Show)
 
-runInThreadStmInNewThreads :: STM Int -> DeliverStatus -> TaskQueue (Either Dynamic (IO ())) -> TVar [Async ()] -> [(Async () -> IO (), IO result, Either SomeException result -> IO ())] -> STM ()
-runInThreadStmInNewThreads getStep deliver (TaskQueue q) tthreads acts = do
+runInThreadStmInNewThreads :: STM Int -> IO DeliverStatus -> TaskQueue (Either Dynamic (IO ())) -> TVar [Async ()] -> [(Async () -> IO (), IO result, Either SomeException result -> IO ())] -> STM ()
+runInThreadStmInNewThreads getStep mkDeliver (TaskQueue q) tthreads acts = do
   -- Take an action from TQueue, run it and
   -- use barrier to wait for the result
     writeTQueue q $ Right $ do
         uninterruptibleMask $ \restore -> do
             do
                 curStep <- atomically getStep
+                deliver <- mkDeliver
                 -- traceM ("runInThreadStmInNewThreads: current step: " ++ show curStep ++ " deliver step: " ++ show deliver)
                 when (curStep == deliverStep deliver) $ do
                     syncs <- mapM (\(preHook, act, handler) -> do

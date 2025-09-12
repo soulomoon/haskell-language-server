@@ -267,14 +267,13 @@ runInDataBase :: String -> Database -> [(IO result, Either SomeException result 
 runInDataBase title db acts = do
     s <- getDataBaseStepInt db
     let actWithEmptyHook = map (\(x, y) -> (const $ return (), x, y)) acts
-    runInThreadStmInNewThreads (getDataBaseStepInt db) (DeliverStatus s title) (databaseQueue db) (databaseThreads db) actWithEmptyHook
+    runInThreadStmInNewThreads (getDataBaseStepInt db) (return $ DeliverStatus s title) (databaseQueue db) (databaseThreads db) actWithEmptyHook
 
-runOneInDataBase :: String -> Database -> (Async () -> IO ()) -> IO result -> (SomeException -> IO ()) -> STM ()
-runOneInDataBase title db registerAsync act handler = do
-  s <- getDataBaseStepInt db
+runOneInDataBase :: IO DeliverStatus -> Database -> (Async () -> IO ()) -> IO result -> (SomeException -> IO ()) -> STM ()
+runOneInDataBase mkDelivery db registerAsync act handler = do
   runInThreadStmInNewThreads
     (getDataBaseStepInt db)
-    (DeliverStatus s title)
+    mkDelivery
     (databaseQueue db)
     (databaseThreads db)
     [ ( registerAsync, warpLog act,
@@ -285,10 +284,10 @@ runOneInDataBase title db registerAsync act handler = do
     ]
   where
     warpLog a =
-        UE.bracket_
-            (dataBaseLogger db $ "Starting async action: " ++ title)
-            (dataBaseLogger db $ "Finished async action: " ++ title)
-            a
+        UE.bracket
+            (do  (DeliverStatus _ title) <- mkDelivery; dataBaseLogger db ("Starting async action: " ++ title); return title)
+            (\title -> dataBaseLogger db $ "Finished async action: " ++ title)
+            (const a)
 
 
 getDataBaseStepInt :: Database -> STM Int

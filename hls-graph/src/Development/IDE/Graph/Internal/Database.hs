@@ -45,6 +45,7 @@ import           UnliftIO                             (async, atomically,
 
 #if MIN_VERSION_base(4,19,0)
 import           Data.Functor                         (unzip)
+import           Development.IDE.WorkerThread         (DeliverStatus (DeliverStatus))
 #else
 import           Data.List.NonEmpty                   (unzip)
 #endif
@@ -185,7 +186,12 @@ builderOneCoroutine parentKey isSingletonTask db stack id =
                     -- traceEvent ("Starting build of key: " ++ show id ++ ", step " ++ show current)
                     --
                     let wait = readMVar barrier
-                    runOneInDataBase (show (parentKey, id)) db
+                    runOneInDataBase (do {
+                       status <- atomically (SMap.lookup id databaseValues)
+                       ; let cur = fromIntegral $ case keyStatus <$> status of
+                                        Just (Running current _s _wait RunningStage1) -> current
+                                        _ -> error "only RunningStage1 can continue"
+                       ; return $ DeliverStatus cur (show (parentKey, id))}) db
                         (\adyncH ->
                         -- it is safe from worker thread
                             atomically $ SMap.focus (updateStatus $ Running current s wait (RunningStage2 adyncH) ) id databaseValues)
