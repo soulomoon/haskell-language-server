@@ -134,7 +134,7 @@ data DeliverStatus = DeliverStatus
     , deliverName :: String
   } deriving (Show)
 
-runInThreadStmInNewThreads :: STM Int -> DeliverStatus -> TaskQueue (Either Dynamic (IO ())) -> TVar [Async ()] -> [(IO result, Either SomeException result -> IO ())] -> STM ()
+runInThreadStmInNewThreads :: STM Int -> DeliverStatus -> TaskQueue (Either Dynamic (IO ())) -> TVar [Async ()] -> [(Async () -> IO (), IO result, Either SomeException result -> IO ())] -> STM ()
 runInThreadStmInNewThreads getStep deliver (TaskQueue q) tthreads acts = do
   -- Take an action from TQueue, run it and
   -- use barrier to wait for the result
@@ -144,8 +144,11 @@ runInThreadStmInNewThreads getStep deliver (TaskQueue q) tthreads acts = do
                 curStep <- atomically getStep
                 -- traceM ("runInThreadStmInNewThreads: current step: " ++ show curStep ++ " deliver step: " ++ show deliver)
                 when (curStep == deliverStep deliver) $ do
-                    syncs <- mapM (\(act, handler) ->
-                        async (handler =<< (restore $ Right <$> act) `catch` \e@(SomeException _) -> return (Left e))) acts
+                    syncs <- mapM (\(preHook, act, handler) -> do
+                        a <- async (handler =<< (restore $ Right <$> act) `catch` \e@(SomeException _) -> return (Left e))
+                        preHook a
+                        return a
+                        ) acts
                     atomically $ modifyTVar' tthreads (syncs++)
 
 type Worker arg = arg -> IO ()

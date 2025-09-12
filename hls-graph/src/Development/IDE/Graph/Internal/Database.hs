@@ -39,7 +39,9 @@ import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                    as SMap
 import           System.Time.Extra                    (duration)
-import           UnliftIO                             (async, atomically)
+import           UnliftIO                             (async, atomically,
+                                                       newEmptyMVar, putMVar,
+                                                       readMVar)
 
 #if MIN_VERSION_base(4,19,0)
 import           Data.Functor                         (unzip)
@@ -48,8 +50,8 @@ import           Data.List.NonEmpty                   (unzip)
 #endif
 
 
-newDatabase :: DBQue -> Dynamic -> TheRules -> IO Database
-newDatabase databaseQueue databaseExtra databaseRules = do
+newDatabase :: (String -> IO ()) ->  DBQue -> Dynamic -> TheRules -> IO Database
+newDatabase dataBaseLogger databaseQueue databaseExtra databaseRules = do
     databaseStep <- newTVarIO $ Step 0
     databaseThreads <- newTVarIO []
     databaseValuesLock <- newTVarIO False
@@ -80,7 +82,7 @@ incDatabase db Nothing = do
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
             let status'
-                  | Running _ x _ <- status = Dirty x
+                  | Running _ x _ _ <- status = Dirty x
                   | Clean x <- status = Dirty (Just x)
                   | otherwise = status
             in KeyDetails status' rdeps
@@ -120,11 +122,11 @@ builder pk db stack keys = do
 data IsSingletonTask = IsSingleton | NotSingleton
 -- the first run should not block
 data RunFirst = RunFirst | RunLater deriving stock (Eq, Show)
-data BuildContinue = BCContinue (IO BuildContinue) | BCStop Key Result
+data BuildContinue = BCContinue (IO (Key, Result)) | BCStop Key Result
 
 interpreBuildContinue :: BuildContinue -> IO (Key, Result)
 interpreBuildContinue (BCStop k v)     = return (k, v)
-interpreBuildContinue (BCContinue ioR) = ioR >>= interpreBuildContinue
+interpreBuildContinue (BCContinue ioR) = ioR
 
 -- possible improvements:
 -- suppose it is in the direct dirty set. We have already recorded the parent key as its reverse dep.
@@ -155,23 +157,22 @@ submmittBuildInDb db stack id s = do
               atomically $ SMap.focus (updateStatus $ Exception curStep e s) id (databaseValues db)
           )
       -- todo should only update if still at stage 1
-      atomically $ SMap.focus (updateStatus $ Running curStep s $ RunningStage2 newAsync) id (databaseValues db)
+    --   atomically $ SMap.focus (updateStatus $ Running curStep s $ RunningStage2 newAsync) id (databaseValues db)
       atomically $ putTMVar startBarrier ()
       atomically $ modifyTVar' (databaseThreads db) (newAsync :)
 
 builderOneCoroutine :: Key -> IsSingletonTask -> Database -> Stack -> Key -> IO BuildContinue
 builderOneCoroutine parentKey isSingletonTask db stack id =
-    builderOneCoroutine' RunFirst isSingletonTask db stack id
+    builderOneCoroutine' db stack id
     where
-    builderOneCoroutine' :: RunFirst -> IsSingletonTask -> Database -> Stack -> Key -> IO BuildContinue
-    builderOneCoroutine' rf isSingletonTask db@Database {..} stack id = do
+    builderOneCoroutine' :: Database -> Stack -> Key -> IO BuildContinue
+    builderOneCoroutine' db@Database {..} stack id = do
         traceEvent ("builderOne: " ++ show id) return ()
+        barrier <- newEmptyMVar
         liftIO $ atomicallyNamed "builder" $ do
             -- Spawn the id if needed
-            void $ check <$> readTVar databaseValuesLock
-
+            dbNotLocked db
             insertDatabaseReverseDepOne id parentKey db
-
             -- if a build is running, wait
             -- it will either be killed or continue
             -- depending on wether it is marked as dirty
@@ -179,29 +180,24 @@ builderOneCoroutine parentKey isSingletonTask db stack id =
             current <- readTVar databaseStep
             case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
                 Dirty s -> do
-                    SMap.focus (updateStatus $ Running current s RunningStage1) id databaseValues
-                    case isSingletonTask of
-                        IsSingleton ->
-                            return $
-                            BCContinue $ fmap (BCStop id) $
-                                refresh db stack id s `catch` \e@(SomeException _) -> do
-                                atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
-                                throw e
-                        NotSingleton -> do
-                            traceEvent ("Starting build of key: " ++ show id ++ ", step " ++ show current) $
-                                -- we need to run serially to avoid summiting run but killed in the middle
-                                runOneInDataBase (show id) db (do
-                                    refresh db stack id s
-                                    ) $
-                                    -- we might want it to be able to be killed since we might want to preserve the database
-                                    \e -> atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
-                            return $ BCContinue $ builderOneCoroutine' RunLater isSingletonTask db stack id
+                            -- we need to run serially to avoid summiting run but killed in the middle
+                                -- we might want it to be able to be killed since we might want to preserve the database
+                    -- traceEvent ("Starting build of key: " ++ show id ++ ", step " ++ show current)
+                    --
+                    let wait = readMVar barrier
+                    runOneInDataBase (show (parentKey, id)) db
+                        (\adyncH ->
+                        -- it is safe from worker thread
+                            atomically $ SMap.focus (updateStatus $ Running current s wait (RunningStage2 adyncH) ) id databaseValues)
+                        (refresh db stack id s >>= putMVar barrier . (id,)) $ \e -> do
+                      atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
+                      putMVar barrier (throw e)
+                    SMap.focus (updateStatus $ Running current s wait RunningStage1) id databaseValues
+                    return $ BCContinue $ readMVar barrier
                 Clean r -> return $ BCStop id r
-                Running _step _s _
+                Running _step _s wait _
                     | memberStack id stack -> throw $ StackException stack
-                    | otherwise -> if rf == RunFirst
-                        then return $ BCContinue $ builderOneCoroutine' RunLater isSingletonTask db stack id
-                        else retry
+                    | otherwise -> return $ BCContinue wait
                 Exception _ e _s -> throw e
 
 -- | isDirty
@@ -243,9 +239,10 @@ compute :: Database -> Stack -> Key -> RunMode -> Maybe Result -> IO Result
 compute db@Database{..} stack key mode result = do
     let act = runRule databaseRules key (fmap resultData result) mode
     deps <- liftIO $ newIORef UnknownDeps
+    curStep <- liftIO $ readTVarIO databaseStep
+    dataBaseLogger $ "Computing key: " ++ show key ++ " at step " ++ show curStep
     (execution, RunResult{..}) <-
         liftIO $ duration $ runReaderT (fromAction act) $ SAction key db deps stack
-    curStep <- liftIO $ readTVarIO databaseStep
     deps <- liftIO $ readIORef deps
     let lastChanged = maybe curStep resultChanged result
     let lastBuild = maybe curStep resultBuilt result
@@ -275,7 +272,7 @@ compute db@Database{..} stack key mode result = do
                     deps
         _ -> pure ()
     liftIO $ atomicallyNamed "compute and run hook" $ do
-        void $ check <$> readTVar databaseValuesLock
+        dbNotLocked db
         runHook
         SMap.focus (updateStatus $ Clean res) key databaseValues
     pure res

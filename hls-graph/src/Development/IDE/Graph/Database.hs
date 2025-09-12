@@ -12,7 +12,9 @@ module Development.IDE.Graph.Database(
     shakeGetCleanKeys
     ,shakeGetBuildEdges,
     shakeShutDatabase,
-    shakeGetActionQueueLength) where
+    shakeGetActionQueueLength,
+    shakeComputeToPreserve,
+    shakeDatabaseReverseDep) where
 import           Control.Concurrent.Async                (Async)
 import           Control.Concurrent.STM.Stats            (atomically,
                                                           readTVarIO)
@@ -21,6 +23,7 @@ import           Control.Monad                           (join)
 import           Data.Dynamic
 import           Data.Maybe
 import           Data.Set                                (Set)
+import qualified Data.Set                                as Set
 import           Development.IDE.Graph.Classes           ()
 import           Development.IDE.Graph.Internal.Action
 import           Development.IDE.Graph.Internal.Database
@@ -29,6 +32,9 @@ import           Development.IDE.Graph.Internal.Options
 import           Development.IDE.Graph.Internal.Profile  (writeProfile)
 import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
+import qualified ListT
+import qualified StmContainers.Map
+import qualified StmContainers.Map                       as SMap
 
 
 -- Placeholder to be the 'extra' if the user doesn't set it
@@ -37,11 +43,11 @@ data NonExportedType = NonExportedType
 shakeShutDatabase :: Set (Async ()) -> ShakeDatabase -> IO ()
 shakeShutDatabase preserve (ShakeDatabase _ _ db) = shutDatabase preserve db
 
-shakeNewDatabase :: DBQue -> ShakeOptions -> Rules () -> IO ShakeDatabase
-shakeNewDatabase que opts rules = do
+shakeNewDatabase :: (String -> IO ()) -> DBQue -> ShakeOptions -> Rules () -> IO ShakeDatabase
+shakeNewDatabase l que opts rules = do
     let extra = fromMaybe (toDyn NonExportedType) $ shakeExtra opts
     (theRules, actions) <- runRules extra rules
-    db <- newDatabase que extra theRules
+    db <- newDatabase l que extra theRules
     pure $ ShakeDatabase (length actions) actions db
 
 shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [Either SomeException a]
@@ -74,6 +80,18 @@ shakeRunDatabaseForKeysSep
 shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
     incDatabase db keysChanged
     return $ drop lenAs1 <$> runActions (newKey "root") db (map unvoid as1 ++ as2)
+
+-- shakeDatabaseReverseDep :: ShakeDatabase ->
+-- shakeDatabaseReverseDep :: ShakeDatabase -> StmContainers.Map.Map Key KeySet
+shakeDatabaseReverseDep :: ShakeDatabase -> IO [(Key, KeySet)]
+shakeDatabaseReverseDep (ShakeDatabase _ _ db) =
+    atomically $ ListT.toList $ SMap.listT (databaseReverseDep db)
+--     StmContainers.Map.toList $ databaseReverseDep db
+
+
+-- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO (Set (Async ()))
+-- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO [(Key, Async ())]
+shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
 
 shakeRunDatabaseForKeys
     :: Maybe [Key]

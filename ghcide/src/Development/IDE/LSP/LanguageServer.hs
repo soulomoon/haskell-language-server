@@ -72,10 +72,12 @@ data Log
   | LogServerExitWith (Either () Int)
   | LogReactorShutdownConfirmed !T.Text
   | LogInitializeIdeStateTookTooLong Seconds
+  | LogText !T.Text
   deriving Show
 
 instance Pretty Log where
   pretty = \case
+    LogText msg       -> pretty msg
     LogShake msg      -> pretty msg
     LogInitializeIdeStateTookTooLong seconds ->
         "Building the initial session took more than" <+> pretty seconds <+> "seconds"
@@ -220,7 +222,7 @@ setupLSP recorder defaultRoot getHieDbLoc userHandlers getIdeState clientMsgVar 
     requestReactorShutdown = do
       k <- tryPutMVar reactorStopSignal ()
       logWith recorder Info $ LogReactorShutdownRequested k
-      let timeOutSeconds = 3
+      let timeOutSeconds = 10
       timeout (timeOutSeconds * 1_000_000) (waitBarrier reactorConfirmBarrier) >>= \case
         Just () -> pure ()
         -- If we don't get confirmation within 2 seconds, we log a warning and shutdown anyway.
@@ -390,6 +392,7 @@ cancelHandler cancelRequest = LSP.notificationHandler SMethod_CancelRequest $ \T
 shutdownHandler :: Recorder (WithPriority Log) -> IO () -> LSP.Handlers (ServerM c)
 shutdownHandler _recorder requestReactorShutdown = LSP.requestHandler SMethod_Shutdown $ \_ resp -> do
     -- stop the reactor to free up the hiedb connection and shut down shake
+    logWith _recorder Info $ LogText "Shutdown requested"
     liftIO requestReactorShutdown
     resp $ Right Null
 

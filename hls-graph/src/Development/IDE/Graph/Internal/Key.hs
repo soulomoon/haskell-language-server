@@ -48,14 +48,19 @@ import           Data.Text                     (Text)
 import qualified Data.Text                     as T
 import           Data.Typeable
 import           Development.IDE.Graph.Classes
+import           Prettyprinter
 import           System.IO.Unsafe
 
 
 newtype Key = UnsafeMkKey Int
 
+
 pattern Key :: () => (Typeable a, Hashable a, Show a) => a -> Key
 pattern Key a <- (lookupKeyValue -> KeyValue a _)
 {-# COMPLETE Key #-}
+
+instance Pretty Key where
+  pretty = pretty . renderKey
 
 data KeyValue = forall a . (Typeable a, Hashable a, Show a) => KeyValue a Text
 
@@ -111,6 +116,9 @@ renderKey (lookupKeyValue -> KeyValue _ t) = t
 
 newtype KeySet = KeySet IntSet
   deriving newtype (Eq, Ord, Semigroup, Monoid, NFData)
+
+instance Pretty KeySet where
+  pretty (KeySet is) = pretty (coerce (IS.toList is) :: [Key])
 
 instance Show KeySet where
   showsPrec p (KeySet is)= showParen (p > 10) $

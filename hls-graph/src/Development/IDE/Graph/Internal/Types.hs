@@ -6,9 +6,9 @@
 
 module Development.IDE.Graph.Internal.Types where
 
-import           Control.Concurrent.STM             (STM, modifyTVar')
+import           Control.Concurrent.STM             (STM, check, modifyTVar')
 import           Control.Monad                      (forM, forM_, forever,
-                                                     unless)
+                                                     unless, when)
 import           Control.Monad.Catch
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Reader
@@ -47,6 +47,7 @@ import           UnliftIO                           (Async (asyncThreadId),
                                                      throwTo, waitCatch,
                                                      withAsync)
 import           UnliftIO.Concurrent                (ThreadId, myThreadId)
+import qualified UnliftIO.Exception                 as UE
 
 #if !MIN_VERSION_base(4,18,0)
 import           Control.Applicative                (liftA2)
@@ -101,6 +102,9 @@ getDatabase = Action $ asks actionDatabase
 getActionKey :: Action Key
 getActionKey = Action $ asks actionKey
 
+setActionKey :: Key -> Action a -> Action a
+setActionKey k (Action act) = Action $ do
+    local (\s' -> s'{actionKey = k}) act
 
 -- | waitForDatabaseRunningKeysAction waits for all keys in the database to finish running.
 -- waitForDatabaseRunningKeysAction :: Action ()
@@ -112,7 +116,7 @@ getActionKey = Action $ asks actionKey
 data ShakeDatabase = ShakeDatabase !Int [Action ()] Database
 
 newtype Step = Step Int
-    deriving newtype (Eq,Ord,Hashable,Show)
+    deriving newtype (Eq,Ord,Hashable,Show,Num,Enum,Real,Integral)
 
 
 getShakeStep :: MonadIO m => ShakeDatabase -> m Step
@@ -127,6 +131,16 @@ lockShakeDatabaseValues (ShakeDatabase _ _ db) = do
 unlockShakeDatabaseValues :: MonadIO m => ShakeDatabase -> m ()
 unlockShakeDatabaseValues (ShakeDatabase _ _ db) = do
     liftIO $ atomically $ modifyTVar' (databaseValuesLock db) (const True)
+
+withShakeDatabaseValuesLock :: ShakeDatabase -> IO c -> IO c
+withShakeDatabaseValuesLock sdb act = do
+    UE.bracket_ (lockShakeDatabaseValues sdb) (unlockShakeDatabaseValues sdb) act
+
+dbNotLocked :: Database -> STM ()
+dbNotLocked db = do
+ check =<< readTVar (databaseValuesLock db)
+
+
 
 getShakeQueue :: ShakeDatabase -> DBQue
 getShakeQueue (ShakeDatabase _ _ db) = databaseQueue db
@@ -157,8 +171,7 @@ data Database = Database {
     -- if not in any of the transitive reverse deps of a dirty node, it is clean
     -- we can skip clean the threads.
     -- this is update right before we query the database for the key result.
-
-
+    dataBaseLogger     :: String -> IO (),
 
     databaseQueue      :: DBQue,
 
@@ -172,27 +185,43 @@ data Database = Database {
 
     }
 ---------------------------------------------------------------------
--- compute clean running asyncs
--- clean running asyncs are those runnings keys at stage 2 that are not
--- at reverse dependency of any dirty keys
+-- compute to preserve asyncs
+-- only the running stage 2 keys are actually running
+-- so we only need to preserve them if they are not affected by the dirty set
 
--- we also need to update not dirty running keys to a new step
--- for stage 1 non-dirty keys, since its computing thread is not started,
--- we can just update its step to the new step
--- for stage 2 non-dirty keys, we need to cancel its computing thread
-computeCleanRunningAsyncs :: Database -> KeySet -> STM [Async ()]
-computeCleanRunningAsyncs db dirtySet = do
+-- to acompany with this,
+-- all non-dirty running need to have an updated step,
+-- so it won't be view as dirty when we restart the build
+-- computeToPreserve :: Database -> KeySet -> STM [(Key, Async ())]
+computeToPreserve db dirtySet = do
     -- All keys that depend (directly or transitively) on any dirty key
     affected <- computeTransitiveReverseDeps db dirtySet
     -- Running stage-2 keys are eligible to be considered for cleanup
-    running  <- getRunningStage2Keys db
+    running2  <- getRunningStage2Keys db
+    allRunings <- getRunningKeys db
+    forM_ allRunings $ \k -> do
+        -- if not dirty, bump its step
+        unless (memberKeySet k dirtySet) $ do
+            SMap.focus (Focus.alter $ \case
+                Just kd@KeyDetails {keyStatus=Running {runningStep, runningPrev, runningWait, runningStage}} -> Just (kd{keyStatus = Running (runningStep + 1) runningPrev runningWait runningStage})
+                _ -> Nothing
+                ) k (databaseValues db)
+
+        -- traceM $ "key: " ++ show k ++ ", isDirty: " ++ show isDirty
     -- Keep only those whose key is NOT affected by the dirty set
-    pure [async | (k, async) <- running, not (memberKeySet k affected)]
+    pure ([kv | kv@(k, _async) <- running2, not (memberKeySet k affected)], allRunings)
 
 getRunningStage2Keys :: Database -> STM [(Key, Async ())]
+-- getRunningStage2Keys db = return []
 getRunningStage2Keys db = do
     pairs <- ListT.toList $ SMap.listT (databaseValues db)
-    return [(k, async) | (k, v) <- pairs, Running _ _ (RunningStage2 async) <- [keyStatus v]]
+    return [(k, async) | (k, v) <- pairs, Running _ _ _ (RunningStage2 async) <- [keyStatus v]]
+
+getRunningKeys :: Database -> STM [Key]
+getRunningKeys db = do
+    pairs <- ListT.toList $ SMap.listT (databaseValues db)
+    return [k | (k, v) <- pairs, Running {} <- [keyStatus v]]
+
 
 -- compute the transitive reverse dependencies of a set of keys
 -- using databaseReverseDep in the Database
@@ -220,8 +249,8 @@ computeTransitiveReverseDeps db seeds = do
 
 
 insertDatabaseReverseDepOne :: Key -> Key -> Database -> STM ()
-insertDatabaseReverseDepOne k a db = do
-    SMap.focus (Focus.alter (Just . maybe mempty (insertKeySet a))) k (databaseReverseDep db)
+insertDatabaseReverseDepOne k pk db = do
+    SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k (databaseReverseDep db)
 
 
 awaitRunInDb :: Database -> IO result -> IO result
@@ -237,22 +266,29 @@ databaseGetActionQueueLength db = do
 runInDataBase :: String -> Database -> [(IO result, Either SomeException result -> IO ())] -> STM ()
 runInDataBase title db acts = do
     s <- getDataBaseStepInt db
-    runInThreadStmInNewThreads (getDataBaseStepInt db) (DeliverStatus s title) (databaseQueue db) (databaseThreads db) acts
+    let actWithEmptyHook = map (\(x, y) -> (const $ return (), x, y)) acts
+    runInThreadStmInNewThreads (getDataBaseStepInt db) (DeliverStatus s title) (databaseQueue db) (databaseThreads db) actWithEmptyHook
 
-runOneInDataBase :: String -> Database -> IO result -> (SomeException -> IO ()) -> STM ()
-runOneInDataBase title db act handler = do
+runOneInDataBase :: String -> Database -> (Async () -> IO ()) -> IO result -> (SomeException -> IO ()) -> STM ()
+runOneInDataBase title db registerAsync act handler = do
   s <- getDataBaseStepInt db
   runInThreadStmInNewThreads
     (getDataBaseStepInt db)
     (DeliverStatus s title)
     (databaseQueue db)
     (databaseThreads db)
-    [ ( act,
+    [ ( registerAsync, warpLog act,
         \case
           Left e -> handler e
           Right _ -> return ()
       )
     ]
+  where
+    warpLog a =
+        UE.bracket_
+            (dataBaseLogger db $ "Starting async action: " ++ title)
+            (dataBaseLogger db $ "Finished async action: " ++ title)
+            a
 
 
 getDataBaseStepInt :: Database -> STM Int
@@ -283,7 +319,7 @@ shutDatabase preserve Database{..} = uninterruptibleMask $ \unmask -> do
     unless (null asyncs) $ do
         let warnIfTakingTooLong = unmask $ forever $ do
                 sleep 10
-                traceM "cleanupAsync: waiting for asyncs to finish"
+                traceEventIO "cleanupAsync: waiting for asyncs to finish"
         withAsync warnIfTakingTooLong $ \_ ->
             mapM_ waitCatch asyncs
 
@@ -307,18 +343,19 @@ data Status
         runningStep  :: !Step,
         -- runningResult :: Result,     -- LAZY
         runningPrev  :: !(Maybe Result),
+        runningWait  :: !(IO (Key, Result)),
         runningStage :: !RunningStage
         }
 
 viewDirty :: Step -> Status -> Status
-viewDirty currentStep (Running s re _) | currentStep /= s = Dirty re
+viewDirty currentStep (Running s re _ _) | currentStep /= s = Dirty re
 viewDirty currentStep (Exception s _ re) | currentStep /= s = Dirty re
 viewDirty _ other = other
 
 getResult :: Status -> Maybe Result
 getResult (Clean re)           = Just re
 getResult (Dirty m_re)         = m_re
-getResult (Running _ m_re _)   = m_re -- watch out: this returns the previous result
+getResult (Running _ m_re _ _) = m_re -- watch out: this returns the previous result
 getResult (Exception _ _ m_re) = m_re
 
 -- waitRunning :: Status -> IO ()

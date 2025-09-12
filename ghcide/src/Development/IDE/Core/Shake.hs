@@ -135,6 +135,7 @@ import           Data.Either                             (isRight, lefts)
 import           Data.Int                                (Int64)
 import           Data.IORef.Extra                        (atomicModifyIORef'_)
 import           Data.Set                                (Set)
+import qualified Data.Set                                as S
 import           Development.IDE.Core.Tracing
 import           Development.IDE.GHC.Compat              (NameCache,
                                                           NameCacheUpdater,
@@ -145,6 +146,8 @@ import           Development.IDE.Graph                   hiding (ShakeValue,
                                                           action)
 import qualified Development.IDE.Graph                   as Shake
 import           Development.IDE.Graph.Database          (ShakeDatabase,
+                                                          shakeComputeToPreserve,
+                                                          shakeDatabaseReverseDep,
                                                           shakeGetActionQueueLength,
                                                           shakeGetBuildStep,
                                                           shakeGetDatabaseKeys,
@@ -159,7 +162,8 @@ import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
                                                           getShakeStep,
                                                           lockShakeDatabaseValues,
                                                           shakeDataBaseQueue,
-                                                          unlockShakeDatabaseValues)
+                                                          unlockShakeDatabaseValues,
+                                                          withShakeDatabaseValuesLock)
 import           Development.IDE.Graph.Rule
 import           Development.IDE.Types.Action
 import           Development.IDE.Types.Diagnostics
@@ -219,10 +223,19 @@ data Log
   | LogSetFilesOfInterest ![(NormalizedFilePath, FileOfInterestStatus)]
   | LogShakeText !T.Text
   | LogMonitering !T.Text !Int64
+  | LogPreserveKeys ![Key] ![Key] ![Key] ![(Key, KeySet)]
   deriving Show
 
 instance Pretty Log where
   pretty = \case
+    LogPreserveKeys kvs ks allRunnings reverseKs ->
+        vcat [
+          "LogPreserveKeys"
+          , "dirty keys:" <+> pretty (map show ks)
+          , "Preserving keys: " <+> pretty (map show kvs)
+          , "All running: " <+> pretty (map show allRunnings)
+          , "Reverse deps: " <+> pretty reverseKs
+          ]
     LogMonitering name value ->
       "Monitoring:" <+> pretty name <+> "value:" <+> pretty value
     LogDiagsPublishLog key lastDiags diags ->
@@ -760,6 +773,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         pure ShakeExtras{shakeRecorder = recorder, ..}
     shakeDb  <-
         shakeNewDatabase
+            (\logText -> logWith recorder Info (LogShakeText $ T.pack logText))
             shakeControlQueue
             opts { shakeExtra = newShakeExtra shakeExtras }
             rules
@@ -901,8 +915,7 @@ instance Semigroup ShakeRestartArgs where
 --   but actions added via 'shakeEnqueue' will be requeued.
 shakeRestart :: TVar Int -> ShakeDatabase ->  VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
 shakeRestart version db vfs reason acts ioActionBetweenShakeSession = do
-    lockShakeDatabaseValues db
-    let rts = getShakeQueue db
+    -- lockShakeDatabaseValues db
     v <- atomically $ do
         modifyTVar' version (+1)
         readTVar version
@@ -929,43 +942,49 @@ computePreserveAsyncs shakeDb = mempty
 
 runRestartTask :: Recorder (WithPriority Log) -> MVar IdeState -> ShakeRestartArgs -> IO ()
 runRestartTask recorder ideStateVar shakeRestartArgs = do
-  IdeState {shakeDb, shakeSession, shakeExtras, shakeDatabaseProfile} <- readMVar ideStateVar
-  let shakeControlQueue = shakeDataBaseQueue shakeDb
+ IdeState {shakeDb, shakeSession, shakeExtras, shakeDatabaseProfile} <- readMVar ideStateVar
+ withShakeDatabaseValuesLock shakeDb $ do
   let prepareRestart sra@ShakeRestartArgs {..} = do
         keys <- sraBetweenSessions
         -- it is every important to update the dirty keys after we enter the critical section
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
         atomically $ modifyTVar' (dirtyKeys shakeExtras) $ \x -> foldl' (flip insertKeySet) x keys
         -- Check if there is another restart request pending, if so, we run that one too
-        readAndGo sra >>= finalCheck
-      readAndGo sra = do
-        nextRestartArg <- atomically $ tryReadTaskQueue shakeControlQueue
-        case nextRestartArg of
-          Nothing -> return sra
-          Just (Left dy) -> do
-            res <- prepareRestart $ dynShakeRestart dy
-            return $ sra <> res
-          Just (Right _) -> readAndGo sra
-      finalCheck sra = do
-        -- final check
-        -- sleep 0.2
-        b <- atomically $ isEmptyTaskQueue shakeControlQueue
-        if b
-          then return sra
-          -- there is something new, read and go again
-          else readAndGo sra
+        -- readAndGo sra >>= finalCheck
+        return (sra, keys)
+    --   readAndGo sra = do
+    --     nextRestartArg <- atomically $ tryReadTaskQueue shakeControlQueue
+    --     case nextRestartArg of
+    --       Nothing -> return sra
+    --       Just (Left dy) -> do
+    --         res <- prepareRestart $ dynShakeRestart dy
+    --         return $ sra <> res
+    --       Just (Right _) -> readAndGo sra
+    --   finalCheck sra = do
+    --     -- final check
+    --     -- sleep 0.2
+    --     b <- atomically $ isEmptyTaskQueue shakeControlQueue
+    --     if b
+    --       then return sra
+    --       -- there is something new, read and go again
+    --       else readAndGo sra
   withMVar'
     shakeSession
     ( \runner -> do
         -- takeShakeLock shakeDb
-        let preserveAsyncs = computePreserveAsyncs shakeDb
-        (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner preserveAsyncs
-        restartArgs <- prepareRestart shakeRestartArgs
+        (restartArgs,  newDirtyKeys) <- prepareRestart shakeRestartArgs
+        reverseMap <- shakeDatabaseReverseDep shakeDb
+        (preservekvs, allRunning2) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
+        let preservekvs = []
+        logWith recorder Info $ LogPreserveKeys (map fst preservekvs) newDirtyKeys allRunning2 reverseMap
+        (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
+
         queue <- atomicallyNamed "actionQueue - peek" $ peekInProgress $ actionQueue shakeExtras
         res <- shakeDatabaseProfile shakeDb
         backlog <- readTVarIO $ dirtyKeys shakeExtras
         -- this log is required by tests
         step <- shakeGetBuildStep shakeDb
+
         logWith recorder Info $ LogBuildSessionRestart restartArgs queue backlog stopTime res step
         return restartArgs
     )
@@ -975,7 +994,7 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
     ( \(ShakeRestartArgs {..}) ->
         do
           (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason
-          `finally` (for_ sraWaitMVars (`putMVar` ()) >> unlockShakeDatabaseValues shakeDb)
+          `finally` for_ sraWaitMVars (`putMVar` ())
     )
   where
     logErrorAfter :: Seconds -> IO () -> IO ()
