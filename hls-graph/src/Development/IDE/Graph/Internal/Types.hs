@@ -20,7 +20,7 @@ import           Data.Foldable                      (fold)
 import qualified Data.HashMap.Strict                as Map
 import           Data.IORef
 import           Data.List                          (intercalate)
-import           Data.Maybe
+import           Data.Maybe                         (fromMaybe, isNothing)
 import           Data.Set                           (Set)
 import qualified Data.Set                           as S
 import           Data.Typeable
@@ -28,10 +28,9 @@ import           Debug.Trace                        (traceEventIO, traceM)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.WorkerThread       (DeliverStatus (..),
-                                                     TaskQueue,
+                                                     TaskQueue (..),
                                                      awaitRunInThread,
-                                                     counTaskQueue,
-                                                     runInThreadStmInNewThreads)
+                                                     counTaskQueue)
 import qualified Focus
 import           GHC.Conc                           (TVar, atomically)
 import           GHC.Generics                       (Generic)
@@ -40,12 +39,12 @@ import qualified StmContainers.Map                  as SMap
 import           StmContainers.Map                  (Map)
 import           System.Time.Extra                  (Seconds, sleep)
 import           UnliftIO                           (Async (asyncThreadId),
-                                                     MonadUnliftIO,
+                                                     MonadUnliftIO, async,
                                                      asyncExceptionFromException,
                                                      asyncExceptionToException,
-                                                     readTVar, readTVarIO,
+                                                     poll, readTVar, readTVarIO,
                                                      throwTo, waitCatch,
-                                                     withAsync)
+                                                     withAsync, writeTQueue)
 import           UnliftIO.Concurrent                (ThreadId, myThreadId)
 import qualified UnliftIO.Exception                 as UE
 
@@ -162,7 +161,7 @@ type DBQue = TaskQueue (Either Dynamic (IO ()))
 data Database = Database {
     databaseExtra      :: Dynamic,
 
-    databaseThreads    :: TVar [Async ()],
+    databaseThreads    :: TVar [(DeliverStatus, Async ())],
 
     databaseReverseDep :: SMap.Map Key KeySet,
     -- For each key, the set of keys that depend on it directly.
@@ -193,23 +192,27 @@ data Database = Database {
 -- all non-dirty running need to have an updated step,
 -- so it won't be view as dirty when we restart the build
 -- computeToPreserve :: Database -> KeySet -> STM [(Key, Async ())]
+computeToPreserve :: Database -> KeySet -> STM ([(Key, Async ())], [Key])
 computeToPreserve db dirtySet = do
-    -- All keys that depend (directly or transitively) on any dirty key
-    affected <- computeTransitiveReverseDeps db dirtySet
-    -- Running stage-2 keys are eligible to be considered for cleanup
-    running2  <- getRunningStage2Keys db
-    allRunings <- getRunningKeys db
-    forM_ allRunings $ \k -> do
-        -- if not dirty, bump its step
-        unless (memberKeySet k dirtySet) $ do
-            SMap.focus (Focus.alter $ \case
-                Just kd@KeyDetails {keyStatus=Running {runningStep, runningPrev, runningWait, runningStage}} -> Just (kd{keyStatus = Running (runningStep + 1) runningPrev runningWait runningStage})
-                _ -> Nothing
-                ) k (databaseValues db)
+  -- All keys that depend (directly or transitively) on any dirty key
+  affected <- computeTransitiveReverseDeps db dirtySet
+  running2 <- getRunningStage2Keys db
+  allRunings <- getRunningKeys db
+  forM_ allRunings $ \k -> do
+    -- if not dirty, bump its step
+    unless (memberKeySet k affected) $ do
+      SMap.focus
+        ( Focus.alter $ \case
+            Just kd@KeyDetails {keyStatus = Running {runningStep, runningPrev, runningWait, runningStage}} ->
+              Just (kd {keyStatus = Running (runningStep + 1) runningPrev runningWait runningStage})
+            _ -> Nothing
+        )
+        k
+        (databaseValues db)
 
-        -- traceM $ "key: " ++ show k ++ ", isDirty: " ++ show isDirty
-    -- Keep only those whose key is NOT affected by the dirty set
-    pure ([kv | kv@(k, _async) <- running2, not (memberKeySet k affected)], allRunings)
+  -- traceM $ "key: " ++ show k ++ ", isDirty: " ++ show isDirty
+  -- Keep only those whose key is NOT affected by the dirty set
+  pure ([kv | kv@(k, _async) <- running2, not (memberKeySet k affected)], allRunings)
 
 getRunningStage2Keys :: Database -> STM [(Key, Async ())]
 -- getRunningStage2Keys db = return []
@@ -267,15 +270,35 @@ runInDataBase :: String -> Database -> [(IO result, Either SomeException result 
 runInDataBase title db acts = do
     s <- getDataBaseStepInt db
     let actWithEmptyHook = map (\(x, y) -> (const $ return (), x, y)) acts
-    runInThreadStmInNewThreads (getDataBaseStepInt db) (return $ DeliverStatus s title) (databaseQueue db) (databaseThreads db) actWithEmptyHook
+    runInThreadStmInNewThreads db (return $ DeliverStatus s title)  actWithEmptyHook
+
+runInThreadStmInNewThreads ::  Database -> IO DeliverStatus -> [(Async () -> IO (), IO result, Either SomeException result -> IO ())] -> STM ()
+runInThreadStmInNewThreads db mkDeliver acts = do
+  -- Take an action from TQueue, run it and
+  -- use barrier to wait for the result
+    let TaskQueue q = databaseQueue db
+    let log prefix title = dataBaseLogger db (prefix ++ title)
+    writeTQueue q $ Right $ do
+        uninterruptibleMask $ \restore -> do
+            do
+                deliver <- mkDeliver
+                log "runInThreadStmInNewThreads submit begin " (deliverName deliver)
+                curStep <- atomically $ getDataBaseStepInt db
+                -- traceM ("runInThreadStmInNewThreads: current step: " ++ show curStep ++ " deliver step: " ++ show deliver)
+                when (curStep == deliverStep deliver) $ do
+                    syncs <- mapM (\(preHook, act, handler) -> do
+                        a <- async (handler =<< (restore $ Right <$> act) `catch` \e@(SomeException _) -> return (Left e))
+                        preHook a
+                        return (deliver, a)
+                        ) acts
+                    atomically $ modifyTVar' (databaseThreads db) (syncs++)
+                log "runInThreadStmInNewThreads submit end " (deliverName deliver)
 
 runOneInDataBase :: IO DeliverStatus -> Database -> (Async () -> IO ()) -> IO result -> (SomeException -> IO ()) -> STM ()
 runOneInDataBase mkDelivery db registerAsync act handler = do
   runInThreadStmInNewThreads
-    (getDataBaseStepInt db)
+    db
     mkDelivery
-    (databaseQueue db)
-    (databaseThreads db)
     [ ( registerAsync, warpLog act,
         \case
           Left e -> handler e
@@ -284,7 +307,7 @@ runOneInDataBase mkDelivery db registerAsync act handler = do
     ]
   where
     warpLog a =
-        UE.bracket
+        bracket
             (do  (DeliverStatus _ title) <- mkDelivery; dataBaseLogger db ("Starting async action: " ++ title); return title)
             (\title -> dataBaseLogger db $ "Finished async action: " ++ title)
             (const a)
@@ -308,19 +331,29 @@ shutDatabase preserve Database{..} = uninterruptibleMask $ \unmask -> do
     asyncs <- readTVarIO databaseThreads
     step <- readTVarIO databaseStep
     tid <- myThreadId
-    traceEventIO ("shutDatabase: cancelling " ++ show (length asyncs) ++ " asyncs, step " ++ show step)
-    let remains = filter (`S.member` preserve) asyncs
-    let toCancel = filter (`S.notMember` preserve) asyncs
-    mapM_ (\a -> throwTo (asyncThreadId a) $ AsyncParentKill tid step) toCancel
+    -- traceEventIO ("shutDatabase: cancelling " ++ show (length asyncs) ++ " asyncs, step " ++ show step)
+    -- traceEventIO ("shutDatabase: async entries: " ++ show (map (deliverName . fst) asyncs))
+    let remains = filter (\(_, s) -> s `S.member` preserve) asyncs
+    let toCancel = filter (\(_, s) -> s `S.notMember` preserve) asyncs
+    -- traceEventIO ("shutDatabase: remains count: " ++ show (length remains) ++ ", names: " ++ show (map (deliverName . fst) remains))
+    -- traceEventIO ("shutDatabase: toCancel count: " ++ show (length toCancel) ++ ", names: " ++ show (map (deliverName . fst) toCancel))
+    mapM_ (\(_, a) -> throwTo (asyncThreadId a) $ AsyncParentKill tid step) toCancel
     atomically $ modifyTVar' databaseThreads (const remains)
     -- Wait until all the asyncs are done
     -- But if it takes more than 10 seconds, log to stderr
     unless (null asyncs) $ do
         let warnIfTakingTooLong = unmask $ forever $ do
-                sleep 10
-                traceEventIO "cleanupAsync: waiting for asyncs to finish"
+                sleep 5
+                as <- readTVarIO databaseThreads
+                -- poll each async: Nothing => still running
+                statuses <- forM as $ \(d,a) -> do
+                    p <- poll a
+                    return (d, a, p)
+                let still = [ (deliverName d, show (asyncThreadId a)) | (d,a,p) <- statuses, isNothing p ]
+                traceEventIO $ "cleanupAsync: waiting for asyncs to finish; total=" ++ show (length as) ++ ", stillRunning=" ++ show (length still)
+                traceEventIO $ "cleanupAsync: still running (deliverName, threadId) = " ++ show still
         withAsync warnIfTakingTooLong $ \_ ->
-            mapM_ waitCatch asyncs
+            mapM_ waitCatch $ map snd toCancel
 
 -- waitForDatabaseRunningKeys :: Database -> IO ()
 -- waitForDatabaseRunningKeys = getDatabaseValues >=> mapM_ (waitRunning . snd)

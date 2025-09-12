@@ -17,7 +17,6 @@ module Development.IDE.WorkerThread
     TaskQueue(..),
     writeTaskQueue,
     withWorkerQueueSimple,
-    runInThreadStmInNewThreads,
     isEmptyTaskQueue,
     counTaskQueue,
     submitWork,
@@ -29,17 +28,13 @@ module Development.IDE.WorkerThread
     awaitRunInThread
   ) where
 
-import           Control.Concurrent.Async (Async, async, withAsync)
+import           Control.Concurrent.Async (withAsync)
 import           Control.Concurrent.STM
-import           Control.Exception.Safe   (MonadMask (..),
-                                           SomeException (SomeException),
-                                           finally, throw, try)
+import           Control.Exception.Safe   (SomeException, finally, throw, try)
 import           Control.Monad.Cont       (ContT (ContT))
 import qualified Data.Text                as T
 
 import           Control.Concurrent
-import           Control.Exception        (catch)
-import           Control.Monad            (when)
 import           Data.Dynamic             (Dynamic)
 import           Prettyprinter
 
@@ -134,23 +129,6 @@ data DeliverStatus = DeliverStatus
     , deliverName :: String
   } deriving (Show)
 
-runInThreadStmInNewThreads :: STM Int -> IO DeliverStatus -> TaskQueue (Either Dynamic (IO ())) -> TVar [Async ()] -> [(Async () -> IO (), IO result, Either SomeException result -> IO ())] -> STM ()
-runInThreadStmInNewThreads getStep mkDeliver (TaskQueue q) tthreads acts = do
-  -- Take an action from TQueue, run it and
-  -- use barrier to wait for the result
-    writeTQueue q $ Right $ do
-        uninterruptibleMask $ \restore -> do
-            do
-                curStep <- atomically getStep
-                deliver <- mkDeliver
-                -- traceM ("runInThreadStmInNewThreads: current step: " ++ show curStep ++ " deliver step: " ++ show deliver)
-                when (curStep == deliverStep deliver) $ do
-                    syncs <- mapM (\(preHook, act, handler) -> do
-                        a <- async (handler =<< (restore $ Right <$> act) `catch` \e@(SomeException _) -> return (Left e))
-                        preHook a
-                        return a
-                        ) acts
-                    atomically $ modifyTVar' tthreads (syncs++)
 
 type Worker arg = arg -> IO ()
 

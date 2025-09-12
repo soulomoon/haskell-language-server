@@ -144,23 +144,23 @@ interpreBuildContinue (BCContinue ioR) = ioR
 -- finally, catch any (async) exception and mark the key as exception
 
 -- submmittBuildInDb :: Database -> IO a -> IO a
-submmittBuildInDb :: Database -> Stack -> Key -> Maybe Result -> IO ()
-submmittBuildInDb db stack id s = do
-  uninterruptibleMask_ $ do
-    do
-      curStep <- readTVarIO $ databaseStep db
-      startBarrier <- newEmptyTMVarIO
-      newAsync <-
-        async
-          (do
-            uninterruptibleMask_ $ atomically $ readTMVar startBarrier
-            void (refresh db stack id s) `catch` \e@(SomeException _) ->
-              atomically $ SMap.focus (updateStatus $ Exception curStep e s) id (databaseValues db)
-          )
-      -- todo should only update if still at stage 1
-    --   atomically $ SMap.focus (updateStatus $ Running curStep s $ RunningStage2 newAsync) id (databaseValues db)
-      atomically $ putTMVar startBarrier ()
-      atomically $ modifyTVar' (databaseThreads db) (newAsync :)
+-- submmittBuildInDb :: Database -> Stack -> Key -> Maybe Result -> IO ()
+-- submmittBuildInDb db stack id s = do
+--   uninterruptibleMask_ $ do
+--     do
+--       curStep <- readTVarIO $ databaseStep db
+--       startBarrier <- newEmptyTMVarIO
+--       newAsync <-
+--         async
+--           (do
+--             uninterruptibleMask_ $ atomically $ readTMVar startBarrier
+--             void (refresh db stack id s) `catch` \e@(SomeException _) ->
+--               atomically $ SMap.focus (updateStatus $ Exception curStep e s) id (databaseValues db)
+--           )
+--       -- todo should only update if still at stage 1
+--     --   atomically $ SMap.focus (updateStatus $ Running curStep s $ RunningStage2 newAsync) id (databaseValues db)
+--       atomically $ putTMVar startBarrier ()
+--       atomically $ modifyTVar' (databaseThreads db) ((newAsync) :)
 
 builderOneCoroutine :: Key -> IsSingletonTask -> Database -> Stack -> Key -> IO BuildContinue
 builderOneCoroutine parentKey isSingletonTask db stack id =
@@ -182,9 +182,6 @@ builderOneCoroutine parentKey isSingletonTask db stack id =
             case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
                 Dirty s -> do
                             -- we need to run serially to avoid summiting run but killed in the middle
-                                -- we might want it to be able to be killed since we might want to preserve the database
-                    -- traceEvent ("Starting build of key: " ++ show id ++ ", step " ++ show current)
-                    --
                     let wait = readMVar barrier
                     runOneInDataBase (do {
                        status <- atomically (SMap.lookup id databaseValues)

@@ -773,7 +773,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         pure ShakeExtras{shakeRecorder = recorder, ..}
     shakeDb  <-
         shakeNewDatabase
-            (\logText -> logWith recorder Info (LogShakeText $ T.pack logText))
+            (\logText -> logWith recorder Debug (LogShakeText $ T.pack logText))
             shakeControlQueue
             opts { shakeExtra = newShakeExtra shakeExtras }
             rules
@@ -848,6 +848,7 @@ shakeShut IdeState{..} = do
     -- Shake gets unhappy if you try to close when there is a running
     -- request so we first abort that.
     for_ runner (flip cancelShakeSession mempty)
+    shakeShutDatabase mempty shakeDb
     void $ shakeDatabaseProfile shakeDb
     progressStop $ progress shakeExtras
     progressStop $ indexProgressReporting $ hiedbWriter shakeExtras
@@ -950,33 +951,15 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
         atomically $ modifyTVar' (dirtyKeys shakeExtras) $ \x -> foldl' (flip insertKeySet) x keys
         -- Check if there is another restart request pending, if so, we run that one too
-        -- readAndGo sra >>= finalCheck
         return (sra, keys)
-    --   readAndGo sra = do
-    --     nextRestartArg <- atomically $ tryReadTaskQueue shakeControlQueue
-    --     case nextRestartArg of
-    --       Nothing -> return sra
-    --       Just (Left dy) -> do
-    --         res <- prepareRestart $ dynShakeRestart dy
-    --         return $ sra <> res
-    --       Just (Right _) -> readAndGo sra
-    --   finalCheck sra = do
-    --     -- final check
-    --     -- sleep 0.2
-    --     b <- atomically $ isEmptyTaskQueue shakeControlQueue
-    --     if b
-    --       then return sra
-    --       -- there is something new, read and go again
-    --       else readAndGo sra
   withMVar'
     shakeSession
     ( \runner -> do
-        -- takeShakeLock shakeDb
         (restartArgs,  newDirtyKeys) <- prepareRestart shakeRestartArgs
         reverseMap <- shakeDatabaseReverseDep shakeDb
-        -- (preservekvs, allRunning2) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
-        let (preservekvs, allRunning2) = ([], [])
-        logWith recorder Info $ LogPreserveKeys (map fst preservekvs) newDirtyKeys allRunning2 reverseMap
+        (preservekvs, allRunning2) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
+        -- let (preservekvs, allRunning2) = ([], [])
+        logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys allRunning2 reverseMap
         (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
 
         queue <- atomicallyNamed "actionQueue - peek" $ peekInProgress $ actionQueue shakeExtras
