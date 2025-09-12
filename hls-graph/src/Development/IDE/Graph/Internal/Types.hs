@@ -30,7 +30,8 @@ import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.WorkerThread       (DeliverStatus (..),
                                                      TaskQueue (..),
                                                      awaitRunInThread,
-                                                     counTaskQueue)
+                                                     counTaskQueue,
+                                                     writeTaskQueue)
 import qualified Focus
 import           GHC.Conc                           (TVar, atomically)
 import           GHC.Generics                       (Generic)
@@ -159,28 +160,28 @@ onKeyReverseDeps f it@KeyDetails{..} =
 
 type DBQue = TaskQueue (Either Dynamic (IO ()))
 data Database = Database {
-    databaseExtra      :: Dynamic,
+    databaseExtra         :: Dynamic,
 
-    databaseThreads    :: TVar [(DeliverStatus, Async ())],
+    databaseThreads       :: TVar [(DeliverStatus, Async ())],
 
-    databaseReverseDep :: SMap.Map Key KeySet,
+    databaseRuntimeRevDep :: SMap.Map Key KeySet,
     -- For each key, the set of keys that depend on it directly.
 
     -- it is used to compute the transitive reverse deps, so
     -- if not in any of the transitive reverse deps of a dirty node, it is clean
     -- we can skip clean the threads.
     -- this is update right before we query the database for the key result.
-    dataBaseLogger     :: String -> IO (),
+    dataBaseLogger        :: String -> IO (),
 
-    databaseQueue      :: DBQue,
+    databaseQueue         :: DBQue,
 
-    databaseRules      :: TheRules,
-    databaseStep       :: !(TVar Step),
+    databaseRules         :: TheRules,
+    databaseStep          :: !(TVar Step),
 
-    databaseValuesLock :: !(TVar Bool),
+    databaseValuesLock    :: !(TVar Bool),
     -- when we restart a build, we set this to False to block any other
     -- threads from reading databaseValues
-    databaseValues     :: !(Map Key KeyDetails)
+    databaseValues        :: !(Map Key KeyDetails)
 
     }
 ---------------------------------------------------------------------
@@ -196,9 +197,10 @@ computeToPreserve :: Database -> KeySet -> STM ([(Key, Async ())], [Key])
 computeToPreserve db dirtySet = do
   -- All keys that depend (directly or transitively) on any dirty key
   affected <- computeTransitiveReverseDeps db dirtySet
-  running2 <- getRunningStage2Keys db
   allRunings <- getRunningKeys db
-  forM_ allRunings $ \k -> do
+  let allRuningkeys = map fst allRunings
+  let running2UnAffected = [ (k ,async) | (k, v) <- allRunings, not (k `memberKeySet` affected), Running _ _ _ (RunningStage2 async) <- [keyStatus v] ]
+  forM_ allRuningkeys $ \k -> do
     -- if not dirty, bump its step
     unless (memberKeySet k affected) $ do
       SMap.focus
@@ -209,28 +211,18 @@ computeToPreserve db dirtySet = do
         )
         k
         (databaseValues db)
-
-  -- traceM $ "key: " ++ show k ++ ", isDirty: " ++ show isDirty
   -- Keep only those whose key is NOT affected by the dirty set
-  pure ([kv | kv@(k, _async) <- running2, not (memberKeySet k affected)], allRunings)
+  pure ([kv | kv@(k, _async) <- running2UnAffected, not (memberKeySet k affected)], allRuningkeys)
 
-getRunningStage2Keys :: Database -> STM [(Key, Async ())]
--- getRunningStage2Keys db = return []
-getRunningStage2Keys db = do
-    pairs <- ListT.toList $ SMap.listT (databaseValues db)
-    return [(k, async) | (k, v) <- pairs, Running _ _ _ (RunningStage2 async) <- [keyStatus v]]
-
-getRunningKeys :: Database -> STM [Key]
+getRunningKeys :: Database -> STM [(Key, KeyDetails)]
 getRunningKeys db = do
-    pairs <- ListT.toList $ SMap.listT (databaseValues db)
-    return [k | (k, v) <- pairs, Running {} <- [keyStatus v]]
-
+    ListT.toList $ SMap.listT (databaseValues db)
 
 -- compute the transitive reverse dependencies of a set of keys
--- using databaseReverseDep in the Database
+-- using databaseRuntimeRevDep in the Database
 computeTransitiveReverseDeps :: Database -> KeySet -> STM KeySet
 computeTransitiveReverseDeps db seeds = do
-  let rev = databaseReverseDep db
+  let rev = databaseRuntimeRevDep db
 
       -- BFS worklist starting from all seed keys.
       -- visited contains everything we've already enqueued (including seeds).
@@ -250,17 +242,18 @@ computeTransitiveReverseDeps db seeds = do
   go seeds (toListKeySet seeds)
 
 
+insertdatabaseRuntimeRevDep :: Key -> Key -> Database -> STM ()
+insertdatabaseRuntimeRevDep k pk db = do
+    SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k (databaseRuntimeRevDep db)
 
-insertDatabaseReverseDepOne :: Key -> Key -> Database -> STM ()
-insertDatabaseReverseDepOne k pk db = do
-    SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k (databaseReverseDep db)
+---------------------------------------------------------------------
 
+shakeDataBaseQueue :: ShakeDatabase -> DBQue
+shakeDataBaseQueue = databaseQueue . (\(ShakeDatabase _ _ db) -> db)
 
 awaitRunInDb :: Database -> IO result -> IO result
 awaitRunInDb db act = awaitRunInThread (databaseQueue db) act
 
-shakeDataBaseQueue :: ShakeDatabase -> DBQue
-shakeDataBaseQueue = databaseQueue . (\(ShakeDatabase _ _ db) -> db)
 
 databaseGetActionQueueLength :: Database -> STM Int
 databaseGetActionQueueLength db = do
@@ -276,15 +269,13 @@ runInThreadStmInNewThreads ::  Database -> IO DeliverStatus -> [(Async () -> IO 
 runInThreadStmInNewThreads db mkDeliver acts = do
   -- Take an action from TQueue, run it and
   -- use barrier to wait for the result
-    let TaskQueue q = databaseQueue db
     let log prefix title = dataBaseLogger db (prefix ++ title)
-    writeTQueue q $ Right $ do
+    writeTaskQueue (databaseQueue db) $ Right $ do
         uninterruptibleMask $ \restore -> do
             do
                 deliver <- mkDeliver
                 log "runInThreadStmInNewThreads submit begin " (deliverName deliver)
                 curStep <- atomically $ getDataBaseStepInt db
-                -- traceM ("runInThreadStmInNewThreads: current step: " ++ show curStep ++ " deliver step: " ++ show deliver)
                 when (curStep == deliverStep deliver) $ do
                     syncs <- mapM (\(preHook, act, handler) -> do
                         a <- async (handler =<< (restore $ Right <$> act) `catch` \e@(SomeException _) -> return (Left e))
@@ -299,18 +290,12 @@ runOneInDataBase mkDelivery db registerAsync act handler = do
   runInThreadStmInNewThreads
     db
     mkDelivery
-    [ ( registerAsync, warpLog act,
+    [ ( registerAsync, act,
         \case
           Left e -> handler e
           Right _ -> return ()
       )
     ]
-  where
-    warpLog a =
-        bracket
-            (do  (DeliverStatus _ title) <- mkDelivery; dataBaseLogger db ("Starting async action: " ++ title); return title)
-            (\title -> dataBaseLogger db $ "Finished async action: " ++ title)
-            (const a)
 
 
 getDataBaseStepInt :: Database -> STM Int

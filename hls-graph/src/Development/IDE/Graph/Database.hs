@@ -14,7 +14,7 @@ module Development.IDE.Graph.Database(
     shakeShutDatabase,
     shakeGetActionQueueLength,
     shakeComputeToPreserve,
-    shakeDatabaseReverseDep) where
+    shakedatabaseRuntimeRevDep) where
 import           Control.Concurrent.Async                (Async)
 import           Control.Concurrent.STM.Stats            (atomically,
                                                           readTVarIO)
@@ -81,16 +81,14 @@ shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
     incDatabase db keysChanged
     return $ drop lenAs1 <$> runActions (newKey "root") db (map unvoid as1 ++ as2)
 
--- shakeDatabaseReverseDep :: ShakeDatabase ->
--- shakeDatabaseReverseDep :: ShakeDatabase -> StmContainers.Map.Map Key KeySet
-shakeDatabaseReverseDep :: ShakeDatabase -> IO [(Key, KeySet)]
-shakeDatabaseReverseDep (ShakeDatabase _ _ db) =
-    atomically $ ListT.toList $ SMap.listT (databaseReverseDep db)
---     StmContainers.Map.toList $ databaseReverseDep db
+shakedatabaseRuntimeRevDep :: ShakeDatabase -> IO [(Key, KeySet)]
+shakedatabaseRuntimeRevDep (ShakeDatabase _ _ db) =
+    atomically $ ListT.toList $ SMap.listT (databaseRuntimeRevDep db)
 
 
 -- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO (Set (Async ()))
 -- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO [(Key, Async ())]
+shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], [Key])
 shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
 
 shakeRunDatabaseForKeys

@@ -911,20 +911,16 @@ getModSummaryRule displayTHWarning recorder = do
                 return (Just fp, Just res{msrModSummary = ms})
             Nothing -> return (Nothing, Nothing)
 
-generateCore :: Recorder (WithPriority Log) -> RunSimplifier -> NormalizedFilePath -> Action (IdeResult ModGuts)
-generateCore recorder runSimplifier file = do
-    liftIO $ traceEventIO "Generating Core1"
+generateCore :: RunSimplifier -> NormalizedFilePath -> Action (IdeResult ModGuts)
+generateCore runSimplifier file = do
     packageState <- hscEnv <$> use_ GhcSessionDeps file
-    liftIO $ traceEventIO "Generating Core2"
     hsc' <- setFileCacheHook packageState
-    liftIO $ traceEventIO "Generating Core3"
     tm <- use_ TypeCheck file
-    liftIO $ traceEventIO "Generating Core4"
     liftIO $ compileModule runSimplifier hsc' (tmrModSummary tm) (tmrTypechecked tm)
 
 generateCoreRule :: Recorder (WithPriority Log) -> Rules ()
 generateCoreRule recorder =
-    define (cmapWithPrio LogShake recorder) $ \GenerateCore -> generateCore recorder (RunSimplifier True)
+    define (cmapWithPrio LogShake recorder) $ \GenerateCore -> generateCore (RunSimplifier True)
 
 getModIfaceRule :: Recorder (WithPriority Log) -> Rules ()
 getModIfaceRule recorder = defineEarlyCutoff (cmapWithPrio LogShake recorder) $ Rule $ \GetModIface f -> do
