@@ -20,7 +20,8 @@ import           Data.Foldable                      (fold)
 import qualified Data.HashMap.Strict                as Map
 import           Data.IORef
 import           Data.List                          (intercalate)
-import           Data.Maybe                         (fromMaybe, isNothing)
+import           Data.Maybe                         (fromMaybe, isJust,
+                                                     isNothing)
 import           Data.Set                           (Set)
 import qualified Data.Set                           as S
 import           Data.Typeable
@@ -160,31 +161,39 @@ onKeyReverseDeps f it@KeyDetails{..} =
 
 type DBQue = TaskQueue (Either Dynamic (IO ()))
 data Database = Database {
-    databaseExtra         :: Dynamic,
+    databaseExtra      :: Dynamic,
 
-    databaseThreads       :: TVar [(DeliverStatus, Async ())],
+    databaseThreads    :: TVar [(DeliverStatus, Async ())],
 
-    databaseRuntimeRevDep :: SMap.Map Key KeySet,
+    databaseRuntimeDep :: SMap.Map Key KeySet,
     -- For each key, the set of keys that depend on it directly.
 
     -- it is used to compute the transitive reverse deps, so
     -- if not in any of the transitive reverse deps of a dirty node, it is clean
     -- we can skip clean the threads.
     -- this is update right before we query the database for the key result.
-    dataBaseLogger        :: String -> IO (),
+    dataBaseLogger     :: String -> IO (),
 
-    databaseQueue         :: DBQue,
+    databaseQueue      :: DBQue,
 
-    databaseRules         :: TheRules,
-    databaseStep          :: !(TVar Step),
+    databaseRules      :: TheRules,
+    databaseStep       :: !(TVar Step),
 
-    databaseValuesLock    :: !(TVar Bool),
+    databaseValuesLock :: !(TVar Bool),
     -- when we restart a build, we set this to False to block any other
     -- threads from reading databaseValues
-    databaseValues        :: !(Map Key KeyDetails)
+    databaseValues     :: !(Map Key KeyDetails)
 
     }
 ---------------------------------------------------------------------
+computeReverseRuntimeMap :: Database -> STM (Map Key KeySet)
+computeReverseRuntimeMap db = do
+    -- Create a fresh STM Map and copy the current runtime reverse deps into it.
+    -- This yields a stable snapshot that won't be mutated by concurrent updates.
+    m <- SMap.new
+    pairs <- ListT.toList $ SMap.listT (databaseRuntimeDep db)
+    forM_ pairs $ \(k, ks) -> SMap.insert ks k m
+    pure m
 -- compute to preserve asyncs
 -- only the running stage 2 keys are actually running
 -- so we only need to preserve them if they are not affected by the dirty set
@@ -193,27 +202,28 @@ data Database = Database {
 -- all non-dirty running need to have an updated step,
 -- so it won't be view as dirty when we restart the build
 -- computeToPreserve :: Database -> KeySet -> STM ([(Key, Async ())], KeySet, [Key])
-computeToPreserve db dirtySet = do
-  -- All keys that depend (directly or transitively) on any dirty key
-  affected <- computeTransitiveReverseDeps db dirtySet
-  allRunings <- getRunningKeys db
-  let allRuningkeys = map fst allRunings
-  let running2UnAffected = [ (k ,async) | (k, v) <- allRunings, not (k `memberKeySet` affected), Running _ _ _ (RunningStage2 async) <- [keyStatus v] ]
-  forM_ allRuningkeys $ \k -> do
-    -- if not dirty, bump its step
-    unless (memberKeySet k affected) $ do
-      SMap.focus
-        ( Focus.alter $ \case
-            Just kd@KeyDetails {keyStatus = Running {runningStep, runningPrev, runningWait, runningStage}} ->
-              Just (kd {keyStatus = Running (runningStep + 1) runningPrev runningWait runningStage})
-            _ -> Nothing
-        )
-        k
-        (databaseValues db)
-  -- Keep only those whose key is NOT affected by the dirty set
-  pure ([kv | kv@(k, _async) <- running2UnAffected, not (memberKeySet k affected)], allRuningkeys)
+-- computeToPreserve db dirtySet = do
+--   -- All keys that depend (directly or transitively) on any dirty key
+--   affected <- computeTransitiveReverseDeps db dirtySet
+--   allRunings <- getRunningKeys db
+--   let allRuningkeys = map fst allRunings
+--   let running2UnAffected = [ (k ,async) | (k, v) <- allRunings, not (k `memberKeySet` affected), Running _ _ _ (RunningStage2 async) <- [keyStatus v] ]
+--   forM_ allRuningkeys $ \k -> do
+--     -- if not dirty, bump its step
+--     unless (memberKeySet k affected) $ do
+--       SMap.focus
+--         ( Focus.alter $ \case
+--             Just kd@KeyDetails {keyStatus = Running {runningStep, runningPrev, runningWait, runningStage}} ->
+--               Just (kd {keyStatus = Running (runningStep + 1) runningPrev runningWait runningStage})
+--             _ -> Nothing
+--         )
+--         k
+--         (databaseValues db)
+--   -- Keep only those whose key is NOT affected by the dirty set
+--   pure ([kv | kv@(k, _async) <- running2UnAffected, not (memberKeySet k affected)], allRuningkeys)
 
 -- computeToPreserve1 :: Database -> KeySet -> STM ([(Key, Async ())], KeySet, [Key])
+computeToPreserve1 :: Database -> KeySet -> STM ([(Key, Async ())], [Key])
 computeToPreserve1 db dirtySet = do
   -- All keys that depend (directly or transitively) on any dirty key
   affected <- computeTransitiveReverseDeps db dirtySet
@@ -221,6 +231,7 @@ computeToPreserve1 db dirtySet = do
   threads <- readTVar $ databaseThreads db
   -- not root and not effected
   let uneffected = [(k, async) | (DeliverStatus _ k, async) <- threads, not (memberKeySet k affected), k /= rootKey]
+
   let allRuningkeys = map (deliverName. fst) threads
   forM_ allRuningkeys $ \k -> do
     -- if not dirty, bump its step
@@ -236,17 +247,17 @@ computeToPreserve1 db dirtySet = do
   -- Keep only those whose key is NOT affected by the dirty set
   pure (uneffected, allRuningkeys)
 
+
 getRunningKeys :: Database -> STM [(Key, KeyDetails)]
 getRunningKeys db = do
     ListT.toList $ SMap.listT (databaseValues db)
 
 -- compute the transitive reverse dependencies of a set of keys
--- using databaseRuntimeRevDep in the Database
+-- using databaseRuntimeDep in the Database
 computeTransitiveReverseDeps :: Database -> KeySet -> STM KeySet
 computeTransitiveReverseDeps db seeds = do
-  let rev = databaseRuntimeRevDep db
-
-      -- BFS worklist starting from all seed keys.
+  rev <- computeReverseRuntimeMap db
+  let -- BFS worklist starting from all seed keys.
       -- visited contains everything we've already enqueued (including seeds).
       go :: KeySet -> [Key] -> STM KeySet
       go visited []       = pure visited
@@ -264,9 +275,13 @@ computeTransitiveReverseDeps db seeds = do
   go seeds (toListKeySet seeds)
 
 
-insertdatabaseRuntimeRevDep :: Key -> Key -> Database -> STM ()
-insertdatabaseRuntimeRevDep k pk db = do
-    SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k (databaseRuntimeRevDep db)
+insertdatabaseRuntimeDep :: Key -> Key -> Database -> STM ()
+insertdatabaseRuntimeDep k pk db = do
+    SMap.focus (Focus.alter (Just . maybe (singletonKeySet k) (insertKeySet k))) pk (databaseRuntimeDep db)
+
+deleteDatabaseRuntimeDep :: Key -> Database -> STM ()
+deleteDatabaseRuntimeDep k db = do
+    SMap.delete k (databaseRuntimeDep db)
 
 ---------------------------------------------------------------------
 
@@ -333,7 +348,8 @@ instance Exception AsyncParentKill where
 
 shutDatabase ::Set (Async ()) -> Database -> IO ()
 shutDatabase preserve Database{..} = uninterruptibleMask $ \unmask -> do
-    -- wait for all threads to finish
+    -- prune
+    pruneFinished Database{..}
     asyncs <- readTVarIO databaseThreads
     step <- readTVarIO databaseStep
     tid <- myThreadId
@@ -349,7 +365,8 @@ shutDatabase preserve Database{..} = uninterruptibleMask $ \unmask -> do
     -- But if it takes more than 10 seconds, log to stderr
     unless (null asyncs) $ do
         let warnIfTakingTooLong = unmask $ forever $ do
-                sleep 5
+                sleep 10
+                -- prune finished asyncs to keep the TVar small and report only active ones
                 as <- readTVarIO databaseThreads
                 -- poll each async: Nothing => still running
                 statuses <- forM as $ \(d,a) -> do
@@ -363,6 +380,24 @@ shutDatabase preserve Database{..} = uninterruptibleMask $ \unmask -> do
 
 -- waitForDatabaseRunningKeys :: Database -> IO ()
 -- waitForDatabaseRunningKeys = getDatabaseValues >=> mapM_ (waitRunning . snd)
+
+-- | Remove finished asyncs from 'databaseThreads' (non-blocking).
+--   Uses 'poll' to check completion without waiting.
+pruneFinished :: Database -> IO ()
+pruneFinished db@Database{..} = do
+    threads <- readTVarIO databaseThreads
+    statuses <- forM threads $ \(d,a) -> do
+        p <- poll a
+        return (d,a,p)
+    let still = [ (d,a) | (d,a,p) <- statuses, isNothing p ]
+    -- deleteDatabaseRuntimeDep of finished async keys
+    forM_ statuses $ \(d,_,p) -> when (isJust p) $ do
+        let k = deliverName d
+        atomically $ deleteDatabaseRuntimeDep k db
+
+    atomically $ modifyTVar' databaseThreads (const still)
+
+
 
 getDatabaseValues :: Database -> IO [(Key, Status)]
 getDatabaseValues = atomically

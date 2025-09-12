@@ -14,7 +14,7 @@ module Development.IDE.Graph.Database(
     shakeShutDatabase,
     shakeGetActionQueueLength,
     shakeComputeToPreserve,
-    shakedatabaseRuntimeRevDep) where
+    shakedatabaseRuntimeDep) where
 import           Control.Concurrent.Async                (Async)
 import           Control.Concurrent.STM.Stats            (atomically,
                                                           readTVarIO)
@@ -23,7 +23,6 @@ import           Control.Monad                           (join)
 import           Data.Dynamic
 import           Data.Maybe
 import           Data.Set                                (Set)
-import qualified Data.Set                                as Set
 import           Development.IDE.Graph.Classes           ()
 import           Development.IDE.Graph.Internal.Action
 import           Development.IDE.Graph.Internal.Database
@@ -33,7 +32,6 @@ import           Development.IDE.Graph.Internal.Profile  (writeProfile)
 import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
 import qualified ListT
-import qualified StmContainers.Map
 import qualified StmContainers.Map                       as SMap
 
 
@@ -47,6 +45,7 @@ shakeNewDatabase :: (String -> IO ()) -> DBQue -> ShakeOptions -> Rules () -> IO
 shakeNewDatabase l que opts rules = do
     let extra = fromMaybe (toDyn NonExportedType) $ shakeExtra opts
     (theRules, actions) <- runRules extra rules
+    -- give unique names to each action
     db <- newDatabase l que extra theRules
     pure $ ShakeDatabase (length actions) actions db
 
@@ -81,9 +80,9 @@ shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
     incDatabase db keysChanged
     return $ drop lenAs1 <$> runActions (newKey "root") db (map unvoid as1 ++ as2)
 
-shakedatabaseRuntimeRevDep :: ShakeDatabase -> IO [(Key, KeySet)]
-shakedatabaseRuntimeRevDep (ShakeDatabase _ _ db) =
-    atomically $ ListT.toList $ SMap.listT (databaseRuntimeRevDep db)
+shakedatabaseRuntimeDep :: ShakeDatabase -> IO [(Key, KeySet)]
+shakedatabaseRuntimeDep (ShakeDatabase _ _ db) =
+    atomically $ (ListT.toList . SMap.listT) =<< computeReverseRuntimeMap db
 
 
 -- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO (Set (Async ()))

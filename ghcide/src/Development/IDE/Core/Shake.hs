@@ -154,7 +154,7 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
                                                           shakeProfileDatabase,
                                                           shakeRunDatabaseForKeysSep,
                                                           shakeShutDatabase,
-                                                          shakedatabaseRuntimeRevDep)
+                                                          shakedatabaseRuntimeDep)
 import           Development.IDE.Graph.Internal.Action   (runActionInDbCb)
 import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
 import           Development.IDE.Graph.Internal.Key      (memberKeySet)
@@ -951,10 +951,10 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
     shakeSession
     ( \runner -> do
         newDirtyKeys <- sraBetweenSessions shakeRestartArgs
-        reverseMap <- shakedatabaseRuntimeRevDep shakeDb
+        -- reverseMap <- shakedatabaseRuntimeDep shakeDb
         (preservekvs, allRunning2) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
         let uneffected = fst <$> preservekvs
-        logWith recorder Debug $ LogPreserveKeys uneffected newDirtyKeys allRunning2 reverseMap
+        logWith recorder Debug $ LogPreserveKeys uneffected newDirtyKeys allRunning2 mempty
         (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
         -- it is every important to update the dirty keys after we enter the critical section
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
