@@ -4,7 +4,8 @@ module DatabaseSpec where
 
 import           ActionSpec                              (itInThread)
 import           Control.Exception                       (SomeException, throw)
-import           Development.IDE.Graph                   (newKey, shakeOptions)
+import           Development.IDE.Graph                   (ShakeOptions, newKey,
+                                                          shakeOptions)
 import           Development.IDE.Graph.Database          (shakeNewDatabase,
                                                           shakeRunDatabase)
 import           Development.IDE.Graph.Internal.Action   (apply1)
@@ -21,12 +22,14 @@ exractException [] = Nothing
 exractException (Left e : _) | Just ne@StackException{} <- fromGraphException e = return ne
 exractException (_: xs) = exractException xs
 
+shakeNewDatabaseWithLogger :: DBQue -> ShakeOptions -> Rules () -> IO ShakeDatabase
+shakeNewDatabaseWithLogger = shakeNewDatabase (const $ return ())
 
 spec :: Spec
 spec = do
     describe "Evaluation" $ do
         itInThread "detects cycles" $ \q -> do
-            db <- shakeNewDatabase q shakeOptions $ do
+            db <- shakeNewDatabaseWithLogger q shakeOptions $ do
                 ruleBool
                 addRule $ \Rule _old _mode -> do
                     True <- apply1 (Rule @Bool)
@@ -40,7 +43,7 @@ spec = do
 
     describe "compute" $ do
       itInThread "build step and changed step updated correctly" $ \q -> do
-        (ShakeDatabase _ _ theDb) <- shakeNewDatabase q shakeOptions $ do
+        (ShakeDatabase _ _ theDb) <- shakeNewDatabaseWithLogger q shakeOptions $ do
           ruleStep
         let k = newKey $ Rule @()
         -- ChangedRecomputeSame

@@ -147,14 +147,14 @@ import           Development.IDE.Graph                   hiding (ShakeValue,
 import qualified Development.IDE.Graph                   as Shake
 import           Development.IDE.Graph.Database          (ShakeDatabase,
                                                           shakeComputeToPreserve,
-                                                          shakeDatabaseReverseDep,
                                                           shakeGetActionQueueLength,
                                                           shakeGetBuildStep,
                                                           shakeGetDatabaseKeys,
                                                           shakeNewDatabase,
                                                           shakeProfileDatabase,
                                                           shakeRunDatabaseForKeysSep,
-                                                          shakeShutDatabase)
+                                                          shakeShutDatabase,
+                                                          shakedatabaseRuntimeRevDep)
 import           Development.IDE.Graph.Internal.Action   (runActionInDbCb)
 import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
 import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
@@ -254,7 +254,8 @@ instance Pretty Log where
         [ "Restarting build session due to" <+> pretty (sraReason restartArgs)
         , "Restarts num:" <+> pretty (sraCount $ restartArgs)
         , "Action Queue:" <+> pretty (map actionName actionQueue)
-        , "Keys:" <+> pretty (map show $ toListKeySet keyBackLog)
+        -- , "Keys:" <+> pretty (map show $ toListKeySet keyBackLog)
+        , "Keys:" <+> pretty (length $ toListKeySet keyBackLog)
         , "Current step:" <+> pretty (show step)
         , "Aborting previous build session took" <+> pretty (showDuration abortDuration) <+> pretty shakeProfilePath ]
     LogBuildSessionRestartTakingTooLong seconds ->
@@ -938,29 +939,21 @@ dynShakeRestart dy = case fromDynamic dy of
     Just shakeRestartArgs -> shakeRestartArgs
     Nothing -> error "Internal error, dynShakeRestart, got invalid dynamic type"
 
-computePreserveAsyncs :: ShakeDatabase -> Set (Async ())
-computePreserveAsyncs shakeDb = mempty
-
 runRestartTask :: Recorder (WithPriority Log) -> MVar IdeState -> ShakeRestartArgs -> IO ()
 runRestartTask recorder ideStateVar shakeRestartArgs = do
  IdeState {shakeDb, shakeSession, shakeExtras, shakeDatabaseProfile} <- readMVar ideStateVar
  withShakeDatabaseValuesLock shakeDb $ do
-  let prepareRestart sra@ShakeRestartArgs {..} = do
-        keys <- sraBetweenSessions
-        -- it is every important to update the dirty keys after we enter the critical section
-        -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
-        atomically $ modifyTVar' (dirtyKeys shakeExtras) $ \x -> foldl' (flip insertKeySet) x keys
-        -- Check if there is another restart request pending, if so, we run that one too
-        return (sra, keys)
   withMVar'
     shakeSession
     ( \runner -> do
-        (restartArgs,  newDirtyKeys) <- prepareRestart shakeRestartArgs
-        reverseMap <- shakeDatabaseReverseDep shakeDb
+        newDirtyKeys <- sraBetweenSessions shakeRestartArgs
+        reverseMap <- shakedatabaseRuntimeRevDep shakeDb
         (preservekvs, allRunning2) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
-        -- let (preservekvs, allRunning2) = ([], [])
         logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys allRunning2 reverseMap
         (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
+        -- it is every important to update the dirty keys after we enter the critical section
+        -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
+        atomically $ modifyTVar' (dirtyKeys shakeExtras) $ \x -> foldl' (flip insertKeySet) x newDirtyKeys
 
         queue <- atomicallyNamed "actionQueue - peek" $ peekInProgress $ actionQueue shakeExtras
         res <- shakeDatabaseProfile shakeDb
@@ -968,8 +961,8 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         -- this log is required by tests
         step <- shakeGetBuildStep shakeDb
 
-        logWith recorder Info $ LogBuildSessionRestart restartArgs queue backlog stopTime res step
-        return restartArgs
+        logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime res step
+        return shakeRestartArgs
     )
     -- It is crucial to be masked here, otherwise we can get killed
     -- between spawning the new thread and updating shakeSession.
@@ -1069,18 +1062,15 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
           setTag otSpan "queue" (fromString $ unlines $ map actionName reenqueued)
           whenJust allPendingKeys $ \kk -> setTag otSpan "keys" (BS8.pack $ unlines $ map show $ toListKeySet kk)
           res <- try @SomeException $ restore start
-          logWith recorder Debug $ LogBuildSessionFinish step res
+          logWith recorder Info $ LogBuildSessionFinish step res
 
 
     let keysActs = pumpActionThread : map run (reenqueued ++ acts)
     -- first we increase the step, so any actions started from here on
-    start <- shakeRunDatabaseForKeysSep (toListKeySet <$> allPendingKeys) shakeDb keysActs
+    startDatabase <- shakeRunDatabaseForKeysSep (toListKeySet <$> allPendingKeys) shakeDb keysActs
     -- Do the work in a background thread
-    parentTid <- myThreadId
     workThread <- asyncWithUnmask $ \x -> do
-        childThreadId <- myThreadId
-        -- logWith recorder Info $ LogShakeText ("shake thread: " <> T.pack (show childThreadId) <> " (parent: " <> T.pack (show parentTid) <> ")")
-        workRun start x
+        workRun startDatabase x
 
     --  Cancelling is required to flush the Shake database when either
     --  the filesystem or the Ghc configuration have changed
