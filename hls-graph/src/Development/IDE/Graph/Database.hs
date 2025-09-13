@@ -22,9 +22,9 @@ import           Control.Concurrent.STM.Stats            (atomically,
 import           Control.Exception                       (SomeException)
 import           Control.Monad                           (join)
 import           Data.Dynamic
+import           Data.HashMap.Strict                     (toList)
 import           Data.Maybe
 import           Data.Set                                (Set)
-import qualified Data.Set                                as Set
 import           Development.IDE.Graph.Classes           ()
 import           Development.IDE.Graph.Internal.Action
 import           Development.IDE.Graph.Internal.Database
@@ -34,9 +34,6 @@ import           Development.IDE.Graph.Internal.Profile  (writeProfile)
 import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
 import           Development.IDE.WorkerThread            (DeliverStatus)
-import qualified ListT
-import qualified StmContainers.Map
-import qualified StmContainers.Map                       as SMap
 
 
 -- Placeholder to be the 'extra' if the user doesn't set it
@@ -85,7 +82,7 @@ shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
 
 shakedatabaseRuntimeDep :: ShakeDatabase -> IO [(Key, KeySet)]
 shakedatabaseRuntimeDep (ShakeDatabase _ _ db) =
-    atomically $ (ListT.toList . SMap.listT) =<< computeReverseRuntimeMap db
+    atomically $ toList <$> computeReverseRuntimeMap db
 
 
 shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], [Key])

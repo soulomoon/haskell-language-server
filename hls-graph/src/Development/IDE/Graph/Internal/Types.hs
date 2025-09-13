@@ -46,7 +46,7 @@ import           UnliftIO                           (Async (asyncThreadId),
                                                      asyncExceptionToException,
                                                      poll, readTVar, readTVarIO,
                                                      throwTo, waitCatch,
-                                                     withAsync, writeTQueue)
+                                                     withAsync)
 import           UnliftIO.Concurrent                (ThreadId, myThreadId)
 import qualified UnliftIO.Exception                 as UE
 
@@ -203,15 +203,17 @@ deleteDatabaseRuntimeDep :: Key -> Database -> STM ()
 deleteDatabaseRuntimeDep k db = do
     SMap.delete k (databaseRuntimeDep db)
 
-computeReverseRuntimeMap :: Database -> STM (Map Key KeySet)
+computeReverseRuntimeMap :: Database -> STM (Map.HashMap Key KeySet)
 computeReverseRuntimeMap db = do
-    -- Create a fresh STM Map and copy the current runtime reverse deps into it.
-    -- This yields a stable snapshot that won't be mutated by concurrent updates.
-    m <- SMap.new
+    -- Create a fresh snapshot (pure Data.Map) of the current runtime reverse deps.
     pairs <- ListT.toList $ SMap.listT (databaseRuntimeDep db)
-    forM_ pairs $ \(pk, ks) -> forM_ (toListKeySet ks) $ \k ->
-        SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k m
-    pure m
+    -- 'pairs' is a map from parent -> set of children (dependencies recorded at runtime).
+    -- We need to invert this to child -> set of parents (reverse dependencies).
+    let addParent acc (parent, children) =
+            foldr (\child m -> Map.insertWith (\new old -> unionKyeSet new old) child (singletonKeySet parent) m) acc (toListKeySet children)
+        m = foldl addParent Map.empty pairs
+    return m
+
 -- compute to preserve asyncs
 -- only the running stage 2 keys are actually running
 -- so we only need to preserve them if they are not affected by the dirty set
@@ -253,7 +255,7 @@ computeTransitiveReverseDeps db seeds = do
       go :: KeySet -> [Key] -> STM KeySet
       go visited []       = pure visited
       go visited (k:todo) = do
-        mDeps <- SMap.lookup k rev
+        let mDeps = Map.lookup k rev
         case mDeps of
           Nothing     -> go visited todo
           Just direct ->
