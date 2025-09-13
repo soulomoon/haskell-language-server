@@ -24,6 +24,7 @@ import           Data.Maybe                         (fromMaybe, isNothing)
 import           Data.Set                           (Set)
 import qualified Data.Set                           as S
 import           Data.Typeable
+import           Debug.Trace                        (traceEventIO)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.WorkerThread       (DeliverStatus (..),
