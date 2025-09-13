@@ -57,7 +57,7 @@ newDatabase dataBaseLogger databaseQueue databaseExtra databaseRules = do
     databaseThreads <- newTVarIO []
     databaseValuesLock <- newTVarIO True
     databaseValues <- atomically SMap.new
-    databaseRuntimeRevDep <- atomically SMap.new
+    databaseRuntimeDep <- atomically SMap.new
     pure Database{..}
 
 -- | Increment the step and mark dirty.
@@ -133,7 +133,7 @@ builderOne parentKey db@Database {..} stack id = do
   liftIO $ atomicallyNamed "builder" $ do
     -- Spawn the id if needed
     dbNotLocked db
-    insertdatabaseRuntimeRevDep id parentKey db
+    insertdatabaseRuntimeDep id parentKey db
     -- if a build is running, wait
     -- it will either be killed or continue
     -- depending on wether it is marked as dirty
@@ -151,7 +151,7 @@ builderOne parentKey db@Database {..} stack id = do
                     -- after an restart to skipped an rerun
                     Just (Running entryStep _s _wait RunningStage1) -> entryStep
                     _                                               -> current
-              return $ DeliverStatus cur (show (parentKey, id))
+              return $ DeliverStatus cur (show (parentKey, id)) (newKey id)
           )
           db
           ( \adyncH ->

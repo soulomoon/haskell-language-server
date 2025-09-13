@@ -28,14 +28,16 @@ module Development.IDE.WorkerThread
     awaitRunInThread
   ) where
 
-import           Control.Concurrent.Async (withAsync)
+import           Control.Concurrent.Async           (withAsync)
 import           Control.Concurrent.STM
-import           Control.Exception.Safe   (SomeException, finally, throw, try)
-import           Control.Monad.Cont       (ContT (ContT))
-import qualified Data.Text                as T
+import           Control.Exception.Safe             (SomeException, finally,
+                                                     throw, try)
+import           Control.Monad.Cont                 (ContT (ContT))
+import qualified Data.Text                          as T
 
 import           Control.Concurrent
-import           Data.Dynamic             (Dynamic)
+import           Data.Dynamic                       (Dynamic)
+import           Development.IDE.Graph.Internal.Key (Key)
 import           Prettyprinter
 
 data LogWorkerThread
@@ -127,6 +129,7 @@ withWorkerQueue log title workerAction = ContT $ \mainAction -> do
 data DeliverStatus = DeliverStatus
   { deliverStep   :: Int
     , deliverName :: String
+    , deliverKey  :: Key
   } deriving (Show)
 
 

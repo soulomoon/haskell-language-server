@@ -154,7 +154,7 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
                                                           shakeProfileDatabase,
                                                           shakeRunDatabaseForKeysSep,
                                                           shakeShutDatabase,
-                                                          shakedatabaseRuntimeRevDep)
+                                                          shakedatabaseRuntimeDep)
 import           Development.IDE.Graph.Internal.Action   (runActionInDbCb)
 import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
 import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
@@ -947,7 +947,7 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
     shakeSession
     ( \runner -> do
         newDirtyKeys <- sraBetweenSessions shakeRestartArgs
-        reverseMap <- shakedatabaseRuntimeRevDep shakeDb
+        reverseMap <- shakedatabaseRuntimeDep shakeDb
         (preservekvs, allRunning2) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
         logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys allRunning2 reverseMap
         (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
