@@ -77,8 +77,9 @@ import           Development.IDE.Types.Location           (NormalizedUri,
                                                            toNormalizedFilePath')
 import           Development.IDE.Types.Monitoring         (Monitoring)
 import           Development.IDE.Types.Options            (IdeGhcSession,
-                                                           IdeOptions (optCheckParents, optCheckProject, optReportProgress, optRunSubset),
+                                                           IdeOptions (..),
                                                            IdeTesting (IdeTesting),
+                                                           ProgressReportingStyle (TestReporting),
                                                            clientSupportsProgress,
                                                            defaultIdeOptions,
                                                            optModifyDynFlags,
@@ -276,7 +277,10 @@ testing recorder projectRoot plugins =
       let
         defOptions = argsIdeOptions config sessionLoader
       in
-        defOptions{ optTesting = IdeTesting True }
+        defOptions{
+            optTesting = IdeTesting True
+            , optProgressStyle = TestReporting
+            }
     lspOptions = argsLspOptions { LSP.optProgressStartDelay = 0, LSP.optProgressUpdateDelay = 0 }
   in
     arguments
@@ -374,7 +378,8 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
         Check argFiles -> do
           let dir = argsProjectRoot
           dbLoc <- getHieDbLoc dir
-          runWithWorkerThreads (cmapWithPrio LogSession recorder) dbLoc $ \hiedb threadQueue -> do
+          ideMVar <- newEmptyMVar
+          runWithWorkerThreads (cmapWithPrio LogLanguageServer recorder) ideMVar dbLoc $ \hiedb threadQueue -> do
             -- GHC produces messages with UTF8 in them, so make sure the terminal doesn't error
             hSetEncoding stdout utf8
             hSetEncoding stderr utf8
@@ -403,6 +408,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
                         , optModifyDynFlags = optModifyDynFlags def_options <> pluginModifyDynflags plugins
                         }
             ide <- initialise (cmapWithPrio LogService recorder) argsDefaultHlsConfig argsHlsPlugins rules Nothing debouncer ideOptions hiedb threadQueue mempty dir
+            putMVar ideMVar ide
             shakeSessionInit (cmapWithPrio LogShake recorder) ide
             registerIdeConfiguration (shakeExtras ide) $ IdeConfiguration mempty (hashed Nothing)
 
@@ -432,7 +438,8 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
         Custom (IdeCommand c) -> do
           let root = argsProjectRoot
           dbLoc <- getHieDbLoc root
-          runWithWorkerThreads (cmapWithPrio LogSession recorder) dbLoc $ \hiedb threadQueue -> do
+          ideMVar <- newEmptyMVar
+          runWithWorkerThreads (cmapWithPrio LogLanguageServer recorder) ideMVar dbLoc $ \hiedb threadQueue -> do
             sessionLoader <- loadSessionWithOptions (cmapWithPrio LogSession recorder) argsSessionLoadingOptions "." (tLoaderQueue threadQueue)
             let def_options = argsIdeOptions argsDefaultHlsConfig sessionLoader
                 ideOptions = def_options
@@ -441,6 +448,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
                     , optModifyDynFlags = optModifyDynFlags def_options <> pluginModifyDynflags plugins
                     }
             ide <- initialise (cmapWithPrio LogService recorder) argsDefaultHlsConfig argsHlsPlugins rules Nothing debouncer ideOptions hiedb threadQueue mempty root
+            putMVar ideMVar ide
             shakeSessionInit (cmapWithPrio LogShake recorder) ide
             registerIdeConfiguration (shakeExtras ide) $ IdeConfiguration mempty (hashed Nothing)
             c ide

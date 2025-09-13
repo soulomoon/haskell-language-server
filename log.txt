@@ -1,0 +1,111 @@
+Run #4
+Thghcide
+  diagnostics
+    Cancellation
+      edit header
+readId 6 |         GetHieAst: 2025-08-19T14:55:45.773048Z | Info | Test Project located in directory: /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736
+ThreadId 7 | 2025-08-19T14:55:45.774261Z | Info | Heap statistics are not enabled (RTS option -T is needed)
+ThreadId 7 | 2025-08-19T14:55:45.776775Z | Info | Starting LSP server...
+  If you are seeing this in a terminal, you probably should have run WITHOUT the --lsp option!
+  PluginIds: [ test
+             , block-command
+             , ghcide-completions
+             , core
+             , ghcide-type-lenses
+             , LSPRecorderCallback
+             , ghcide-hover-and-symbols
+             , ghcide-core ]
+ThreadId 16 | 2025-08-19T14:55:45.777036Z | Info | Starting server
+ThreadId 16 | 2025-08-19T14:55:45.777814Z | Debug | LSP: set new config: {
+  "cabalFormattingProvider": "cabal-gild",
+  "checkParents": "CheckOnSave",
+  "checkProject": true,
+  "formattingProvider": "ormolu",
+  "maxCompletions": 40,
+  "plugin": {  },
+  "sessionLoading": "singleComponent"
+}
+ThreadId 16 | 2025-08-19T14:55:45.778159Z | Info | Registering IDE configuration: IdeConfiguration {workspaceFolders = fromList [NormalizedUri (-4077115142264691803) "file:///private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736"], clientSettings = hashed (Just (Object (fromList [("haskell",Object (fromList [("cabalFormattingProvider",String "cabal-gild"),("checkParents",String "CheckOnSave"),("checkProject",Bool True),("formattingProvider",String "ormolu"),("maxCompletions",Number 40.0),("plugin",Object (fromList [])),("sessionLoading",String "singleComponent")]))])))}
+ThreadId 16 | 2025-08-19T14:55:45.785776Z | Info | Started LSP server in 0.01s
+ThreadId 16 | 2025-08-19T14:55:45.785884Z | Debug | shouldRunSubset: True
+ThreadId 24 | 2025-08-19T14:55:45.785963Z | Debug | Initializing exports map from hiedb
+ThreadId 24 | 2025-08-19T14:55:45.786047Z | Debug | Done initializing exports map from hiedb. Size: 0
+ThreadId 20 | 2025-08-19T14:55:45.786560Z | Debug | Shake session initialized
+ThreadId 16 | 2025-08-19T14:55:45.786658Z | Debug | VFS: opening file:///private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+ThreadId 16 | 2025-08-19T14:55:45.786871Z | Debug | LSP: set new config: {
+  "cabalFormattingProvider": "cabal-gild",
+  "checkParents": "CheckOnSave",
+  "checkProject": true,
+  "formattingProvider": "ormolu",
+  "maxCompletions": 40,
+  "plugin": {  },
+  "sessionLoading": "singleComponent"
+}
+ThreadId 26 | 2025-08-19T14:55:45.786890Z | Debug | Finished build session
+AsyncCancelled
+ThreadId 21 | 2025-08-19T14:55:45.787076Z | Debug | Set files of interst to
+    [ ( /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+    , Modified {firstOpen = True} ) ]
+ThreadId 21 | 2025-08-19T14:55:45.787154Z | Debug | Restarting build session due to /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs (modified)
+Action Queue: []
+Keys: [ GetModificationTime; /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+      , IsFileOfInterest; /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs ]
+Aborting previous build session took 0.00s
+ThreadId 20 | 2025-08-19T14:55:45.787225Z | Debug | Opened text document: file:///private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+ThreadId 30 | 2025-08-19T14:55:45.787249Z | Debug | Finished build session
+AsyncCancelled
+ThreadId 21 | 2025-08-19T14:55:45.787316Z | Debug | Configuration changed: Config {checkParents = CheckOnSave, checkProject = True, formattingProvider = "ormolu", cabalFormattingProvider = "cabal-gild", maxCompletions = 40, sessionLoading = PreferSingleComponentLoading, plugins = fromList []}
+ThreadId 21 | 2025-08-19T14:55:45.787402Z | Debug | Restarting build session due to config change
+Action Queue: []
+Keys: [ GetModificationTime; /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+      , IsFileOfInterest; /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+      , GetClientSettings;  ]
+Aborting previous build session took 0.00s
+ThreadId 39 | 2025-08-19T14:55:45.787576Z | Warning | Typechecking file start /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+ThreadId 42 | 2025-08-19T14:55:45.787771Z | Debug | Looking up session cache for /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+ThreadId 22 | 2025-08-19T14:55:45.787834Z | Debug | Loop: getOptions for /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+ThreadId 22 | 2025-08-19T14:55:45.787956Z | Info | Cradle path: Foo.hs
+ThreadId 22 | 2025-08-19T14:55:45.788018Z | Warning | No [cradle](https://github.com/mpickering/hie-bios#hie-bios) found for Foo.hs.
+Proceeding with [implicit cradle](https://hackage.haskell.org/package/implicit-hie).
+You should ignore this message, unless you see a 'Multi Cradle: No prefixes matched' error.
+ThreadId 46 | 2025-08-19T14:55:45.802993Z | Debug | Cradle: Cradle{ cradleRootDir = "/private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736", cradleOptsProg = CradleAction: Default}
+ThreadId 46 | 2025-08-19T14:55:45.803066Z | Info | invoking build tool to determine build flags (this may take some time depending on the cache)
+ThreadId 46 | 2025-08-19T14:55:45.868167Z | Debug | ghc --print-libdir
+ThreadId 46 | 2025-08-19T14:55:45.932486Z | Debug | ghc --numeric-version
+ThreadId 22 | 2025-08-19T14:55:45.932641Z | Debug | Session loading result: Right (ComponentOptions {componentOptions = [], componentRoot = "/private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736", componentDependencies = []},"/Users/ares/.ghcup/ghc/9.12.2/lib/ghc-9.12.2/lib","9.12.2")
+ThreadId 22 | 2025-08-19T14:55:45.936702Z | Info | Interface files cache directory: /var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/.cache/ghcide/main-da39a3ee5e6b4b0d3255bfef95601890afd80709-da39a3ee5e6b4b0d3255bfef95601890afd80709
+ThreadId 22 | 2025-08-19T14:55:45.946351Z | Info | Making new HscEnv. In-place unit ids: [ main-da39a3ee5e6b4b0d3255bfef95601890afd80709 ]
+ThreadId 22 | 2025-08-19T14:55:45.956408Z | Debug | New component cache HscEnvEq: (([],Just HscEnvEq 5),fromList [])
+ThreadId 22 | 2025-08-19T14:55:45.956697Z | Info | New loaded files: [ /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs ]
+ThreadId 42 | 2025-08-19T14:55:45.957872Z | Debug | Looking up session cache for /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+ThreadId 42 | 2025-08-19T14:55:45.957948Z | Info | Add dependency /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+[]
+ThreadId 70 | 2025-08-19T14:55:45.959426Z | Info | Modification time for "v1"
+ThreadId 70 | 2025-08-19T14:55:45.959473Z | Info | Modification time for "v1.1"
+ThreadId 37 | 2025-08-19T14:55:45.959782Z | Debug | Finished build session
+AsyncCancelled
+ThreadId 21 | 2025-08-19T14:55:45.959915Z | Debug | Known files updated:
+  fromList [(TargetFile NormalizedFilePath "/private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs",fromList ["/private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs"])]
+ThreadId 21 | 2025-08-19T14:55:45.959969Z | Debug | Restarting build session due to new component
+Action Queue: [ WaitForIdeRule TypeCheck Uri {getUri = "file:///private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs"} ]
+Keys: [ IsFileOfInterest; /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+      , GhcSessionIO;
+      , GetKnownTargets;  ]
+Aborting previous build session took 0.00s
+ThreadId 83 | 2025-08-19T14:55:45.960398Z | Debug | Finished: InitialLoad Took: 0.00s
+ThreadId 84 | 2025-08-19T14:55:45.984810Z | Warning | Typechecking file start /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+ThreadId 88 | 2025-08-19T14:55:45.985135Z | Debug | Looking up session cache for /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+ThreadId 88 | 2025-08-19T14:55:45.985189Z | Info | Add dependency /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+[]
+ThreadId 84 | 2025-08-19T14:55:45.992785Z | Warning | Typechecking file mid /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+ThreadId 84 | 2025-08-19T14:55:46.004387Z | Warning | Typechecking file end /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs
+ThreadId 81 | 2025-08-19T14:55:46.004765Z | Debug | Finished: WaitForIdeRule TypeCheck Uri {getUri = "file:///private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-35327754736/Foo.hs"} Took: 0.04s
+ThreadId 16 | 2025-08-19T14:55:46.207056Z | Error | LSP: no handler for: "non-existent-method"
+ThreadId 16 | 2025-08-19T14:55:46.207691Z | Error | LSP: no handler for: "non-existent-method"
+ThreadId 16 | 2025-08-19T14:55:46.208630Z | Info | LSP: received shutdown
+ThreadId 16 | 2025-08-19T14:55:46.208805Z | Debug | Received shutdown message
+ThreadId 78 | 2025-08-19T14:55:46.209199Z | Debug | Finished build session
+AsyncCancelled
+        GetHieAst: FAIL (0.44s)
+          ghcide-test/exe/DiagnosticTests.hs:560:
+          Could not find (DiagnosticSeverity_Warning,(3,0),"Top-level binding",Just "GHC-38417",Nothing) in []
