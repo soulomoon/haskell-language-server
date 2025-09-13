@@ -196,7 +196,7 @@ pruneFinished db@Database{..} = do
     -- deleteDatabaseRuntimeDep of finished async keys
     forM_ statuses $ \(d,_,p) -> when (isJust p) $ do
         let k = deliverKey d
-        atomically $ deleteDatabaseRuntimeDep k db
+        when (k /= newKey "root") $ atomically $ deleteDatabaseRuntimeDep k db
     atomically $ modifyTVar' databaseThreads (const still)
 
 deleteDatabaseRuntimeDep :: Key -> Database -> STM ()
