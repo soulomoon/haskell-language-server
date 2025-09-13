@@ -209,7 +209,8 @@ computeReverseRuntimeMap db = do
     -- This yields a stable snapshot that won't be mutated by concurrent updates.
     m <- SMap.new
     pairs <- ListT.toList $ SMap.listT (databaseRuntimeDep db)
-    forM_ pairs $ \(k, ks) -> SMap.insert ks k m
+    forM_ pairs $ \(pk, ks) -> forM_ (toListKeySet ks) $ \k ->
+        SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k m
     pure m
 -- compute to preserve asyncs
 -- only the running stage 2 keys are actually running

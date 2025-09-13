@@ -85,7 +85,7 @@ shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
 
 shakedatabaseRuntimeDep :: ShakeDatabase -> IO [(Key, KeySet)]
 shakedatabaseRuntimeDep (ShakeDatabase _ _ db) =
-    atomically $ ListT.toList $ SMap.listT (databaseRuntimeDep db)
+    atomically $ (ListT.toList . SMap.listT) =<< computeReverseRuntimeMap db
 
 
 shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], [Key])
