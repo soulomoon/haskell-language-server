@@ -14,7 +14,8 @@ module Development.IDE.Graph.Database(
     shakeShutDatabase,
     shakeGetActionQueueLength,
     shakeComputeToPreserve,
-    shakedatabaseRuntimeDep) where
+    shakedatabaseRuntimeDep,
+    shakePeekAsyncsDelivers) where
 import           Control.Concurrent.Async                (Async)
 import           Control.Concurrent.STM.Stats            (atomically,
                                                           readTVarIO)
@@ -32,6 +33,7 @@ import           Development.IDE.Graph.Internal.Options
 import           Development.IDE.Graph.Internal.Profile  (writeProfile)
 import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
+import           Development.IDE.WorkerThread            (DeliverStatus)
 import qualified ListT
 import qualified StmContainers.Map
 import qualified StmContainers.Map                       as SMap
@@ -89,6 +91,8 @@ shakedatabaseRuntimeDep (ShakeDatabase _ _ db) =
 shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], [Key])
 shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
 
+--a dsfds
+-- fds make it possible to do al ot of jobs
 shakeRunDatabaseForKeys
     :: Maybe [Key]
       -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
@@ -98,6 +102,8 @@ shakeRunDatabaseForKeys
 shakeRunDatabaseForKeys keysChanged sdb as2 = join $ shakeRunDatabaseForKeysSep keysChanged sdb as2
 
 
+shakePeekAsyncsDelivers :: ShakeDatabase -> IO [DeliverStatus]
+shakePeekAsyncsDelivers (ShakeDatabase _ _ db) = peekAsyncsDelivers db
 
 -- | Given a 'ShakeDatabase', write an HTML profile to the given file about the latest run.
 shakeProfileDatabase :: ShakeDatabase -> FilePath -> IO ()

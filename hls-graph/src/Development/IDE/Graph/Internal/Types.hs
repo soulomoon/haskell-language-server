@@ -225,7 +225,7 @@ computeToPreserve db dirtySet = do
   affected <- computeTransitiveReverseDeps db dirtySet
   allRunings <- ListT.toList $ SMap.listT (databaseValues db)
   let allRuningkeys = map fst allRunings
-  let running2UnAffected = [ (k ,async) | (k, v) <- allRunings, not (k `memberKeySet` affected), Running _ _ _ (RunningStage2 async) <- [keyStatus v] ]
+  let running2UnAffected = [ (k, async) | (k, v) <- allRunings, not (k `memberKeySet` affected), Running _ _ _ (RunningStage2 async) <- [keyStatus v] ]
   forM_ allRuningkeys $ \k -> do
     -- if not dirty, bump its step
     unless (memberKeySet k affected) $ do
@@ -364,6 +364,10 @@ shutDatabase preserve db@Database{..} = uninterruptibleMask $ \unmask -> do
             mapM_ waitCatch $ map snd toCancel
     pruneFinished db
 
+peekAsyncsDelivers :: Database -> IO [DeliverStatus]
+peekAsyncsDelivers db = do
+    asyncs <- readTVarIO (databaseThreads db)
+    return (map fst asyncs)
 -- waitForDatabaseRunningKeys :: Database -> IO ()
 -- waitForDatabaseRunningKeys = getDatabaseValues >=> mapM_ (waitRunning . snd)
 

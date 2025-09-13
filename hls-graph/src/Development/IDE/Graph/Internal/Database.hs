@@ -88,26 +88,20 @@ updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
                   | otherwise = status
             in KeyDetails status' rdeps
 -- | Unwrap and build a list of keys in parallel
-build
-    :: forall f key value . (Traversable f, RuleResult key ~ value, Typeable key, Show key, Hashable key, Eq key, Typeable value)
-    => Key -> Database -> Stack -> f key -> IO (f Key, f value)
+build ::
+  forall f key value.
+  (Traversable f, RuleResult key ~ value, Typeable key, Show key, Hashable key, Eq key, Typeable value) =>
+  Key -> Database -> Stack -> f key -> IO (f Key, f value)
 -- build _ st k | traceShow ("build", st, k) False = undefined
 build pk db stack keys = do
-    step <- readTVarIO $ databaseStep db
-    go `catch` \e@(AsyncParentKill i s) -> do
-        if s == step
-            then throw e
-            else throw $ AsyncParentKill i $ Step (-1)
-    where
-    go = do
-        -- step <- readTVarIO $ databaseStep db
-        -- built <- mapConcurrently (builderOne db stack) (fmap newKey keys)
-        built <- builder pk db stack (fmap newKey keys)
-        let (ids, vs) = unzip built
-        pure (ids, fmap (asV . resultValue) vs)
-        where
-            asV :: Value -> value
-            asV (Value x) = unwrapDynamic x
+  -- step <- readTVarIO $ databaseStep db
+  -- built <- mapConcurrently (builderOne db stack) (fmap newKey keys)
+  built <- builder pk db stack (fmap newKey keys)
+  let (ids, vs) = unzip built
+  pure (ids, fmap (asV . resultValue) vs)
+  where
+    asV :: Value -> value
+    asV (Value x) = unwrapDynamic x
 
 
 -- | Build a list of keys and return their results.

@@ -132,6 +132,10 @@ data DeliverStatus = DeliverStatus
     , deliverKey  :: Key
   } deriving (Show)
 
+instance Pretty DeliverStatus where
+  pretty (DeliverStatus step _name key) =
+    "Step:" <+> pretty step <> "," <+> "Key:" <+> pretty (show key)
+
 
 type Worker arg = arg -> IO ()
 

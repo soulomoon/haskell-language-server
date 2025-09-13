@@ -151,6 +151,7 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
                                                           shakeGetBuildStep,
                                                           shakeGetDatabaseKeys,
                                                           shakeNewDatabase,
+                                                          shakePeekAsyncsDelivers,
                                                           shakeProfileDatabase,
                                                           shakeRunDatabaseForKeysSep,
                                                           shakeShutDatabase,
@@ -207,7 +208,7 @@ import           Data.Foldable                           (foldl')
 data Log
   = LogCreateHieDbExportsMapStart
   | LogCreateHieDbExportsMapFinish !Int
-  | LogBuildSessionRestart !ShakeRestartArgs ![DelayedActionInternal] !KeySet !Seconds !(Maybe FilePath) !Int
+  | LogBuildSessionRestart !ShakeRestartArgs ![DelayedActionInternal] !KeySet !Seconds !(Maybe FilePath) !Int ![DeliverStatus]
   | LogBuildSessionRestartTakingTooLong !Seconds
   | LogDelayedAction !(DelayedAction ()) !Seconds
   | LogBuildSessionFinish !Step !(Either SomeException [Either SomeException ()])
@@ -249,13 +250,14 @@ instance Pretty Log where
       "Initializing exports map from hiedb"
     LogCreateHieDbExportsMapFinish exportsMapSize ->
       "Done initializing exports map from hiedb. Size:" <+> pretty exportsMapSize
-    LogBuildSessionRestart restartArgs actionQueue keyBackLog abortDuration shakeProfilePath step ->
+    LogBuildSessionRestart restartArgs actionQueue keyBackLog abortDuration shakeProfilePath step delivers ->
       vcat
         [ "Restarting build session due to" <+> pretty (sraReason restartArgs)
         , "Restarts num:" <+> pretty (sraCount $ restartArgs)
         , "Action Queue:" <+> pretty (map actionName actionQueue)
         -- , "Keys:" <+> pretty (map show $ toListKeySet keyBackLog)
         , "Keys:" <+> pretty (length $ toListKeySet keyBackLog)
+        , "Deliveries still alive:" <+> pretty delivers
         , "Current step:" <+> pretty (show step)
         , "Aborting previous build session took" <+> pretty (showDuration abortDuration) <+> pretty shakeProfilePath ]
     LogBuildSessionRestartTakingTooLong seconds ->
@@ -951,6 +953,7 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         (preservekvs, allRunning2) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
         logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys allRunning2 reverseMap
         (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
+        survivedDelivers <- shakePeekAsyncsDelivers shakeDb
         -- it is every important to update the dirty keys after we enter the critical section
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
         atomically $ modifyTVar' (dirtyKeys shakeExtras) $ \x -> foldl' (flip insertKeySet) x newDirtyKeys
@@ -961,7 +964,7 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         -- this log is required by tests
         step <- shakeGetBuildStep shakeDb
 
-        logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime res step
+        logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime res step survivedDelivers
         return shakeRestartArgs
     )
     -- It is crucial to be masked here, otherwise we can get killed
