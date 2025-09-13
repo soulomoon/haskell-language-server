@@ -35,6 +35,7 @@ import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
+import           Development.IDE.WorkerThread         (DeliverStatus (DeliverStatus))
 import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                    as SMap
@@ -45,7 +46,6 @@ import           UnliftIO                             (async, atomically,
 
 #if MIN_VERSION_base(4,19,0)
 import           Data.Functor                         (unzip)
-import           Development.IDE.WorkerThread         (DeliverStatus (DeliverStatus))
 #else
 import           Data.List.NonEmpty                   (unzip)
 #endif
