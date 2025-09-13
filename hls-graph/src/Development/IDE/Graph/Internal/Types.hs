@@ -204,10 +204,10 @@ computeToPreserve db dirtySet = do
     -- if not dirty, bump its step
     unless (memberKeySet k affected) $ do
       SMap.focus
-        ( Focus.alter $ \case
-            Just kd@KeyDetails {keyStatus = Running {runningStep, runningPrev, runningWait, runningStage}} ->
-              Just (kd {keyStatus = Running (runningStep + 1) runningPrev runningWait runningStage})
-            _ -> Nothing
+        ( Focus.adjust $ \case
+            kd@KeyDetails {keyStatus = Running {runningStep, runningPrev, runningWait, runningStage}} ->
+              (kd {keyStatus = Running (runningStep + 1) runningPrev runningWait runningStage})
+            kd -> kd
         )
         k
         (databaseValues db)

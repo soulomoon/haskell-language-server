@@ -86,8 +86,6 @@ shakedatabaseRuntimeRevDep (ShakeDatabase _ _ db) =
     atomically $ ListT.toList $ SMap.listT (databaseRuntimeRevDep db)
 
 
--- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO (Set (Async ()))
--- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO [(Key, Async ())]
 shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], [Key])
 shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
 
