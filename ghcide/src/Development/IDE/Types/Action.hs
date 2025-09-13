@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -Wno-orphans #-}
 module Development.IDE.Types.Action
   ( DelayedAction (..),
     DelayedActionInternal,
@@ -7,20 +8,23 @@ module Development.IDE.Types.Action
     popQueue,
     doneQueue,
     peekInProgress,
-  abortQueue,countQueue)
+    abortQueue,
+    countQueue,
+    isActionQueueEmpty,
+    delayedActionKey)
 where
 
 import           Control.Concurrent.STM
 import           Data.Hashable          (Hashable (..))
 import           Data.HashSet           (HashSet)
 import qualified Data.HashSet           as Set
-import           Data.Unique            (Unique)
-import           Development.IDE.Graph  (Action)
+import           Data.Unique            (Unique, hashUnique)
+import           Development.IDE.Graph  (Action, Key, newKey)
 import           Ide.Logger
 import           Numeric.Natural
 
 data DelayedAction a = DelayedAction
-  { uniqueID       :: Maybe Unique,
+  { uniqueID       :: Unique,
     -- | Name we use for debugging
     actionName     :: String,
     -- | Priority with which to log the action
@@ -29,6 +33,9 @@ data DelayedAction a = DelayedAction
     getAction      :: Action a
   }
   deriving (Functor)
+
+instance Show Unique where
+  show = show . hashUnique
 
 type DelayedActionInternal = DelayedAction ()
 
@@ -42,6 +49,8 @@ instance Show (DelayedAction a) where
   show d = "DelayedAction: " ++ actionName d
 
 ------------------------------------------------------------------------------
+delayedActionKey :: DelayedAction a -> Key
+delayedActionKey = newKey . show . uniqueID
 
 data ActionQueue = ActionQueue
   { newActions :: TQueue DelayedActionInternal,
@@ -86,3 +95,9 @@ countQueue ActionQueue{..} = do
 
 peekInProgress :: ActionQueue -> STM [DelayedActionInternal]
 peekInProgress ActionQueue {..} = Set.toList <$> readTVar inProgress
+
+isActionQueueEmpty :: ActionQueue -> STM Bool
+isActionQueueEmpty ActionQueue {..} = do
+    emptyQueue <- isEmptyTQueue newActions
+    inProg <- Set.null <$> readTVar inProgress
+    return (emptyQueue && inProg)
