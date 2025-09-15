@@ -21,8 +21,9 @@ import           Control.Concurrent.STM.Stats            (atomicallyNamed)
 import           Control.DeepSeq                         (force)
 import           Control.Exception
 import           Control.Monad.IO.Class
+import           Control.Monad.RWS                       (MonadReader (ask),
+                                                          asks)
 import           Control.Monad.Trans.Class
-import           Control.Monad.Trans.Reader
 import           Data.Foldable                           (toList)
 import           Data.Functor.Identity
 import           Data.IORef
@@ -41,13 +42,13 @@ type ShakeValue a = (Show a, Typeable a, Eq a, Hashable a, NFData a)
 -- | Always rerun this rule when dirty, regardless of the dependencies.
 alwaysRerun :: Action ()
 alwaysRerun = do
-    ref <- Action $ asks actionDeps
+    ref <- asks actionDeps
     liftIO $ modifyIORef' ref (AlwaysRerunDeps mempty <>)
 
 parallel :: [Action a] -> Action [Either SomeException a]
 parallel [] = return []
 parallel xs = do
-    a <- Action ask
+    a <- ask
     deps <- liftIO $ readIORef $ actionDeps a
     case deps of
         UnknownDeps ->
@@ -61,7 +62,7 @@ parallel xs = do
 -- non-blocking version of runActionInDb
 runActionInDbCb :: (a -> String) -> (a -> Action result) -> STM a -> (Either SomeException result -> IO ()) -> Action a
 runActionInDbCb getTitle work getAct handler = do
-    a <- Action ask
+    a <- ask
     liftIO $ atomicallyNamed "action queue - pop" $ do
         act <- getAct
         runInDataBase (getTitle act) (actionDatabase a) [(ignoreState a $ work act, handler)]
@@ -69,7 +70,7 @@ runActionInDbCb getTitle work getAct handler = do
 
 runActionInDb :: String -> [Action a] -> Action [Either SomeException a]
 runActionInDb title acts = do
-    a <- Action ask
+    a <- ask
     xs <- mapM (\x -> do
         barrier <- newEmptyTMVarIO
         return (x, barrier)) acts
@@ -81,7 +82,7 @@ runActionInDb title acts = do
 ignoreState :: SAction -> Action b -> IO b
 ignoreState a x = do
     ref <- newIORef mempty
-    runReaderT (fromAction x) a{actionDeps=ref}
+    runActionMonad x a{actionDeps=ref}
 
 isAsyncException :: SomeException -> Bool
 isAsyncException e
@@ -95,8 +96,8 @@ isAsyncException e
 
 actionCatch :: Exception e => Action a -> (e -> Action a) -> Action a
 actionCatch a b = do
-    v <- Action ask
-    Action $ lift $ catchJust f (runReaderT (fromAction a) v) (\x -> runReaderT (fromAction (b x)) v)
+    v <- ask
+    liftIO $ catchJust f (runActionMonad a v) (\x -> runActionMonad (b x) v)
     where
         -- Catch only catches exceptions that were caused by this code, not those that
         -- are a result of program termination
@@ -105,24 +106,24 @@ actionCatch a b = do
 
 actionBracket :: IO a -> (a -> IO b) -> (a -> Action c) -> Action c
 actionBracket a b c = do
-    v <- Action ask
-    Action $ lift $ bracket a b (\x -> runReaderT (fromAction (c x)) v)
+    v <- ask
+    liftIO $ bracket a b (\x -> runActionMonad (c x) v)
 
 actionFinally :: Action a -> IO b -> Action a
 actionFinally a b = do
     v <- Action ask
-    Action $ lift $ finally (runReaderT (fromAction a) v) b
+    Action $ lift $ finally (runActionMonad a v) b
 
 apply1 :: (RuleResult key ~ value, ShakeValue key, Typeable value) => key -> Action value
 apply1 k = runIdentity <$> apply (Identity k)
 
 apply :: (Traversable f, RuleResult key ~ value, ShakeValue key, Typeable value) => f key -> Action (f value)
 apply ks = do
-    db <- Action $ asks actionDatabase
-    stack <- Action $ asks actionStack
+    db <- asks actionDatabase
+    stack <- asks actionStack
     pk <- getActionKey
     (is, vs) <- liftIO $ build pk db stack ks
-    ref <- Action $ asks actionDeps
+    ref <- asks actionDeps
     let !ks = force $ fromListKeySet $ toList is
     liftIO $ modifyIORef' ref (ResultDeps [ks] <>)
     pure vs
@@ -130,8 +131,8 @@ apply ks = do
 -- | Evaluate a list of keys without recording any dependencies.
 applyWithoutDependency :: (Traversable f, RuleResult key ~ value, ShakeValue key, Typeable value) => f key -> Action (f value)
 applyWithoutDependency ks = do
-    db <- Action $ asks actionDatabase
-    stack <- Action $ asks actionStack
+    db <- asks actionDatabase
+    stack <- asks actionStack
     pk <- getActionKey
     (_, vs) <- liftIO $ build pk db stack ks
     pure vs
@@ -139,7 +140,7 @@ applyWithoutDependency ks = do
 runActions :: Key -> Database -> [Action a] -> IO [Either SomeException a]
 runActions pk db xs = do
     deps <- newIORef mempty
-    runReaderT (fromAction $ parallel xs) $ SAction pk db deps emptyStack
+    runActionMonad (parallel xs) $ SAction pk db deps emptyStack
 
 -- | Returns the set of dirty keys annotated with their age (in # of builds)
 getDirtySet  :: Action [(Key, Int)]

@@ -11,7 +11,8 @@ import           Control.Monad                      (forM, forM_, forever,
                                                      unless, when)
 import           Control.Monad.Catch
 import           Control.Monad.IO.Class
-import           Control.Monad.Trans.Reader
+import           Control.Monad.RWS                  (MonadReader (local), asks)
+import           Control.Monad.Trans.Reader         (ReaderT (..))
 import           Data.Aeson                         (FromJSON, ToJSON)
 import           Data.Bifunctor                     (second)
 import qualified Data.ByteString                    as BS
@@ -88,7 +89,10 @@ data SRules = SRules {
 -- 'Development.IDE.Graph.Internal.Action.actionCatch'. In particular, it is
 -- permissible to use the 'MonadFail' instance, which will lead to an 'IOException'.
 newtype Action a = Action {fromAction :: ReaderT SAction IO a}
-    deriving newtype (Monad, Applicative, Functor, MonadIO, MonadFail, MonadThrow, MonadCatch, MonadMask, MonadUnliftIO)
+    deriving newtype (Monad, Applicative, Functor, MonadIO, MonadFail, MonadThrow, MonadCatch, MonadMask, MonadUnliftIO, MonadReader SAction)
+
+runActionMonad :: Action a ->  SAction -> IO a
+runActionMonad (Action r) s = runReaderT r s
 
 data SAction = SAction {
     actionKey      :: !Key,
@@ -98,14 +102,13 @@ data SAction = SAction {
     }
 
 getDatabase :: Action Database
-getDatabase = Action $ asks actionDatabase
+getDatabase = asks actionDatabase
 
 getActionKey :: Action Key
-getActionKey = Action $ asks actionKey
+getActionKey = asks actionKey
 
 setActionKey :: Key -> Action a -> Action a
-setActionKey k (Action act) = Action $ do
-    local (\s' -> s'{actionKey = k}) act
+setActionKey k act = local (\s' -> s'{actionKey = k}) act
 
 -- | waitForDatabaseRunningKeysAction waits for all keys in the database to finish running.
 -- waitForDatabaseRunningKeysAction :: Action ()

@@ -25,7 +25,8 @@ module Development.IDE.WorkerThread
     tryReadTaskQueue,
     withWorkerQueueSimpleRight,
     submitWorkAtHead,
-    awaitRunInThread
+    awaitRunInThread,
+    withAsyncs
   ) where
 
 import           Control.Concurrent.Async           (withAsync)
@@ -81,8 +82,12 @@ withWorkerQueueSimple log title = withWorkerQueue log title id
 
 withWorkerQueueSimpleRight :: Logger -> T.Text -> ContT () IO (TaskQueue (Either Dynamic (IO ())))
 withWorkerQueueSimpleRight log title = withWorkerQueue log title $ eitherWorker (const $ return ()) id
+
+
 withWorkerQueue :: Logger -> T.Text -> (t -> IO ()) -> ContT () IO (TaskQueue t)
-withWorkerQueue log title workerAction = ContT $ \mainAction -> do
+withWorkerQueue = withWorkersQueue 1
+withWorkersQueue :: Int -> Logger -> T.Text -> (t -> IO ()) -> ContT () IO (TaskQueue t)
+withWorkersQueue n log title workerAction = ContT $ \mainAction -> do
   tid <- myThreadId
   log (LogMainThreadId title tid)
   q <- newTaskQueueIO
@@ -94,7 +99,7 @@ withWorkerQueue log title workerAction = ContT $ \mainAction -> do
   -- If 'cancel' does interrupt the thread (e.g., while blocked in STM or in a cooperative job),
   -- the thread exits immediately and never checks the TMVar; in such cases, the stop flag is redundant.
   b <- newEmptyTMVarIO
-  withAsync (writerThread q b) $ \_ -> do
+  withAsyncs (replicate n (writerThread q b)) $ do
     mainAction q
     -- if we want to debug the exact location the worker swallows an async exception, we can
     -- temporarily comment out the `finally` clause.
@@ -121,6 +126,11 @@ withWorkerQueue log title workerAction = ContT $ \mainAction -> do
                 log $ LogSingleWorkEnded title
                 writerThread q b
 
+withAsyncs :: [IO ()] -> IO () -> IO ()
+withAsyncs ios mainAction = go ios
+    where
+        go []     = mainAction
+        go (x:xs) = withAsync x $ \_ -> go xs
 
 -- | 'awaitRunInThread' queues up an 'IO' action to be run by a worker thread,
 -- and then blocks until the result is computed. If the action throws an
