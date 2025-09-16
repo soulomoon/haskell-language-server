@@ -84,14 +84,6 @@ ignoreState a x = do
     ref <- newIORef mempty
     runActionMonad x a{actionDeps=ref}
 
-isAsyncException :: SomeException -> Bool
-isAsyncException e
-    | Just (_ :: SomeAsyncException) <- fromException e = True
-    | Just (_ :: AsyncCancelled) <- fromException e = True
-    | Just (_ :: AsyncException) <- fromException e = True
-    | Just (_ :: AsyncParentKill) <- fromException e = True
-    | Just (_ :: ExitCode) <- fromException e = True
-    | otherwise = False
 
 
 actionCatch :: Exception e => Action a -> (e -> Action a) -> Action a

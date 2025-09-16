@@ -356,11 +356,20 @@ handleInit initParams env (TRequestMessage _ _ m params) = otTracedHandler "Init
 
 
 runShakeThread :: Recorder (WithPriority Log) -> MVar IdeState -> ContT () IO DBQue
-runShakeThread recorder mide =
-  withWorkerQueue
-    (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug)
-    "ShakeShakeControlQueue"
-    (eitherWorker (runRestartTaskDyn (cmapWithPrio LogShake recorder) mide) id)
+runShakeThread recorder mide = do
+  q1 <-
+    withWorkerQueue
+      (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug)
+      "ShakeShakeControlQueue"
+      (eitherWorker (runRestartTaskDyn (cmapWithPrio LogShake recorder) mide) id)
+
+  q2 <-
+    withWorkersQueue 32
+      (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug)
+      "ShakeShakeWorkerQueue"
+      id
+  return (q1, q2)
+    -- tq1 <- (eitherWorker (runRestartTaskDyn (cmapWithPrio LogShake recorder) mide) id)
 -- | runWithWorkerThreads
 -- create several threads to run the session, db and session loader
 -- see Note [Serializing runs in separate thread]

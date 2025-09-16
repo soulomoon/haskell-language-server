@@ -14,6 +14,7 @@ import           Prelude                              hiding (unzip)
 
 import           Control.Concurrent.STM.Stats         (STM, atomicallyNamed,
                                                        check, modifyTVar',
+                                                       newEmptyTMVar,
                                                        newEmptyTMVarIO,
                                                        newTVarIO, putTMVar,
                                                        readTMVar, readTVar,
@@ -58,6 +59,8 @@ newDatabase dataBaseLogger databaseQueue databaseExtra databaseRules = do
     databaseValuesLock <- newTVarIO True
     databaseValues <- atomically SMap.new
     databaseRuntimeDep <- atomically SMap.new
+    databaseWaiting <- atomically SMap.new
+    databaseWaiterMap <- atomically SMap.new
     pure Database{..}
 
 -- | Increment the step and mark dirty.
@@ -109,8 +112,14 @@ build pk db stack keys = do
 --  Otherwise, a blocking computation is returned *which must be evaluated asynchronously* to avoid deadlock.
 builder :: (Traversable f) => Key -> Database -> Stack -> f Key -> IO (f (Key, Result))
 -- builder _ st kk | traceShow ("builder", st,kk) False = undefined
-builder pk db stack keys = do
-    waits <- for keys (\k -> builderOne pk db stack k)
+builder pk db@Database{..} stack keys = do
+    (waits, waiter) <- atomically $ do
+      waiter <- newTask 0
+      SMap.insert waiter pk databaseWaiterMap
+      waits <- for keys (\k -> builderOne pk db stack k)
+      return (waits, waiter)
+    -- we need to steal work from the database queue so that we can make progress on the dependencies
+    stealWorkFromDBQue db waiter
     for waits interpreBuildContinue
 
 -- the first run should not block
@@ -120,11 +129,11 @@ interpreBuildContinue :: BuildContinue -> IO (Key, Result)
 interpreBuildContinue (BCStop k v)     = return (k, v)
 interpreBuildContinue (BCContinue ioR) = ioR
 
-builderOne :: Key -> Database -> Stack -> Key -> IO BuildContinue
+builderOne :: Key -> Database -> Stack -> Key -> STM BuildContinue
 builderOne parentKey db@Database {..} stack id = do
-  traceEvent ("builderOne: " ++ show id) return ()
-  barrier <- newEmptyMVar
-  liftIO $ atomicallyNamed "builder" $ do
+    traceEvent ("builderOne: " ++ show id) return ()
+    barrier <- newEmptyTMVar
+--   liftIO $ atomicallyNamed "builder" $ do
     -- Spawn the id if needed
     dbNotLocked db
     insertdatabaseRuntimeDep id parentKey db
@@ -136,7 +145,7 @@ builderOne parentKey db@Database {..} stack id = do
     case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
       Dirty s -> do
         -- we need to run serially to avoid summiting run but killed in the middle
-        let wait = readMVar barrier
+        let wait = atomically $ readTMVar barrier
         runOneInDataBase
           ( do
               status <- atomically (SMap.lookup id databaseValues)
@@ -152,23 +161,20 @@ builderOne parentKey db@Database {..} stack id = do
               -- it is safe from worker thread
               atomically $ SMap.focus (updateStatus $ Running current s wait (RunningStage2 adyncH)) id databaseValues
           )
-          (refresh db stack id s >>= putMVar barrier . (id,))
+          (refresh db stack id s >>= atomically . putTMVar barrier . (id,))
           $ \e -> do
             atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
-            putMVar barrier (throw e)
+            atomically $ putTMVar barrier (throw e)
         SMap.focus (updateStatus $ Running current s wait RunningStage1) id databaseValues
-        return $ BCContinue $ readMVar barrier
+        databaseWaitForKey db parentKey id
+        return $ BCContinue $ atomically $ readTMVar barrier
       Clean r -> return $ BCStop id r
       Running _step _s wait _
         | memberStack id stack -> throw $ StackException stack
-        | otherwise -> return $ BCContinue wait
+        | otherwise -> do
+            databaseWaitForKey db parentKey id
+            return $ BCContinue wait
       Exception _ e _s -> throw e
-      where
-        warpLog title a =
-            bracket_
-                (dataBaseLogger ("Starting async action: " ++ title))
-                (dataBaseLogger $ "Finished async action: " ++ title)
-                a
 
 -- | isDirty
 -- only dirty when it's build time is older than the changed time of one of its dependencies
@@ -245,6 +251,7 @@ compute db@Database{..} stack key mode result = do
         dbNotLocked db
         runHook
         SMap.focus (updateStatus $ Clean res) key databaseValues
+        resolverWaitersForKey db key
     pure res
 
 updateStatus :: Monad m => Status -> Focus.Focus KeyDetails m ()

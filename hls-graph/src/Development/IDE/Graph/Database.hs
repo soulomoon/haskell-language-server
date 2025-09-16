@@ -86,7 +86,8 @@ shakedatabaseRuntimeDep (ShakeDatabase _ _ db) =
 
 
 shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], [Key])
-shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
+-- shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
+shakeComputeToPreserve (ShakeDatabase _ _ db) ks = return ([], [])
 
 --a dsfds
 -- fds make it possible to do al ot of jobs

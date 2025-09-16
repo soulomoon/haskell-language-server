@@ -6,9 +6,11 @@
 
 module Development.IDE.Graph.Internal.Types where
 
-import           Control.Concurrent.STM             (STM, check, modifyTVar')
+import           Control.Concurrent.STM             (STM, check, modifyTVar',
+                                                     newTVarIO)
+import           Control.Exception                  (AsyncException, throw)
 import           Control.Monad                      (forM, forM_, forever,
-                                                     unless, when)
+                                                     unless, void, when)
 import           Control.Monad.Catch
 import           Control.Monad.IO.Class
 import           Control.Monad.RWS                  (MonadReader (local), asks)
@@ -33,6 +35,9 @@ import           Development.IDE.WorkerThread       (DeliverStatus (..),
                                                      TaskQueue (..),
                                                      awaitRunInThread,
                                                      counTaskQueue,
+                                                     haltWokerQueue,
+                                                     startWokerQueue,
+                                                     stealWorkFromQue,
                                                      writeTaskQueue)
 import qualified Focus
 import           GHC.Conc                           (TVar, atomically)
@@ -40,14 +45,17 @@ import           GHC.Generics                       (Generic)
 import qualified ListT
 import qualified StmContainers.Map                  as SMap
 import           StmContainers.Map                  (Map)
+import           System.Exit                        (ExitCode)
 import           System.Time.Extra                  (Seconds, sleep)
 import           UnliftIO                           (Async (asyncThreadId),
-                                                     MonadUnliftIO, async,
+                                                     AsyncCancelled,
+                                                     MonadUnliftIO,
+                                                     SomeAsyncException, async,
                                                      asyncExceptionFromException,
                                                      asyncExceptionToException,
-                                                     poll, readTVar, readTVarIO,
-                                                     throwTo, waitCatch,
-                                                     withAsync)
+                                                     newTVar, poll, readTVar,
+                                                     readTVarIO, throwTo,
+                                                     waitCatch, withAsync)
 import           UnliftIO.Concurrent                (ThreadId, myThreadId)
 import qualified UnliftIO.Exception                 as UE
 
@@ -130,15 +138,18 @@ getShakeStep (ShakeDatabase _ _ db) = do
 
 lockShakeDatabaseValues :: MonadIO m => ShakeDatabase -> m ()
 lockShakeDatabaseValues (ShakeDatabase _ _ db) = do
+    liftIO $ haltDatabaseQue db
     liftIO $ atomically $ modifyTVar' (databaseValuesLock db) (const False)
 
 unlockShakeDatabaseValues :: MonadIO m => ShakeDatabase -> m ()
 unlockShakeDatabaseValues (ShakeDatabase _ _ db) = do
     liftIO $ atomically $ modifyTVar' (databaseValuesLock db) (const True)
+    liftIO $ resumeDatabaseQue db
 
 withShakeDatabaseValuesLock :: ShakeDatabase -> IO c -> IO c
 withShakeDatabaseValuesLock sdb act = do
     UE.bracket_ (lockShakeDatabaseValues sdb) (unlockShakeDatabaseValues sdb) act
+
 
 dbNotLocked :: Database -> STM ()
 dbNotLocked db = do
@@ -162,11 +173,79 @@ onKeyReverseDeps f it@KeyDetails{..} =
     it{keyReverseDeps = f keyReverseDeps}
 
 
-type DBQue = TaskQueue (Either Dynamic (IO ()))
+type DBQue = (TaskQueue (Either Dynamic (IO ())), TaskQueue (IO ()))
+
+haltDBQue :: DBQue -> IO ()
+haltDBQue (q1, q2) = do
+--   haltWokerQueue q1
+  haltWokerQueue q2
+
+resumeDBQue :: DBQue -> IO ()
+resumeDBQue (q1, q2) = do
+--   startWokerQueue q1
+  startWokerQueue q2
+
+withDBQueStopped :: DBQue -> IO c -> IO c
+withDBQueStopped q act = do
+  UE.bracket_ (haltDBQue q) (resumeDBQue q) act
+
+haltDatabaseQue :: Database -> IO ()
+haltDatabaseQue = haltDBQue . databaseQueue
+resumeDatabaseQue :: Database -> IO ()
+resumeDatabaseQue = resumeDBQue . databaseQueue
+
+-- steal work from the database queue, until the STM Bool is True
+stealWorkFromDBQue :: Database -> Waiter -> IO ()
+stealWorkFromDBQue db Waiter{..} =
+    let done = fmap (==0) $ readTVar depsLeft
+        workQueu = snd (databaseQueue db) in
+  stealWorkFromQue workQueu done
+
+data Waiter = Waiter
+  { depsLeft :: TVar Int
+--   , waitDone :: TVar Bool
+  }
+
+newTask :: Int -> STM Waiter
+newTask i = do
+    depsLeft <- newTVar i
+    -- waitDone <- newTVar False
+    return Waiter {..}
+
+databaseWaitForKey :: Database -> Key -> Key -> STM ()
+databaseWaitForKey Database {..} pk k = do
+  mWaiter <- SMap.lookup k databaseWaiterMap
+  waiter <- case mWaiter of
+    Just waiter -> do
+      modifyTVar' (depsLeft waiter) (+ 1)
+      return waiter
+    Nothing -> do
+      waiter <- newTask 1
+      SMap.insert waiter pk databaseWaiterMap
+      return waiter
+  SMap.focus (Focus.alter (Just . maybe [waiter] (waiter :))) k databaseWaiting
+
+resolverWaitersForKey :: Database -> Key -> STM ()
+resolverWaitersForKey Database {..} k = do
+  mWaiters <- SMap.lookup k databaseWaiting
+  case mWaiters of
+    Nothing -> return ()
+    Just waiters -> do
+      SMap.delete k databaseWaiting
+      forM_ waiters $ \waiter -> do
+        modifyTVar' (depsLeft waiter) (\n -> n - 1)
+        n <- readTVar (depsLeft waiter)
+        when (n == 0) $ do
+        --   modifyTVar' (waitDone waiter) (const True)
+          SMap.delete k databaseWaiterMap
+
 data Database = Database {
     databaseExtra      :: Dynamic,
 
     databaseThreads    :: TVar [(DeliverStatus, Async ())],
+
+    databaseWaiting    :: SMap.Map Key [Waiter],
+    databaseWaiterMap  :: SMap.Map Key Waiter,
 
     databaseRuntimeDep :: SMap.Map Key KeySet,
     -- it is used to compute the transitive reverse deps, so
@@ -280,26 +359,73 @@ insertdatabaseRuntimeDep k pk db = do
 shakeDataBaseQueue :: ShakeDatabase -> DBQue
 shakeDataBaseQueue = databaseQueue . (\(ShakeDatabase _ _ db) -> db)
 
-awaitRunInDb :: Database -> IO result -> IO result
-awaitRunInDb db act = awaitRunInThread (databaseQueue db) act
-
+-- awaitRunInDb :: Database -> IO result -> IO result
+-- awaitRunInDb db act = awaitRunInThread (databaseQueue db) act
 
 databaseGetActionQueueLength :: Database -> STM Int
 databaseGetActionQueueLength db = do
-    counTaskQueue (databaseQueue db)
+    counTaskQueue $ fst (databaseQueue db)
 
 runInDataBase :: String -> Database -> [(IO result, Either SomeException result -> IO ())] -> STM ()
 runInDataBase title db acts = do
     s <- getDataBaseStepInt db
     let actWithEmptyHook = map (\(x, y) -> (const $ return (), x, y)) acts
-    runInThreadStmInNewThreads db (return $ DeliverStatus s title (newKey "root"))  actWithEmptyHook
+    runInThreadStmInWorkersThreads db (return $ DeliverStatus s title (newKey "root"))  actWithEmptyHook
+
+writeTaskQueueDataBase :: Database -> IO () -> STM ()
+writeTaskQueueDataBase db act = do
+    writeTaskQueue (fst (databaseQueue db)) $ Right act
+
+writeWorkerQueueDataBase :: Database -> IO () -> STM ()
+writeWorkerQueueDataBase db act = do
+    writeTaskQueue (snd (databaseQueue db)) act
+
+runInThreadStmInWorkersThreads ::  Database -> IO DeliverStatus -> [(Async () -> IO (), IO result, Either SomeException result -> IO ())] -> STM ()
+runInThreadStmInWorkersThreads db mkDeliver acts = do
+  -- Take an action from TQueue, run it and
+  -- use barrier to wait for the result
+    let log prefix title = dataBaseLogger db (prefix ++ title)
+    writeWorkerQueueDataBase db $ do
+        uninterruptibleMask $ \restore -> do
+            do
+                deliver <- mkDeliver
+                log "runInThreadStmInWorkersThreads submit begin " (deliverName deliver)
+                curStep <- atomically $ getDataBaseStepInt db
+                when (curStep == deliverStep deliver) $ do
+                    mapM_ (\(preHook, act, handler) -> do
+                        -- a <- async (handler =<< (restore $ Right <$> act) `catch` \e@(SomeException _) -> return (Left e))
+                        atomically $
+                            writeWorkerQueueDataBase db (rethrowAfterHandler handler =<< (restore $ Right <$> act)
+                                `catch` \e@(SomeException _) -> return (Left e))
+                        -- preHook a
+                        -- return (deliver, a)
+                        ) acts
+                    -- atomically $ modifyTVar' (databaseThreads db) (syncs++)
+                log "runInThreadStmInWorkersThreads submit end " (deliverName deliver)
+    where rethrowAfterHandler handler (Left e) = do
+            void $ handler (Left e)
+            when (isAsyncException e) $ throw e
+          rethrowAfterHandler handler e = handler e
+
+
+
+
+isAsyncException :: SomeException -> Bool
+isAsyncException e
+    | Just (_ :: SomeAsyncException) <- fromException e = True
+    | Just (_ :: AsyncCancelled) <- fromException e = True
+    | Just (_ :: AsyncException) <- fromException e = True
+    | Just (_ :: AsyncParentKill) <- fromException e = True
+    | Just (_ :: ExitCode) <- fromException e = True
+    | otherwise = False
+
 
 runInThreadStmInNewThreads ::  Database -> IO DeliverStatus -> [(Async () -> IO (), IO result, Either SomeException result -> IO ())] -> STM ()
 runInThreadStmInNewThreads db mkDeliver acts = do
   -- Take an action from TQueue, run it and
   -- use barrier to wait for the result
     let log prefix title = dataBaseLogger db (prefix ++ title)
-    writeTaskQueue (databaseQueue db) $ Right $ do
+    writeTaskQueueDataBase db $ do
         uninterruptibleMask $ \restore -> do
             do
                 deliver <- mkDeliver
@@ -316,7 +442,7 @@ runInThreadStmInNewThreads db mkDeliver acts = do
 
 runOneInDataBase :: IO DeliverStatus -> Database -> (Async () -> IO ()) -> IO result -> (SomeException -> IO ()) -> STM ()
 runOneInDataBase mkDelivery db registerAsync act handler = do
-  runInThreadStmInNewThreads
+  runInThreadStmInWorkersThreads
     db
     mkDelivery
     [ ( registerAsync, act,
@@ -345,8 +471,11 @@ shutDatabase preserve db@Database{..} = uninterruptibleMask $ \unmask -> do
     asyncs <- readTVarIO databaseThreads
     step <- readTVarIO databaseStep
     tid <- myThreadId
-    -- traceEventIO ("shutDatabase: cancelling " ++ show (length asyncs) ++ " asyncs, step " ++ show step)
-    -- traceEventIO ("shutDatabase: async entries: " ++ show (map (deliverName . fst) asyncs))
+
+    -- clean up databaseWaiting and databaseWaiterMap
+    atomically $ SMap.reset databaseWaiting
+    atomically $ SMap.reset databaseWaiterMap
+
     let remains = filter (\(_, s) -> s `S.member` preserve) asyncs
     let toCancel = filter (\(_, s) -> s `S.notMember` preserve) asyncs
     -- traceEventIO ("shutDatabase: remains count: " ++ show (length remains) ++ ", names: " ++ show (map (deliverName . fst) remains))
