@@ -841,7 +841,7 @@ shakeSessionInit recorder IdeState{..} = do
     -- Take a snapshot of the VFS - it should be empty as we've received no notifications
     -- till now, but it can't hurt to be in sync with the `lsp` library.
     vfs <- vfsSnapshot (lspEnv shakeExtras)
-    initSession <- newSession recorder shakeExtras (VFSModified vfs) shakeDb [] "shakeSessionInit"
+    initSession <- newSession recorder shakeExtras (VFSModified vfs) shakeDb [] "shakeSessionInit" mempty
     putMVar shakeSession initSession
     logWith recorder Debug LogSessionInitialised
 
@@ -951,7 +951,7 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         newDirtyKeys <- sraBetweenSessions shakeRestartArgs
         reverseMap <- shakedatabaseRuntimeDep shakeDb
         (preservekvs, allRunning2) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
-        logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys allRunning2 reverseMap
+        logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys [] reverseMap
         (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
         survivedDelivers <- shakePeekAsyncsDelivers shakeDb
         -- it is every important to update the dirty keys after we enter the critical section
@@ -965,14 +965,14 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         step <- shakeGetBuildStep shakeDb
 
         logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime res step survivedDelivers
-        return shakeRestartArgs
+        return (shakeRestartArgs, newDirtyKeys)
     )
     -- It is crucial to be masked here, otherwise we can get killed
     -- between spawning the new thread and updating shakeSession.
     -- See https://github.com/haskell/ghcide/issues/79
-    ( \(ShakeRestartArgs {..}) ->
+    ( \(ShakeRestartArgs {..}, newDirtyKeys) ->
         do
-          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason
+          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason (fromListKeySet newDirtyKeys)
           `finally` for_ sraWaitMVars (`putMVar` ())
     )
   where
@@ -1019,8 +1019,9 @@ newSession
     -> ShakeDatabase
     -> [DelayedActionInternal]
     -> String
+    -> KeySet
     -> IO ShakeSession
-newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
+newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKeys = do
 
     -- Take a new VFS snapshot
     case vfsMod of
@@ -1128,8 +1129,9 @@ garbageCollectDirtyKeys = do
 
 garbageCollectDirtyKeysOlderThan :: Int -> CheckParents -> Action [Key]
 garbageCollectDirtyKeysOlderThan maxAge checkParents = otTracedGarbageCollection "dirty GC" $ do
-    dirtySet <- getDirtySet
-    garbageCollectKeys "dirty GC" maxAge checkParents dirtySet
+    -- dirtySet <- getDirtySet
+    -- garbageCollectKeys "dirty GC" maxAge checkParents dirtySet
+    return []
 
 garbageCollectKeys :: String -> Int -> CheckParents -> [(Key, Int)] -> Action [Key]
 garbageCollectKeys label maxAge checkParents agedKeys = do

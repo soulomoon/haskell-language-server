@@ -225,7 +225,7 @@ computeReverseRuntimeMap db = do
 -- all non-dirty running need to have an updated step,
 -- so it won't be view as dirty when we restart the build
 -- computeToPreserve :: Database -> KeySet -> STM [(Key, Async ())]
-computeToPreserve :: Database -> KeySet -> STM ([(Key, Async ())], [Key])
+computeToPreserve :: Database -> KeySet -> STM ([(Key, Async ())], KeySet)
 computeToPreserve db dirtySet = do
   -- All keys that depend (directly or transitively) on any dirty key
   affected <- computeTransitiveReverseDeps db dirtySet
@@ -244,7 +244,7 @@ computeToPreserve db dirtySet = do
         k
         (databaseValues db)
   -- Keep only those whose key is NOT affected by the dirty set
-  pure ([kv | kv@(k, _async) <- running2UnAffected, not (memberKeySet k affected)], allRuningkeys)
+  pure ([kv | kv@(k, _async) <- running2UnAffected, not (memberKeySet k affected)], fromListKeySet allRuningkeys)
 
 -- compute the transitive reverse dependencies of a set of keys
 -- using databaseRuntimeDep in the Database
@@ -402,6 +402,13 @@ viewDirty :: Step -> Status -> Status
 viewDirty currentStep (Running s re _ _) | currentStep /= s = Dirty re
 viewDirty currentStep (Exception s _ re) | currentStep /= s = Dirty re
 viewDirty _ other = other
+
+
+viewToRun :: Step -> Status -> Maybe Status
+-- viewToRun currentStep (Running s re _ _) | currentStep /= s = Dirty re
+viewToRun currentStep (Exception s _ _re) | currentStep /= s = Nothing
+viewToRun currentStep (Running s re _ _) | currentStep /= s = Nothing
+viewToRun _ other = Just other
 
 getResult :: Status -> Maybe Result
 getResult (Clean re)           = Just re

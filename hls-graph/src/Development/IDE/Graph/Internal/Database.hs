@@ -8,19 +8,18 @@
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TypeFamilies       #-}
 
-module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..)) where
+module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..), upSweepAction, updateClean) where
 
 import           Prelude                              hiding (unzip)
 
 import           Control.Concurrent.STM.Stats         (STM, atomicallyNamed,
-                                                       check, modifyTVar',
-                                                       newEmptyTMVarIO,
-                                                       newTVarIO, putTMVar,
-                                                       readTMVar, readTVar,
-                                                       readTVarIO, retry)
+                                                       modifyTVar', newTVarIO,
+                                                       readTVar, readTVarIO,
+                                                       retry)
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class               (MonadIO (liftIO))
+import qualified Control.Monad.RWS                    as RWS
 import           Control.Monad.Trans.Class            (lift)
 import           Control.Monad.Trans.Reader
 import qualified Control.Monad.Trans.State.Strict     as State
@@ -40,12 +39,14 @@ import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                    as SMap
 import           System.Time.Extra                    (duration)
-import           UnliftIO                             (async, atomically,
+import           UnliftIO                             (MVar, atomically,
                                                        newEmptyMVar, putMVar,
                                                        readMVar)
 
 #if MIN_VERSION_base(4,19,0)
+import           Control.Concurrent                   (myThreadId)
 import           Data.Functor                         (unzip)
+-- import Control.Monad.Identity (Identity(..))
 #else
 import           Data.List.NonEmpty                   (unzip)
 #endif
@@ -67,7 +68,7 @@ incDatabase :: Database -> Maybe [Key] -> IO ()
 incDatabase db (Just kk) = do
     atomicallyNamed "incDatabase" $ modifyTVar'  (databaseStep db) $ \(Step i) -> Step $ i + 1
     transitiveDirtyKeys <- transitiveDirtySet db kk
-    for_ (toListKeySet transitiveDirtyKeys) $ \k ->
+    traceEvent ("upsweep all dirties " ++ show (toListKeySet transitiveDirtyKeys)) $ for_ (toListKeySet transitiveDirtyKeys) $ \k ->
         -- Updating all the keys atomically is not necessary
         -- since we assume that no build is mutating the db.
         -- Therefore run one transaction per key to minimise contention.
@@ -87,6 +88,16 @@ updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
                   | Clean x <- status = Dirty (Just x)
                   | otherwise = status
             in KeyDetails status' rdeps
+
+updateClean :: Monad m => Focus.Focus KeyDetails m ()
+updateClean = Focus.adjust $ \(KeyDetails status rdeps) ->
+            let status'
+                  | Dirty (Just x) <- status = Clean x
+                  | otherwise = status
+            in KeyDetails status' rdeps
+
+-- updateClean :: Monad m => Focus.Focus KeyDetails m ()
+-- updateClean = Focus.adjust $ \(KeyDetails _ rdeps) ->
 -- | Unwrap and build a list of keys in parallel
 build ::
   forall f key value.
@@ -124,6 +135,7 @@ builderOne :: Key -> Database -> Stack -> Key -> IO BuildContinue
 builderOne parentKey db@Database {..} stack id = do
   traceEvent ("builderOne: " ++ show id) return ()
   barrier <- newEmptyMVar
+  tid <- liftIO myThreadId
   liftIO $ atomicallyNamed "builder" $ do
     -- Spawn the id if needed
     dbNotLocked db
@@ -133,8 +145,8 @@ builderOne parentKey db@Database {..} stack id = do
     -- depending on wether it is marked as dirty
     status <- SMap.lookup id databaseValues
     current <- readTVar databaseStep
-    case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
-      Dirty s -> do
+    case (viewToRun current . keyStatus) =<< status of
+      Nothing -> do
         -- we need to run serially to avoid summiting run but killed in the middle
         let wait = readMVar barrier
         runOneInDataBase
@@ -150,25 +162,20 @@ builderOne parentKey db@Database {..} stack id = do
           db
           ( \adyncH ->
               -- it is safe from worker thread
-              atomically $ SMap.focus (updateStatus $ Running current s wait (RunningStage2 adyncH)) id databaseValues
+              atomically $ SMap.focus (updateStatus $ Running current Nothing wait (RunningStage2 adyncH)) id databaseValues
           )
-          (refresh db stack id s >>= putMVar barrier . (id,))
+          (refresh db stack id Nothing >>= putMVar barrier . (id,))
           $ \e -> do
-            atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
+            atomically $ SMap.focus (updateStatus $ Exception current e Nothing) id databaseValues
             putMVar barrier (throw e)
-        SMap.focus (updateStatus $ Running current s wait RunningStage1) id databaseValues
+        SMap.focus (updateStatus $ Running current Nothing wait RunningStage1) id databaseValues
         return $ BCContinue $ readMVar barrier
-      Clean r -> return $ BCStop id r
-      Running _step _s wait _
+      Just (Dirty _) -> traceEvent ("[" ++ show tid ++ "] waiting upsweep of " ++ show id) retry
+      Just (Clean r) -> return $ BCStop id r
+      Just (Running _step _s wait _)
         | memberStack id stack -> throw $ StackException stack
         | otherwise -> return $ BCContinue wait
-      Exception _ e _s -> throw e
-      where
-        warpLog title a =
-            bracket_
-                (dataBaseLogger ("Starting async action: " ++ title))
-                (dataBaseLogger $ "Finished async action: " ++ title)
-                a
+      Just (Exception _ e _s) -> throw e
 
 -- | isDirty
 -- only dirty when it's build time is older than the changed time of one of its dependencies
@@ -195,6 +202,97 @@ refreshDeps visited db stack key result = \case
                 -- else kick the rest of the deps
                 else refreshDeps newVisited db stack key result deps
 
+-- propogate up the changes
+
+-- When an change event happens,
+-- we mark transitively all the keys that depend on the changed key as dirty.
+-- then when we upSweep, we just fire and set it as clean
+
+-- We try to compute the child key first,
+-- and then check if the child key changed.
+-- when a child key does not changed, we immediately remove the dirty mark from transitive parent keys.
+-- when a child key did changed, propogate to all the parent key recursively.
+
+-- the same event might reach the same key multiple times,
+-- we need to make sure the key is only computed once for an event.
+-- So if the key is running or clean, we stop here
+
+-- if we allow downsweep, it might see two diffrent state of the same key by peeking at
+-- a key the event have not reached yet, and a key the event have reached.
+-- this might cause inconsistency.
+-- so we simply wait for the upsweep to finish before allowing to peek at the key.
+-- But if it is not there at all, we compute it. Since upsweep only propogate when a key changed,
+
+
+-- we need to enqueue it on restart.
+upSweep :: MonadIO m => Step -> Database -> Stack -> Key -> Key -> m BuildContinue
+upSweep eventStep db@Database{..} stack key childtKey = do
+  barrier <- newEmptyMVar
+  tid <- liftIO myThreadId
+  liftIO $ atomicallyNamed "builder" $ do
+            -- SMap.focus updateDirty key databaseValues
+            -- Spawn the id if needed
+            dbNotLocked db
+            insertdatabaseRuntimeDep childtKey key db
+            status <- SMap.lookup key databaseValues
+            current <- readTVar databaseStep
+            case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
+                -- if it is still dirty, we update it and propogate further
+                (Dirty s) -> do
+                    -- computeAndSetRunningUpSweep eventStep db barrier current stack childtKey key s
+                    -- return $ BCContinue $ readMVar barrier
+                -- if it is clean, other event update it, so it is fine.
+                    traceEvent ("[" ++ show tid ++ "] upsweep of " ++ show key) $ computeAndSetRunningUpSweep eventStep db barrier current stack childtKey key s
+                    return $ BCContinue $ readMVar barrier
+                (Clean r) -> return $ BCStop key r
+                -- if other event is updating it, just wait for it
+                (Running _step _s wait _)
+                    | memberStack key stack -> throw $ StackException stack
+                    | otherwise -> return $ BCContinue wait
+                (Exception _ e _s) -> throw e
+
+computeAndSetRunningUpSweep :: Step -> Database -> MVar (Key, Result) -> Step -> Stack -> Key -> Key -> Maybe Result -> STM ()
+computeAndSetRunningUpSweep eventStep db@Database{..} barrier current stack childtKey id s = do
+        -- we need to run serially to avoid summiting run but killed in the middle
+        let wait = readMVar barrier
+        runOneInDataBase
+          ( do
+              status <- atomically (SMap.lookup id databaseValues)
+              let cur = fromIntegral $ case keyStatus <$> status of
+                    -- this is ensure that we get an bumped up step when not dirty
+                    -- after an restart to skipped an rerun
+                    Just (Running entryStep _s _wait RunningStage1) -> entryStep
+                    _                                               -> current
+              return $ DeliverStatus cur (show (childtKey, id)) (newKey id)
+          )
+          db
+          ( \adyncH ->
+              -- it is safe from worker thread
+              -- set the running thread
+              atomically $ SMap.focus (updateStatus $ Running current s wait (RunningStage2 adyncH)) id databaseValues
+          )
+          (do
+              result <- refresh db stack id s
+              -- parents of the current key (reverse dependencies)
+              -- we use this, because new incomming parent would be just fine, since they did not pick up the old result
+              -- only the old depend would be updated.
+              rdeps <- liftIO $ atomically $ getReverseDependencies db id
+              -- Regardless of whether this child changed, upsweep all parents once.
+              -- Parent refresh will determine if it needs to recompute and will clear its dirty mark.
+              for_ (maybe mempty toListKeySet rdeps) $ \rk -> void $ upSweep eventStep db stack rk id
+              -- done
+              traceEvent ("finish upsweep of " ++ show id) putMVar barrier (id, result)
+          )
+          $ \e -> do
+            atomically $ SMap.focus (updateStatus $ Exception current e s) id databaseValues
+            putMVar barrier (throw e)
+        SMap.focus (updateStatus $ Running current s wait RunningStage1) id databaseValues
+
+-- | Wrap upSweep as an Action that runs it for a given event step/target/child
+upSweepAction :: Step -> Key -> Key -> Action ()
+upSweepAction eventStep target child = Action $ do
+    SAction{..} <- RWS.ask
+    liftIO $ void $ upSweep eventStep actionDatabase actionStack target child
 
 -- refresh :: Database -> Stack -> Key -> Maybe Result -> IO Result
 -- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
@@ -263,6 +361,7 @@ getDirtySet db = do
     return $ mapMaybe (secondM calcAgeStatus) dbContents
 
 -- | Returns an approximation of the database keys,
+-- | make a change on most of the thinkgs is good
 --   annotated with how long ago (in # builds) they were visited
 getKeysAndVisitAge :: Database -> IO [(Key, Int)]
 getKeysAndVisitAge db = do
@@ -308,6 +407,12 @@ transitiveDirtySet database = flip State.execStateT mempty . traverse_ loop
             State.put (insertKeySet x seen)
             next <- lift $ atomically $ getReverseDependencies database x
             traverse_ loop (maybe mempty toListKeySet next)
+
+
+-- Attempt to clear a Dirty parent that ended up with unchanged children during this event.
+-- If the parent is Dirty, and every direct child is either Clean/Exception/Running for a step < eventStep,
+-- and no child changed at/after eventStep, mark parent Clean (preserving its last Clean result),
+-- and recursively attempt the same for its own parents.
 
 
 

@@ -15,16 +15,18 @@ module Development.IDE.Graph.Database(
     shakeGetActionQueueLength,
     shakeComputeToPreserve,
     shakedatabaseRuntimeDep,
-    shakePeekAsyncsDelivers) where
+    shakePeekAsyncsDelivers,
+    upSweepAction) where
 import           Control.Concurrent.Async                (Async)
 import           Control.Concurrent.STM.Stats            (atomically,
                                                           readTVarIO)
 import           Control.Exception                       (SomeException)
-import           Control.Monad                           (join)
+import           Control.Monad                           (forM, join)
 import           Data.Dynamic
 import           Data.HashMap.Strict                     (toList)
 import           Data.Maybe
 import           Data.Set                                (Set)
+import           Debug.Trace                             (traceEvent)
 import           Development.IDE.Graph.Classes           ()
 import           Development.IDE.Graph.Internal.Action
 import           Development.IDE.Graph.Internal.Database
@@ -77,15 +79,48 @@ shakeRunDatabaseForKeysSep
     -> [Action a]
     -> IO (IO [Either SomeException a])
 shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
-    incDatabase db keysChanged
-    return $ drop lenAs1 <$> runActions (newKey "root") db (map unvoid as1 ++ as2)
+    traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase db keysChanged
+    -- Prepare upsweep actions for changed keys if provided
+    ups <- case keysChanged of
+        Nothing   -> pure []
+        Just keys -> do
+            Step s <- readTVarIO (databaseStep db)
+            -- we don't know the child that triggered; use a self-child to kick the chain
+            mapM (\k -> return $ upSweepAction (Step s) k k) keys
+    -- user actions
+    -- as2Delayed <- mapM (mkDelayedActionI "user" 1) as2
+    return $ drop lenAs1 <$> runActions  (newKey "root") db (map unvoid (as1 ++ ups) ++ as2)
+
+-- shakeRunDatabaseForDelayedActionsSep
+--     :: Maybe [Key]
+--       -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
+--     -> ShakeDatabase
+--     -> [Action a]
+--     -> [(Key, Async ())]
+--     -> Maybe KeySet
+--     -> KeySet
+--     -> IO (IO [Either SomeException a])
+-- shakeRunDatabaseForDelayedActionsSep keysChanged (ShakeDatabase _lenAs1 as1 db) as2 preservedKeys affected newDirtyKeys = do
+--     incDatabase db keysChanged
+--     -- todo run as2 too
+--     let preservedKeyset = fromListKeySet $ map fst preservedKeys
+--         das1  = filter (\da -> shouldRun $ actionName da) as1
+--         lenAs1 = length das1
+--         shouldRun k = case (keysChanged, affected) of
+--             (Nothing, _)       -> k `notMemberKeySet` preservedKeyset
+--             (Just _, Just afs) -> k `memberKeySet` afs
+--             (Just _, Nothing)  -> True
+--     Step s <- readTVarIO (databaseStep db)
+--     -- we don't know the child that triggered; use a self-child to kick the chain
+--     ups <- mapM (\k -> mkDelayedActionFixed ("upsweep-" ++ show k) 1 (upSweepAction (Step s) k k)) (toListKeySet newDirtyKeys)
+--     return $ drop lenAs1 <$> runActions db (map unvoid (das1 ++ ups) ++ filter (\da -> actionName da `notMemberKeySet` preservedKeyset) as2 )
 
 shakedatabaseRuntimeDep :: ShakeDatabase -> IO [(Key, KeySet)]
 shakedatabaseRuntimeDep (ShakeDatabase _ _ db) =
     atomically $ toList <$> computeReverseRuntimeMap db
 
 
-shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], [Key])
+shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], KeySet)
 shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
 
 --a dsfds
