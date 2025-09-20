@@ -8,7 +8,7 @@
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TypeFamilies       #-}
 
-module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..)) where
+module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge) where
 
 import           Prelude                              hiding (unzip)
 
@@ -88,8 +88,7 @@ build
     => Database -> Stack -> f key -> IO (f Key, f value)
 -- build _ st k | traceShow ("build", st, k) False = undefined
 build db stack keys = do
-    step <- readTVarIO $ databaseStep db
-    !built <- runAIO step $ builder db stack (fmap newKey keys)
+    !built <- runAIO $ builder db stack (fmap newKey keys)
     let (ids, vs) = unzip built
     pure (ids, fmap (asV . resultValue) vs)
     where
@@ -118,13 +117,13 @@ builderOne ba db@Database {..} stack id = UE.mask $ \restore -> do
     status <- SMap.lookup id databaseValues
     val <-
       let refreshRsult s = do
-            let act =
-                    case ba of
-                        BuildNary -> restore $ asyncWithCleanUp $
-                                        refresh db stack id s
-                                          `UE.onException` (UE.uninterruptibleMask_ $ liftIO (atomicallyNamed "builder - onException" (SMap.focus updateDirty id databaseValues)))
-                        BuildUnary -> fmap return $ refresh db stack id s
-                    -- Mark the key as running
+            let act = restore $ case ba of
+                  BuildNary ->
+                    asyncWithCleanUp $
+                      refresh db stack id s
+                        `UE.onException` (UE.uninterruptibleMask_ $ liftIO (atomicallyNamed "builder - onException" (SMap.focus updateDirty id databaseValues)))
+                  BuildUnary -> fmap return $ refresh db stack id s
+            -- Mark the key as running
             SMap.focus (updateStatus $ Running current s) id databaseValues
             return act
        in case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
@@ -286,23 +285,15 @@ transitiveDirtySet database = flip State.execStateT mempty . traverse_ loop
 newtype AIO a = AIO { unAIO :: ReaderT (IORef [Async ()]) IO a }
   deriving newtype (Applicative, Functor, Monad, MonadIO)
 
-data AsyncParentKill = AsyncParentKill ThreadId Step
-    deriving (Show, Eq)
-
-instance Exception AsyncParentKill where
-  toException = asyncExceptionToException
-  fromException = asyncExceptionFromException
-
 -- | Run the monadic computation, cancelling all the spawned asyncs if an exception arises
-runAIO :: Step -> AIO a -> IO a
-runAIO s (AIO act) = do
+runAIO :: AIO a -> IO a
+runAIO (AIO act) = do
     asyncsRef <- newIORef []
     -- Log the exact exception (including async exceptions) before cleanup,
     -- then rethrow to preserve previous semantics.
     runReaderT act asyncsRef `onException` do
         asyncs <- atomicModifyIORef' asyncsRef ([],)
-        tid <- myThreadId
-        cleanupAsync asyncs tid s
+        cleanupAsync asyncs
 
 -- | Like 'async' but with built-in cancellation.
 --   Returns an IO action to wait on the result.
@@ -326,12 +317,11 @@ instance MonadUnliftIO AIO where
         st <- AIO ask
         liftIO $ k (\aio -> runReaderT (unAIO aio) st)
 
-cleanupAsync :: [Async a] -> ThreadId -> Step -> IO ()
+cleanupAsync :: [Async a] -> IO ()
 -- mask to make sure we interrupt all the asyncs
-cleanupAsync asyncs tid step  = uninterruptibleMask $ \unmask -> do
+cleanupAsync asyncs = uninterruptibleMask $ \unmask -> do
     -- interrupt all the asyncs without waiting
-    -- mapM_ (\a -> throwTo (asyncThreadId a) AsyncCancelled) asyncs
-    mapM_ (\a -> throwTo (asyncThreadId a) $ AsyncParentKill tid step) asyncs
+    mapM_ (\a -> throwTo (asyncThreadId a) AsyncCancelled) asyncs
     -- Wait until all the asyncs are done
     -- But if it takes more than 10 seconds, log to stderr
     unless (null asyncs) $ do
