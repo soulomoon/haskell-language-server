@@ -185,11 +185,11 @@ compute :: Database -> Stack -> Key -> RunMode -> Maybe Result -> IO Result
 -- compute _ st k _ _ | traceShow ("compute", st, k) False = undefined
 compute db@Database{..} stack key mode result = do
     let act = runRule databaseRules key (fmap resultData result) mode
-    deps <- liftIO $ newIORef UnknownDeps
+    deps <- newIORef UnknownDeps
     (execution, RunResult{..}) <-
-        liftIO $ duration $ runReaderT (fromAction act) $ SAction db deps stack
-    curStep <- liftIO $ readTVarIO databaseStep
-    deps <- liftIO $ readIORef deps
+        duration $ runReaderT (fromAction act) $ SAction db deps stack
+    curStep <- readTVarIO databaseStep
+    deps <- readIORef deps
     let lastChanged = maybe curStep resultChanged result
     let lastBuild = maybe curStep resultBuilt result
     -- changed time is always older than or equal to build time
@@ -212,12 +212,12 @@ compute db@Database{..} stack key mode result = do
             -- If an async exception strikes before the deps have been recorded,
             -- we won't be able to accurately propagate dirtiness for this key
             -- on the next build.
-            liftIO $ void $
+            void $
                 updateReverseDeps key db
                     (getResultDepsDefault mempty previousDeps)
                     deps
         _ -> pure ()
-    liftIO $ atomicallyNamed "compute and run hook" $ do
+    atomicallyNamed "compute and run hook" $ do
         runHook
         SMap.focus (updateStatus $ Clean res) key databaseValues
     pure res
