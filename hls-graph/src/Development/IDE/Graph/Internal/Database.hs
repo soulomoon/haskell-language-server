@@ -17,7 +17,8 @@ import           Control.Concurrent.Extra
 import           Control.Concurrent.STM.Stats         (STM, atomically,
                                                        atomicallyNamed,
                                                        modifyTVar', newTVarIO,
-                                                       readTMVar, readTVarIO)
+                                                       putTMVar, readTMVar,
+                                                       readTVarIO)
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class               (MonadIO (liftIO))
@@ -119,12 +120,16 @@ builderOne ba db@Database {..} stack id = UE.mask $ \restore -> do
     status <- SMap.lookup id databaseValues
     val <-
       let refreshRsult s = do
-            let act = restore $ case ba of
+            let putResult act = do
+                  res <- act
+                  liftIO $ atomically $ putTMVar barrier res
+                  return res
+            let act = restore $ (case ba of
                   BuildNary ->
                     asyncWithCleanUp $
-                      refresh db stack id s
+                      putResult $ refresh db stack id s
+                  BuildUnary -> fmap return $ putResult $ refresh db stack id s)
                         `UE.onException` (UE.uninterruptibleMask_ $ liftIO (atomicallyNamed "builder - onException" (SMap.focus updateDirty id databaseValues)))
-                  BuildUnary -> fmap return $ refresh db stack id s
             -- Mark the key as running
             SMap.focus (updateStatus $ Running current (atomically $ readTMVar barrier) s) id databaseValues
             return act
