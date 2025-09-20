@@ -17,7 +17,7 @@ import           Control.Concurrent.Extra
 import           Control.Concurrent.STM.Stats         (STM, atomically,
                                                        atomicallyNamed,
                                                        modifyTVar', newTVarIO,
-                                                       readTVarIO, retry)
+                                                       readTMVar, readTVarIO)
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class               (MonadIO (liftIO))
@@ -39,7 +39,8 @@ import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                    as SMap
 import           System.Time.Extra                    (duration, sleep)
-import           UnliftIO                             (MonadUnliftIO (withRunInIO))
+import           UnliftIO                             (MonadUnliftIO (withRunInIO),
+                                                       newEmptyTMVarIO)
 import qualified UnliftIO.Exception                   as UE
 
 #if MIN_VERSION_base(4,19,0)
@@ -78,7 +79,7 @@ incDatabase db Nothing = do
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
             let status'
-                  | Running _ x <- status = Dirty x
+                  | Running _ _ x <- status = Dirty x
                   | Clean x <- status = Dirty (Just x)
                   | otherwise = status
             in KeyDetails status' rdeps
@@ -112,6 +113,7 @@ builder db stack keys = do
 builderOne :: BuildArity -> Database -> Stack -> Key -> AIO (Key, IO Result)
 builderOne ba db@Database {..} stack id = UE.mask $ \restore -> do
   current <- liftIO $ readTVarIO databaseStep
+  barrier <- newEmptyTMVarIO
   (k, registerWaitResult) <- liftIO $ atomicallyNamed "builder" $ do
     -- Spawn the id if needed
     status <- SMap.lookup id databaseValues
@@ -124,14 +126,14 @@ builderOne ba db@Database {..} stack id = UE.mask $ \restore -> do
                         `UE.onException` (UE.uninterruptibleMask_ $ liftIO (atomicallyNamed "builder - onException" (SMap.focus updateDirty id databaseValues)))
                   BuildUnary -> fmap return $ refresh db stack id s
             -- Mark the key as running
-            SMap.focus (updateStatus $ Running current s) id databaseValues
+            SMap.focus (updateStatus $ Running current (atomically $ readTMVar barrier) s) id databaseValues
             return act
        in case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
             Dirty mbr -> refreshRsult mbr
-            Running step _mbr
+            Running step ba _mbr
               | step /= current -> error $ "Inconsistent database state: key " ++ show id ++ " is marked Running at step " ++ show step ++ " but current step is " ++ show current
               | memberStack id stack -> throw $ StackException stack
-              | otherwise -> retry
+              | otherwise -> pure . pure $ ba
             Clean r -> pure . pure . pure $ r
     -- force here might contains async exceptions from previous runs
     pure (id, val)
