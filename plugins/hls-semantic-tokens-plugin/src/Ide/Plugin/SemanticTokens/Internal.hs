@@ -129,7 +129,7 @@ getSemanticTokensRule recorder =
     (HAR {..}) <- withExceptT LogDependencyError $ useE GetHieAst nfp
     (DKMap {getTyThingMap}, _) <- withExceptT LogDependencyError $ useWithStaleE GetDocMap nfp
     ast <- handleMaybe (LogNoAST $ show nfp) $ getAsts hieAst M.!? (HiePath . mkFastString . fromNormalizedFilePath) nfp
-    virtualFile <- handleMaybeM LogNoVF $ getVirtualFile nfp
+    virtualFile <- handleMaybeM (LogNoVF nfp) $ getVirtualFile nfp
     let hsFinder = idSemantic getTyThingMap (hieKindFunMasksKind hieKind) refMap
     return $ computeRangeHsSemanticTokenTypeList hsFinder virtualFile ast
 

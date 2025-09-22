@@ -141,19 +141,21 @@ data SemanticLog
   | LogNoAST FilePath
   | LogConfig SemanticTokensConfig
   | LogMsg String
-  | LogNoVF
+  | LogNoVF NormalizedFilePath
   | LogSemanticTokensDeltaMisMatch Text (Maybe Text)
 
 instance Pretty SemanticLog where
   pretty theLog = case theLog of
     LogShake shakeLog -> pretty shakeLog
-    LogNoAST path     -> "no HieAst exist for file" <> pretty path
-    LogNoVF           -> "no VirtualSourceFile exist for file"
-    LogConfig config  -> "SemanticTokensConfig_: " <> pretty (show config)
-    LogMsg msg        -> "SemanticLog Debug Message: " <> pretty msg
-    LogSemanticTokensDeltaMisMatch previousIdFromRequest previousIdFromCache
-                      -> "SemanticTokensDeltaMisMatch: previousIdFromRequest: " <> pretty previousIdFromRequest
-                      <> " previousIdFromCache: " <> pretty previousIdFromCache
+    LogNoAST path -> "no HieAst exist for file" <> pretty path
+    LogNoVF path -> "no VirtualSourceFile exist for file" <> pretty (show path)
+    LogConfig config -> "SemanticTokensConfig_: " <> pretty (show config)
+    LogMsg msg -> "SemanticLog Debug Message: " <> pretty msg
+    LogSemanticTokensDeltaMisMatch previousIdFromRequest previousIdFromCache ->
+      "SemanticTokensDeltaMisMatch: previousIdFromRequest: "
+        <> pretty previousIdFromRequest
+        <> " previousIdFromCache: "
+        <> pretty previousIdFromCache
     LogDependencyError err -> "SemanticTokens' dependency error: " <> pretty err
 
 
