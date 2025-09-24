@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE DerivingStrategies  #-}
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedLabels    #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings   #-}
@@ -24,26 +25,20 @@ import           Control.Monad.Trans.Except               (runExceptT)
 import qualified Data.Map.Strict                          as M
 import           Data.Text                                (Text)
 import qualified Data.Text                                as T
-import           Development.IDE                          (Action,
-                                                           GetDocMap (GetDocMap),
-                                                           GetHieAst (GetHieAst),
-                                                           HieAstResult (HAR, hieAst, hieModule, refMap),
-                                                           IdeResult, IdeState,
-                                                           Priority (..),
-                                                           Recorder, Rules,
-                                                           WithPriority,
-                                                           cmapWithPrio, define,
-                                                           fromNormalizedFilePath,
-                                                           hieKind)
+import           Development.IDE
 import           Development.IDE.Core.PluginUtils         (runActionE, useE,
                                                            useWithStaleE)
 import           Development.IDE.Core.Rules               (toIdeResult)
-import           Development.IDE.Core.RuleTypes           (DocAndTyThingMap (..))
-import           Development.IDE.Core.Shake               (ShakeExtras (..),
+import           Development.IDE.Core.RuleTypes           (DocAndTyThingMap (..),
+                                                           IsFileOfInterest (..),
+                                                           IsFileOfInterestResult (..))
+import           Development.IDE.Core.Shake               (RuleBody (..),
+                                                           ShakeExtras (..),
                                                            getShakeExtras,
                                                            getVirtualFile)
 import           Development.IDE.GHC.Compat               hiding (Warning)
 import           Development.IDE.GHC.Compat.Util          (mkFastString)
+import           Development.IDE.Types.Shake              (currentValue)
 import           GHC.Iface.Ext.Types                      (HieASTs (getAsts),
                                                            pattern HiePath)
 import           Ide.Logger                               (logWith)
@@ -125,13 +120,18 @@ semanticTokensFullDelta recorder state pid param = do
 -- It then combines this information to compute the semantic tokens for the file.
 getSemanticTokensRule :: Recorder (WithPriority SemanticLog) -> Rules ()
 getSemanticTokensRule recorder =
-  define (cmapWithPrio LogShake recorder) $ \GetSemanticTokens nfp -> handleError recorder $ do
-    (HAR {..}) <- withExceptT LogDependencyError $ useE GetHieAst nfp
-    (DKMap {getTyThingMap}, _) <- withExceptT LogDependencyError $ useWithStaleE GetDocMap nfp
-    ast <- handleMaybe (LogNoAST $ show nfp) $ getAsts hieAst M.!? (HiePath . mkFastString . fromNormalizedFilePath) nfp
-    virtualFile <- handleMaybeM (LogNoVF nfp) $ getVirtualFile nfp
-    let hsFinder = idSemantic getTyThingMap (hieKindFunMasksKind hieKind) refMap
-    return $ computeRangeHsSemanticTokenTypeList hsFinder virtualFile ast
+  defineEarlyCutoff (cmapWithPrio LogShake recorder) $ RuleWithOldValue $ \GetSemanticTokens nfp old -> do
+--   define (cmapWithPrio LogShake recorder) $ \GetSemanticTokens nfp ->
+    r <- use_ IsFileOfInterest nfp >>= \case
+      IsFOI _  -> handleError recorder $ do
+        (HAR {..}) <- withExceptT LogDependencyError $ useE GetHieAst nfp
+        (DKMap {getTyThingMap}, _) <- withExceptT LogDependencyError $ useWithStaleE GetDocMap nfp
+        ast <- handleMaybe (LogNoAST $ show nfp) $ getAsts hieAst M.!? (HiePath . mkFastString . fromNormalizedFilePath) nfp
+        virtualFile <- handleMaybeM (LogNoVF nfp) $ getVirtualFile nfp
+        let hsFinder = idSemantic getTyThingMap (hieKindFunMasksKind hieKind) refMap
+        return $ computeRangeHsSemanticTokenTypeList hsFinder virtualFile ast
+      NotFOI -> return ([], currentValue old)
+    return (Nothing, r)
 
 
 -- taken from /haskell-language-server/plugins/hls-code-range-plugin/src/Ide/Plugin/CodeRange/Rules.hs

@@ -154,9 +154,9 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
                                                           shakePeekAsyncsDelivers,
                                                           shakeProfileDatabase,
                                                           shakeRunDatabaseForKeysSep,
-                                                          shakeShutDatabase,
-                                                          shakedatabaseRuntimeDep)
-import           Development.IDE.Graph.Internal.Action   (runActionInDbCb)
+                                                          shakeShutDatabase)
+import           Development.IDE.Graph.Internal.Action   (isAsyncException,
+                                                          runActionInDbCb)
 import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
 import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
                                                           getShakeQueue,
@@ -261,7 +261,7 @@ instance Pretty Log where
         , "Current step:" <+> pretty (show step)
         , "Aborting previous build session took" <+> pretty (showDuration abortDuration) <+> pretty shakeProfilePath ]
     LogBuildSessionRestartTakingTooLong seconds ->
-        "Build restart is taking too long (" <> pretty seconds <> " seconds)"
+        "Build restart is taking too long (" <> pretty (showDuration seconds) <> ")"
     LogDelayedAction delayedAct seconds ->
       hsep
         [ "Finished:" <+> pretty (actionName delayedAct)
@@ -949,10 +949,11 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
     shakeSession
     ( \runner -> do
         newDirtyKeys <- sraBetweenSessions shakeRestartArgs
-        reverseMap <- shakedatabaseRuntimeDep shakeDb
-        (preservekvs, allRunning2) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
-        logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys [] reverseMap
-        (stopTime, ()) <- duration $ logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
+        -- reverseMap <- shakedatabaseRuntimeDep shakeDb
+        -- logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys [] reverseMap
+        (stopTime, ()) <- duration $ do
+            (preservekvs, _allRunning2) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
+            logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
         survivedDelivers <- shakePeekAsyncsDelivers shakeDb
         -- it is every important to update the dirty keys after we enter the critical section
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
@@ -1041,7 +1042,7 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
         -- Runs actions from the work queue sequentially
         logResult :: Show a => String -> [Either SomeException a] -> IO ()
         logResult label results = for_ results $ \case
-            Left e | Just (AsyncParentKill _ _) <- fromException e  -> logWith recorder Debug $ LogShakeText (T.pack $ label ++ " failed: " ++ show e)
+            Left e | isAsyncException e -> logWith recorder Debug $ LogShakeText (T.pack $ label ++ " failed: " ++ show e)
             Left e  -> logWith recorder Error $ LogShakeText (T.pack $ label ++ " failed: " ++ show e)
             Right r -> logWith recorder Debug $ LogShakeText (T.pack $ label ++ " finished: " ++ show r)
         pumpActionThread = do

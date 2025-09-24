@@ -26,7 +26,9 @@ module Development.IDE.WorkerThread
     withWorkerQueueSimpleRight,
     submitWorkAtHead,
     awaitRunInThread,
-    withAsyncs
+    withAsyncs,
+    readTaskQueue,
+    flushTaskQueue
   ) where
 
 import           Control.Concurrent.Async           (withAsync)
@@ -142,9 +144,10 @@ data DeliverStatus = DeliverStatus
     , deliverKey  :: Key
   } deriving (Show)
 
+
 instance Pretty DeliverStatus where
-  pretty (DeliverStatus step _name key) =
-    "Step:" <+> pretty step <> "," <+> "Key:" <+> pretty (show key)
+  pretty (DeliverStatus step name key) =
+    "Step:" <+> pretty step <> "," <+> "name:" <+> pretty name <+> "," <+> "key:" <+> pretty (show key)
 
 
 type Worker arg = arg -> IO ()
@@ -192,3 +195,8 @@ counTaskQueue (TaskQueue q) = do
     mapM_ (unGetTQueue q) (reverse xs)
     return $ length xs
 
+readTaskQueue :: TaskQueue a -> STM a
+readTaskQueue (TaskQueue q) = readTQueue q
+
+flushTaskQueue :: TaskQueue a -> STM [a]
+flushTaskQueue (TaskQueue q) = flushTQueue q

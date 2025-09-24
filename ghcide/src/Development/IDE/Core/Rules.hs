@@ -838,6 +838,9 @@ getModIfaceFromDiskAndIndexRule recorder =
   se@ShakeExtras{withHieDb} <- getShakeExtras
 
   -- GetModIfaceFromDisk should have written a `.hie` file, must check if it matches version in db
+
+  -- this might not happens if the changes to cache dir does not actually inroduce a change to GetModIfaceFromDisk
+    
   let ms = hirModSummary x
       hie_loc = Compat.ml_hie_file $ ms_location ms
   fileHash <- liftIO $ Util.getFileHash hie_loc

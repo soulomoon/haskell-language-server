@@ -14,6 +14,7 @@ module Development.IDE.Graph.Internal.Action
 , Development.IDE.Graph.Internal.Action.getDirtySet
 , getKeysAndVisitedAge
 , runActionInDbCb
+, isAsyncException
 ) where
 
 import           Control.Concurrent.Async
