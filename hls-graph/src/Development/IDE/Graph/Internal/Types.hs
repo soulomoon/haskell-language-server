@@ -360,15 +360,10 @@ shutDatabase preserve db@Database{..} = uninterruptibleMask $ \unmask -> do
 
 -- fdsfsifjsflksfjslthat dmake musch more sense to me
 -- peekAsyncsDelivers :: Database -> IO [DeliverStatus]
+peekAsyncsDelivers :: MonadIO m => Database -> m [DeliverStatus]
 peekAsyncsDelivers db = do
     asyncs <- readTVarIO (databaseThreads db)
-    result <- mapM (\(k,_a) -> do
-            x <- atomically $ getDatabaseRuntimeDep db $ deliverKey k
-            return (k, x)
-            ) asyncs
-    return result
--- waitForDatabaseRunningKeys :: Database -> IO ()
--- waitForDatabaseRunningKeys = getDatabaseValues >=> mapM_ (waitRunning . snd)
+    return $ fst <$> asyncs
 
 getDatabaseValues :: Database -> IO [(Key, Status)]
 getDatabaseValues = atomically

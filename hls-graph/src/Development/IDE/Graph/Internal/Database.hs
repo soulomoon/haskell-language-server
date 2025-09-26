@@ -26,7 +26,6 @@ import qualified Control.Monad.Trans.State.Strict     as State
 import           Data.Dynamic
 import           Data.Foldable                        (for_, traverse_)
 import           Data.IORef.Extra
-import           Data.List                            (partition)
 import           Data.Maybe
 import           Data.Traversable                     (for)
 import           Data.Tuple.Extra
@@ -257,7 +256,7 @@ refreshDeps visited db stack key result = \case
 
 
 -- we need to enqueue it on restart.
-upSweep :: MonadIO m => Database -> Stack -> Key -> Key -> m BuildContinue
+upSweep :: MonadIO m => Database -> Stack -> Key -> Key -> m ()
 upSweep db@Database{..} stack key childtKey = do
   barrier <- newEmptyMVar
   tid <- liftIO myThreadId
@@ -269,17 +268,19 @@ upSweep db@Database{..} stack key childtKey = do
             case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
                 -- if it is still dirty, we update it and propogate further
                 (Dirty s) -> do
-                    -- computeAndSetRunningUpSweep eventStep db barrier current stack childtKey key s
-                    -- return $ BCContinue $ readMVar barrier
                 -- if it is clean, other event update it, so it is fine.
-                    traceEvent ("[" ++ show tid ++ "] upsweep of " ++ show key) $ computeAndSetRunningUpSweep db barrier stack key s
-                    return $ BCContinue $ readMVar barrier
-                (Clean r) -> return $ BCStop key r
-                -- if other event is updating it, just wait for it
-                (Running _step _s wait _)
-                    | memberStack key stack -> throw $ StackException stack
-                    -- | otherwise -> return $ BCContinue wait
-                    | otherwise -> return $ BCContinue $ wrapWaitEvent "upsweep wait running" key $ readMVar wait
+                    traceEvent ("[" ++ show tid ++ "] upsweep of " ++ show key) $
+                        spawnRefresh db stack key barrier s $ \db stack key s-> do
+                                result <- refresh db stack key s
+                                -- parents of the current key (reverse dependencies)
+                                -- we use this, because new incomming parent would be just fine, since they did not pick up the old result
+                                -- only the old depend would be updated.
+                                rdeps <- liftIO $ atomically $ getRunTimeRDeps db key
+                                -- Regardless of whether this child changed, upsweep all parents once.
+                                -- Parent refresh will determine if it needs to recompute and will clear its dirty mark.
+                                for_ (maybe mempty toListKeySet rdeps) $ \rk -> upSweep db stack rk key
+                                return result
+                _ -> return ()
 
 -- wrapWaitEvent :: String -> Key -> IO a -> IO a
 wrapWaitEvent :: (Monad m, Show a) => [Char] -> a -> m b -> m b
@@ -288,25 +289,6 @@ wrapWaitEvent title key io = do
     r <- io
     traceEvent (title ++ " of " ++ show key ++ " finished") $ return ()
     return r
-
-computeAndSetRunningUpSweep :: Database
-                            -> MVar (Either SomeException (Key, Result))
-                            -> Stack
-                            -> Key -- ^ current key being upswept
-                            -> Maybe Result
-                            -> STM ()
-computeAndSetRunningUpSweep db@Database{..} barrier stack key s = do
-    spawnRefresh db stack key barrier s $ \db stack key s-> do
-              result <- refresh db stack key s
-              -- parents of the current key (reverse dependencies)
-              -- we use this, because new incomming parent would be just fine, since they did not pick up the old result
-              -- only the old depend would be updated.
-              rdeps <- liftIO $ atomically $ getRunTimeRDeps db key
-              -- Regardless of whether this child changed, upsweep all parents once.
-              -- Parent refresh will determine if it needs to recompute and will clear its dirty mark.
-              for_ (maybe mempty toListKeySet rdeps) $ \rk ->
-                void $ upSweep db stack rk key
-              return result
 
 
 -- | Wrap upSweep as an Action that runs it for a given event step/target/child

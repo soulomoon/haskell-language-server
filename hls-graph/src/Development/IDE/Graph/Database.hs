@@ -103,7 +103,7 @@ shakeRunDatabaseForKeys (Just x) sdb as2 =
     let y = fromListKeySet x in join $ shakeRunDatabaseForKeysSep (Just (y, y)) sdb as2
 
 
-shakePeekAsyncsDelivers :: ShakeDatabase -> IO [(DeliverStatus, KeySet)]
+shakePeekAsyncsDelivers :: ShakeDatabase -> IO [DeliverStatus]
 shakePeekAsyncsDelivers (ShakeDatabase _ _ db) = peekAsyncsDelivers db
 
 -- | Given a 'ShakeDatabase', write an HTML profile to the given file about the latest run.
