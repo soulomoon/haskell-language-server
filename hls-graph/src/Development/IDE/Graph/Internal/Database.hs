@@ -152,7 +152,7 @@ interpreBuildContinue db pk (kid, BCContinue ioR) = do
 
 builderOne :: Key -> Database -> Stack -> Key -> IO (Key, BuildContinue)
 builderOne parentKey db stack kid = do
-    r <- withWaitingOnKey db parentKey kid $ builderOne' parentKey db stack kid
+    r <- withWaitingOnKey db parentKey kid $ builderOne' FirstTime parentKey db stack kid
     return (kid, r)
 
 mkRuntimeDelivery :: Database -> Key -> Step -> IO DeliverStatus
@@ -167,14 +167,19 @@ mkRuntimeDelivery Database{..} key oldCurrent = do
                 return $ DeliverStatus cur ("downsweep; " ++ show key) key
 
 
-builderOne' :: Key -> Database -> Stack -> Key -> IO BuildContinue
-builderOne' parentKey db@Database {..} stack kid = do
+data FirstTime = FirstTime | NotFirstTime
+
+builderOne' :: FirstTime -> Key -> Database -> Stack -> Key -> IO BuildContinue
+builderOne' firstTime parentKey db@Database {..} stack kid = do
   traceEvent ("builderOne: " ++ show kid) return ()
   barrier <- newEmptyMVar
   liftIO $ atomicallyNamed "builder" $ do
     -- Spawn the id if needed
-    dbNotLocked db
-    insertdatabaseRuntimeDep kid parentKey db
+    case firstTime of
+        FirstTime -> do
+            dbNotLocked db
+            insertdatabaseRuntimeDep kid parentKey db
+        NotFirstTime -> return ()
     -- if a build is running, wait
     -- it will either be killed or continue
     -- depending on wether it is marked as dirty
@@ -184,12 +189,20 @@ builderOne' parentKey db@Database {..} stack kid = do
       Nothing -> do
         spawnRefresh db stack kid barrier Nothing refresh
         return $ BCContinue $ readMVar barrier
-      Just (Dirty _) -> wrapWaitEvent "builderOne retry waiting dirty upsweep" kid retry
+      Just (Dirty _) -> case firstTime of
+        FirstTime -> return $ BCContinue $ do
+                br <- builderOne' NotFirstTime parentKey db stack kid
+                case br of
+                    BCContinue ioR -> ioR
+                    BCStop k r     -> return $ Right (k, r)
+        NotFirstTime -> wrapWaitEvent "builderOne retry waiting dirty upsweep" kid retry
       Just (Clean r) -> return $ BCStop kid r
       Just (Running _step _s wait _)
         | memberStack kid stack -> throw $ StackException stack
         | otherwise -> return $ BCContinue $ wrapWaitEvent "builderOne wait running" kid $ readMVar wait
+        -- | otherwise -> wrapWaitEvent "builderOne wait running" kid $ retry
 
+-- how much should we actually do refresh everything les
 spawnRefresh :: Database -> t -> Key -> MVar (Either SomeException (Key, Result)) -> Maybe Result -> (Database -> t -> Key -> Maybe Result -> IO Result) -> STM ()
 spawnRefresh db@Database{..} stack kid barrier prevResult refresher = do
     -- we need to run serially to avoid summiting run but killed in the middle
