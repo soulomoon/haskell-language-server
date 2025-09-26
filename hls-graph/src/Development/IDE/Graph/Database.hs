@@ -92,7 +92,7 @@ shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
     return $ drop lenAs1 <$> runActions  (newKey "root") db (map unvoid (as1 ++ ups) ++ as2)
 
 
-shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], KeySet)
+shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO [(Key, Async ())]
 shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
 
 -- | Compute the transitive closure of the given keys over reverse dependencies
@@ -111,7 +111,7 @@ shakeRunDatabaseForKeys
 shakeRunDatabaseForKeys keysChanged sdb as2 = join $ shakeRunDatabaseForKeysSep keysChanged sdb as2
 
 
-shakePeekAsyncsDelivers :: ShakeDatabase -> IO [DeliverStatus]
+shakePeekAsyncsDelivers :: ShakeDatabase -> IO [(DeliverStatus, KeySet)]
 shakePeekAsyncsDelivers (ShakeDatabase _ _ db) = peekAsyncsDelivers db
 
 -- | Given a 'ShakeDatabase', write an HTML profile to the given file about the latest run.

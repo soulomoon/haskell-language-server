@@ -206,7 +206,7 @@ import           Data.Foldable                           (foldl')
 data Log
   = LogCreateHieDbExportsMapStart
   | LogCreateHieDbExportsMapFinish !Int
-  | LogBuildSessionRestart !ShakeRestartArgs ![DelayedActionInternal] !KeySet !Seconds !(Maybe FilePath) !Int ![DeliverStatus]
+  | LogBuildSessionRestart !ShakeRestartArgs ![DelayedActionInternal] !KeySet !Seconds !(Maybe FilePath) !Int ![(DeliverStatus, KeySet)]
   | LogBuildSessionRestartTakingTooLong !Seconds
   | LogDelayedAction !(DelayedAction ()) !Seconds
   | LogBuildSessionFinish !Step !(Either SomeException [Either SomeException ()])
@@ -223,7 +223,9 @@ data Log
   | LogShakeText !T.Text
   | LogMonitering !T.Text !Int64
   | LogPreserveKeys ![Key] ![Key] ![Key] ![(Key, KeySet)]
-  deriving Show
+
+instance Show Log where
+  show = show . pretty
 
 instance Pretty Log where
   pretty = \case
@@ -255,7 +257,7 @@ instance Pretty Log where
         , "Action Queue:" <+> pretty (map actionName actionQueue)
         -- , "Keys:" <+> pretty (map show $ toListKeySet keyBackLog)
         , "Keys:" <+> pretty (length $ toListKeySet keyBackLog)
-        , "Deliveries still alive:" <+> pretty delivers
+        , "Deliveries still alive:" <+> pretty (map DeliverAndDeps delivers)
         , "Current step:" <+> pretty (show step)
         , "Aborting previous build session took" <+> pretty (showDuration abortDuration) <+> pretty shakeProfilePath ]
     LogBuildSessionRestartTakingTooLong seconds ->
@@ -295,6 +297,16 @@ instance Pretty Log where
     LogSetFilesOfInterest ofInterest ->
         "Set files of interst to" <> Pretty.line
             <> indent 4 (pretty $ fmap (first fromNormalizedFilePath) ofInterest)
+
+newtype DeliverAndDeps = DeliverAndDeps (DeliverStatus, KeySet)
+instance Pretty DeliverAndDeps where
+  pretty (DeliverAndDeps dd) = prettyDeliveryAndDeps dd
+prettyDeliveryAndDeps :: (DeliverStatus, KeySet) -> Doc ann
+prettyDeliveryAndDeps (d, ks) =
+  vcat
+    [ "Delivery:" <+> pretty d,
+      "  eps:" <+> pretty (map show $ toListKeySet ks)
+    ]
 
 -- | We need to serialize writes to the database, so we send any function that
 -- needs to write to the database over the channel, where it will be picked up by
@@ -950,7 +962,7 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         -- reverseMap <- shakedatabaseRuntimeDep shakeDb
         -- logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys [] reverseMap
         (stopTime, ()) <- duration $ do
-            (preservekvs, _allRunning2) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
+            preservekvs <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
             logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
         survivedDelivers <- shakePeekAsyncsDelivers shakeDb
         -- it is every important to update the dirty keys after we enter the critical section

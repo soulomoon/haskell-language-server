@@ -47,7 +47,6 @@ import           UnliftIO                             (Async, MVar, atomically,
 #if MIN_VERSION_base(4,19,0)
 import           Control.Concurrent                   (myThreadId)
 import           Data.Functor                         (unzip)
--- import Control.Monad.Identity (Identity(..))
 #else
 import           Data.List.NonEmpty                   (unzip)
 #endif
@@ -88,51 +87,19 @@ incDatabase db Nothing = do
         SMap.focus updateDirty k (databaseValues db)
     return []
 
--- computeReverseRuntimeMap db = return $ databaseRRuntimeDep db
--- computeReverseRuntimeMap db = do
---     -- Create a fresh snapshot (pure Data.Map) of the current runtime reverse deps.
---     pairs <- ListT.toList $ SMap.listT (databaseRuntimeDep db)
---     -- 'pairs' is a map from parent -> set of children (dependencies recorded at runtime).
---     -- We need to invert this to child -> set of parents (reverse dependencies).
---     let addParent acc (parent, children) =
---             foldr (\child m -> Map.insertWith (\new old -> unionKyeSet new old) child (singletonKeySet parent) m) acc (toListKeySet children)
---         m = foldl addParent Map.empty pairs
---     return m
-
+-- todo
 -- compute to preserve asyncs
 -- only the running stage 2 keys are actually running
 -- so we only need to preserve them if they are not affected by the dirty set
 
--- to acompany with this,
--- all non-dirty running need to have an updated step,
--- so it won't be view as dirty when we restart the build
--- computeToPreserve :: Database -> KeySet -> STM [(Key, Async ())]
-computeToPreserve :: Database -> KeySet -> STM ([(Key, Async ())], KeySet)
+computeToPreserve :: Database -> KeySet -> STM [(Key, Async ())]
 computeToPreserve db dirtySet = do
   -- All keys that depend (directly or transitively) on any dirty key
   affected <- computeTransitiveReverseDeps db dirtySet
   threads <- readTVar $ databaseThreads db
   let isNonAffected (k, _async) = k /= newKey "root" && k `notMemberKeySet` affected
-  let (unaffected, _affected) = partition isNonAffected $ first deliverKey <$> threads
-  -- update all unaffected running keys to the new step
-  forM_ unaffected $ \(k, _) -> do
-      SMap.focus
-        ( Focus.adjust $ \case
-            kd@KeyDetails {keyStatus = Running {runningStep, runningPrev, runningWait, runningStage}} ->
-              (kd {keyStatus = Running (runningStep + 1) runningPrev runningWait runningStage})
-            kd -> kd
-        )
-        k
-        (databaseValues db)
---   step <- readTVar $ databaseStep db
---   send async cancellation to affected keys
---   forM_ affected $ \(k, _) -> do
-  -- Keep only those whose key is NOT affected by the dirty set
-  pure (unaffected, fromListKeySet [])
-
--- inform :: Monad m => Focus.Focus KeyDetails m ()
-
-
+  let unaffected = filter isNonAffected $ first deliverKey <$> threads
+  pure unaffected
 
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
@@ -158,8 +125,6 @@ build ::
   Key -> Database -> Stack -> f key -> IO (f Key, f value)
 -- build _ st k | traceShow ("build", st, k) False = undefined
 build pk db stack keys = do
-  -- step <- readTVarIO $ databaseStep db
-  -- built <- mapConcurrently (builderOne db stack) (fmap newKey keys)
   built <- builder pk db stack (fmap newKey keys)
   let (ids, vs) = unzip built
   pure (ids, fmap (asV . resultValue) vs)
@@ -175,22 +140,39 @@ builder :: (Traversable f) => Key -> Database -> Stack -> f Key -> IO (f (Key, R
 -- builder _ st kk | traceShow ("builder", st,kk) False = undefined
 builder pk db stack keys = do
     waits <- for keys (\k -> builderOne pk db stack k)
-    for waits interpreBuildContinue
+    for waits (interpreBuildContinue db pk)
 
 -- the first run should not block
 data BuildContinue = BCContinue (IO (Either SomeException (Key, Result))) | BCStop Key Result
 
-interpreBuildContinue :: BuildContinue -> IO (Key, Result)
-interpreBuildContinue (BCStop k v)     = return (k, v)
-interpreBuildContinue (BCContinue ioR) = do
-    r <- ioR
+-- interpreBuildContinue :: BuildContinue -> IO (Key, Result)
+interpreBuildContinue :: Database -> Key -> (Key, BuildContinue) -> IO (Key, Result)
+interpreBuildContinue _db _pk (_kid, BCStop k v)     = return (k, v)
+interpreBuildContinue db pk (kid, BCContinue ioR) = do
+    r <- withWaitingOnKey db pk kid ioR
     case r of
         Right kv -> return kv
         Left e   -> throw e
 
+builderOne :: Key -> Database -> Stack -> Key -> IO (Key, BuildContinue)
+builderOne parentKey db stack kid = do
+    r <- withWaitingOnKey db parentKey kid $ builderOne' parentKey db stack kid
+    return (kid, r)
 
-builderOne :: Key -> Database -> Stack -> Key -> IO BuildContinue
-builderOne parentKey db@Database {..} stack kid = do
+mkRuntimeDelivery :: Database -> Key -> Step -> IO DeliverStatus
+mkRuntimeDelivery Database{..} key oldCurrent = do
+                status <- atomically (SMap.lookup key databaseValues)
+                dbCur <- readTVarIO databaseStep
+                let cur = fromIntegral $ case keyStatus <$> status of
+                        -- if it still marked as running, we must keep alive so give the current step
+                        Just (Running _ _s _wait _) -> dbCur
+                        -- otherwise, we use the old one so it might be dirty
+                        _                           -> oldCurrent
+                return $ DeliverStatus cur ("downsweep; " ++ show key) key
+
+
+builderOne' :: Key -> Database -> Stack -> Key -> IO BuildContinue
+builderOne' parentKey db@Database {..} stack kid = do
   traceEvent ("builderOne: " ++ show kid) return ()
   barrier <- newEmptyMVar
   liftIO $ atomicallyNamed "builder" $ do
@@ -203,35 +185,36 @@ builderOne parentKey db@Database {..} stack kid = do
     status <- SMap.lookup kid databaseValues
     current <- readTVar databaseStep
     case (viewToRun current . keyStatus) =<< status of
-      Nothing -> spawnThreads current barrier
+      Nothing -> do
+        spawnRefresh db stack kid barrier Nothing refresh
+        return $ BCContinue $ readMVar barrier
       Just (Dirty _) -> wrapWaitEvent "builderOne retry waiting dirty upsweep" kid retry
-    --   Just (Dirty _) -> spawnThreads current barrier
       Just (Clean r) -> return $ BCStop kid r
       Just (Running _step _s wait _)
         | memberStack kid stack -> throw $ StackException stack
         | otherwise -> return $ BCContinue $ wrapWaitEvent "builderOne wait running" kid $ readMVar wait
+
+spawnRefresh :: Database -> t -> Key -> MVar (Either SomeException (Key, Result)) -> Maybe Result -> (Database -> t -> Key -> Maybe Result -> IO Result) -> STM ()
+spawnRefresh db@Database{..} stack kid barrier prevResult refresher = do
+    -- we need to run serially to avoid summiting run but killed in the middle
+    current <- readTVar databaseStep
+    runOneInDataBase
+        (mkRuntimeDelivery db kid current)
+        db
+        (updateRunningStage2 db current barrier kid)
+        (refresher db stack kid prevResult)
+        $ handleResult kid barrier
+    SMap.focus (updateStatus $ Running current prevResult barrier RunningStage1) kid databaseValues
     where
-        spawnThreads current barrier = do
-            -- we need to run serially to avoid summiting run but killed in the middle
-          runOneInDataBase
-            ( do
-                status <- atomically (SMap.lookup kid databaseValues)
-                let cur = fromIntegral $ case keyStatus <$> status of
-                        -- for not dirty keys, we bumped up the step,
-                        -- for dirty keys, they are skipped and wait for the upsweeep.
-                        Just (Running entryStep _s _wait _) -> entryStep
-                        _                                   -> current
-                return $ DeliverStatus cur ("downsweep; " ++ show kid) (newKey kid)
-            )
-            db
-            ( \adyncH ->
-                -- it is safe from worker thread
-                atomically $ SMap.focus (updateStatus $ Running current Nothing barrier (RunningStage2 adyncH)) kid databaseValues
-            )
-            (refresh db stack kid Nothing)
-            $ handleResult kid barrier
-          SMap.focus (updateStatus $ Running current Nothing barrier RunningStage1) kid databaseValues
-          return $ BCContinue $ readMVar barrier
+        handleResult :: (Show a1, MonadIO m) => a1 -> MVar (Either a2 (a1, b)) -> Either a2 b -> m ()
+        handleResult k barrier eResult = do
+            case eResult of
+                Right r -> putMVar barrier (Right (k, r))
+                Left e  -> putMVar barrier (Left e)
+        -- todo, make use of it so running stage1 can keep running
+        updateRunningStage2 :: MonadIO m => Database -> Step -> MVar (Either SomeException (Key, Result)) -> Key -> Async () -> m ()
+        updateRunningStage2 Database{..} current barrier key adyncH =
+                        atomically $ SMap.focus (updateStatus $ Running current Nothing barrier (RunningStage2 adyncH)) key databaseValues
 
 -- | isDirty
 -- only dirty when it's build time is older than the changed time of one of its dependencies
@@ -296,7 +279,7 @@ upSweep eventStep db@Database{..} stack key childtKey = do
                     -- computeAndSetRunningUpSweep eventStep db barrier current stack childtKey key s
                     -- return $ BCContinue $ readMVar barrier
                 -- if it is clean, other event update it, so it is fine.
-                    traceEvent ("[" ++ show tid ++ "] upsweep of " ++ show key) $ computeAndSetRunningUpSweep eventStep db barrier current stack childtKey key s
+                    traceEvent ("[" ++ show tid ++ "] upsweep of " ++ show key) $ computeAndSetRunningUpSweep eventStep db barrier stack key s
                     return $ BCContinue $ readMVar barrier
                 (Clean r) -> return $ BCStop key r
                 -- if other event is updating it, just wait for it
@@ -316,33 +299,13 @@ wrapWaitEvent title key io = do
 computeAndSetRunningUpSweep :: Step
                             -> Database
                             -> MVar (Either SomeException (Key, Result))
-                            -> Step
                             -> Stack
-                            -> Key -- ^ child key that triggered the upsweep (unused here)
                             -> Key -- ^ current key being upswept
                             -> Maybe Result
                             -> STM ()
-computeAndSetRunningUpSweep eventStep db@Database{..} barrier current stack _childtKey key s = do
-        -- we need to run serially to avoid summiting run but killed in the middle
-        runOneInDataBase
-          ( do
-              status <- atomically (SMap.lookup key databaseValues)
-              let cur = fromIntegral $ case keyStatus <$> status of
-                    -- this is ensure that we get an bumped up step when not dirty
-                    -- after an restart to skipped an rerun
-                    Just (Running entryStep _s _wait RunningStage1) -> entryStep
-                    _                                               -> current
-              return $ DeliverStatus cur ("upsweep; " ++ show key) (newKey key)
-          )
-          db
-          ( \adyncH ->
-              -- it is safe from worker thread
-              -- set the running thread
-              atomically $ SMap.focus (updateStatus $ Running current s barrier (RunningStage2 adyncH)) key databaseValues
-          )
-          (do
+computeAndSetRunningUpSweep eventStep db@Database{..} barrier stack key s = do
+    spawnRefresh db stack key barrier s $ \db stack key s-> do
               result <- refresh db stack key s
-
               -- if refresh already take place in newer step, we stop here
               when (eventStep <= resultVisited result) $ do
                 -- parents of the current key (reverse dependencies)
@@ -353,16 +316,7 @@ computeAndSetRunningUpSweep eventStep db@Database{..} barrier current stack _chi
                 -- Parent refresh will determine if it needs to recompute and will clear its dirty mark.
                 for_ (maybe mempty toListKeySet rdeps) $ \rk -> void $ upSweep eventStep db stack rk key
               return result
-          )
-          $ handleResult key barrier
-        SMap.focus (updateStatus $ Running current s barrier RunningStage1) key databaseValues
 
-handleResult :: (Show a1, MonadIO m) => a1 -> MVar (Either a2 (a1, b)) -> Either a2 b -> m ()
-handleResult k barrier eResult = do
-  traceEvent ("finish upsweep of " ++ show k) $
-    case eResult of
-      Right r -> putMVar barrier (Right (k, r))
-      Left e  -> putMVar barrier (Left e)
 
 
 -- | Wrap upSweep as an Action that runs it for a given event step/target/child
@@ -383,6 +337,7 @@ compute :: Database -> Stack -> Key -> RunMode -> Maybe Result -> IO Result
 -- compute _ st k _ _ | traceShow ("compute", st, k) False = undefined
 compute db@Database{..} stack key mode result = do
     let act = runRule databaseRules key (fmap resultData result) mode
+    -- todo, it does not consider preserving, since a refresh is not added to deps
     deps <- liftIO $ newIORef UnknownDeps
     curStep <- liftIO $ readTVarIO databaseStep
     dataBaseLogger $ "Computing key: " ++ show key ++ " at step " ++ show curStep

@@ -35,7 +35,6 @@ import           Development.IDE.WorkerThread       (DeliverStatus (..),
                                                      awaitRunInThread,
                                                      counTaskQueue,
                                                      flushTaskQueue,
-                                                     tryReadTaskQueue,
                                                      writeTaskQueue)
 import qualified Focus
 import           GHC.Conc                           (TVar, atomically)
@@ -45,7 +44,6 @@ import qualified StmContainers.Map                  as SMap
 import           StmContainers.Map                  (Map)
 import           System.Time.Extra                  (Seconds, sleep)
 import           UnliftIO                           (Async (asyncThreadId),
-                                                     AsyncCancelled (AsyncCancelled),
                                                      MVar, MonadUnliftIO, async,
                                                      asyncExceptionFromException,
                                                      asyncExceptionToException,
@@ -198,6 +196,17 @@ data Database = Database {
     databaseValues      :: !(Map Key KeyDetails)
 
     }
+
+withWaitingOnKey :: Database -> Key -> Key -> IO b -> IO b
+withWaitingOnKey Database{..} pk k ioAct = do
+    -- insert the dependency
+    -- atomically $ SMap.focus (Focus.alter (Just . maybe (singletonKeySet k) (insertKeySet k))) pk databaseRuntimeDep
+    r <- ioAct
+    -- remove the one dependency
+    -- atomically $ SMap.focus (Focus.alter (fmap (deleteKeySet k))) pk databaseRuntimeDep
+    return r
+
+
 ---------------------------------------------------------------------
 -- | Remove finished asyncs from 'databaseThreads' (non-blocking).
 --   Uses 'poll' to check completion without waiting.
@@ -246,9 +255,12 @@ computeTransitiveReverseDeps db seeds = do
 
 insertdatabaseRuntimeDep :: Key -> Key -> Database -> STM ()
 insertdatabaseRuntimeDep k pk db = do
-    -- SMap.focus (Focus.alter (Just . maybe (singletonKeySet k) (insertKeySet k))) pk (databaseRuntimeDep db)
     SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k (databaseRRuntimeDep db)
 
+getDatabaseRuntimeDep :: Database -> Key -> STM KeySet
+getDatabaseRuntimeDep db k = do
+    mDeps <- SMap.lookup k (databaseRuntimeDep db)
+    return $ fromMaybe mempty mDeps
 ---------------------------------------------------------------------
 
 shakeDataBaseQueue :: ShakeDatabase -> DBQue
@@ -281,7 +293,7 @@ runInThreadStmInNewThreads db mkDeliver acts = do
                 curStep <- atomically $ getDataBaseStepInt db
                 if curStep == deliverStep deliver then do
                     syncs <- mapM (\(preHook, act, handler) -> do
-                        a <- async (handler =<< (restore $ Right <$> act) `catch` \e@(SomeException _) -> return (Left e))
+                        a <- async (handler =<< (restore (Right <$> act) `catch` \e@(SomeException _) -> return (Left e)))
                         preHook a
                         return (deliver, a)
                         ) acts
@@ -347,10 +359,14 @@ shutDatabase preserve db@Database{..} = uninterruptibleMask $ \unmask -> do
     pruneFinished db
 
 -- fdsfsifjsflksfjslthat dmake musch more sense to me
-peekAsyncsDelivers :: Database -> IO [DeliverStatus]
+-- peekAsyncsDelivers :: Database -> IO [DeliverStatus]
 peekAsyncsDelivers db = do
     asyncs <- readTVarIO (databaseThreads db)
-    return (map fst asyncs)
+    result <- mapM (\(k,_a) -> do
+            x <- atomically $ getDatabaseRuntimeDep db $ deliverKey k
+            return (k, x)
+            ) asyncs
+    return result
 -- waitForDatabaseRunningKeys :: Database -> IO ()
 -- waitForDatabaseRunningKeys = getDatabaseValues >=> mapM_ (waitRunning . snd)
 
@@ -361,6 +377,7 @@ getDatabaseValues = atomically
                   . SMap.listT
                   . databaseValues
 
+-- todo if stage1 runtime as dirty since it is not yet submitted to the task queue
 data RunningStage = RunningStage1 | RunningStage2 (Async ())
     deriving (Eq, Ord)
 data Status
@@ -380,14 +397,13 @@ data Status
         }
 
 viewDirty :: Step -> Status -> Status
--- it might be
-viewDirty currentStep (Running s re _ _) | currentStep /= s = Dirty re
+-- viewDirty currentStep (Running s re _ _) | currentStep /= s = Dirty re
 viewDirty _ other = other
 
 
 viewToRun :: Step -> Status -> Maybe Status
--- viewToRun currentStep (Dirty _) = Nothing
-viewToRun currentStep (Running s _re _ _) | currentStep /= s = Nothing
+-- viewToRun _currentStep (Dirty _) = Nothing
+-- viewToRun currentStep (Running s _re _ _) | currentStep /= s = Nothing
 viewToRun _ other = Just other
 
 getResult :: Status -> Maybe Result
