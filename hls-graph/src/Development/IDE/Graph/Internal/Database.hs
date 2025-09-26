@@ -70,7 +70,9 @@ newDatabase dataBaseLogger databaseQueue databaseExtra databaseRules = do
 incDatabase :: Database -> Maybe [Key] -> IO [Key]
 incDatabase db (Just kk) = do
     atomicallyNamed "incDatabase" $ modifyTVar'  (databaseStep db) $ \(Step i) -> Step $ i + 1
-    transitiveDirtyKeys <- transitiveDirtyListBottomUp db kk
+    transitiveDirtyKeysNew <- atomically $ computeTransitiveReverseDeps db (fromListKeySet kk)
+    transitiveDirtyKeysOld <- transitiveDirtySet db kk
+    let transitiveDirtyKeys = toListKeySet $ transitiveDirtyKeysNew <> transitiveDirtyKeysOld
     traceEvent ("upsweep all dirties " ++ show transitiveDirtyKeys) $ for_ transitiveDirtyKeys $ \k ->
         -- Updating all the keys atomically is not necessary
         -- since we assume that no build is mutating the db.
