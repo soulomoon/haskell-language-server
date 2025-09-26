@@ -832,16 +832,16 @@ session recorder sessionShake sessionState knownTargetsVar(hieYaml, cfp, opts, l
         keys2 <- invalidateCache sessionShake
         keys1 <- extendKnownTargets recorder knownTargetsVar all_targets
         -- Typecheck all files in the project on startup
-        unless (null new_deps || not checkProject) $ do
-            cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
-            void $ enqueueActions sessionShake $ mkDelayedAction "InitialLoad" Debug $ void $ do
-                mmt <- uses GetModificationTime cfps'
-                let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
-                modIfaces <- uses GetModIface cs_exist
-                -- update exports map
-                shakeExtras <- getShakeExtras
-                let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
-                liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
+        -- unless (null new_deps || not checkProject) $ do
+        --     cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
+        --     void $ enqueueActions sessionShake $ mkDelayedAction "InitialLoad" Debug $ void $ do
+        --         mmt <- uses GetModificationTime cfps'
+        --         let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
+        --         modIfaces <- uses GetModIface cs_exist
+        --         -- update exports map
+        --         shakeExtras <- getShakeExtras
+        --         let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
+        --         liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
         return [keys1, keys2]
 
 -- | Create a new HscEnv from a hieYaml root and a set of options
