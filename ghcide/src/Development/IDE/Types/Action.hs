@@ -9,7 +9,8 @@ module Development.IDE.Types.Action
     peekInProgress,
     abortQueue,
     countQueue,
-    isActionQueueEmpty)
+    isActionQueueEmpty,
+    unGetQueue)
 where
 
 import           Control.Concurrent.STM
@@ -58,6 +59,10 @@ newQueue = atomically $ do
 
 pushQueue :: DelayedActionInternal -> ActionQueue -> STM ()
 pushQueue act ActionQueue {..} = writeTQueue newActions act
+
+-- append to the front of the queue
+unGetQueue :: DelayedActionInternal -> ActionQueue -> STM ()
+unGetQueue act ActionQueue {..} = unGetTQueue newActions act
 
 -- | You must call 'doneQueue' to signal completion
 popQueue :: ActionQueue -> STM DelayedActionInternal

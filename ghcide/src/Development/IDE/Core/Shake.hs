@@ -152,7 +152,8 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
                                                           shakePeekAsyncsDelivers,
                                                           shakeProfileDatabase,
                                                           shakeRunDatabaseForKeysSep,
-                                                          shakeShutDatabase)
+                                                          shakeShutDatabase,
+                                                          upSweepAction)
 import           Development.IDE.Graph.Internal.Action   (isAsyncException,
                                                           runActionInDbCb)
 import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
@@ -961,9 +962,10 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         newDirtyKeys <- sraBetweenSessions shakeRestartArgs
         -- reverseMap <- shakedatabaseRuntimeDep shakeDb
         -- logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys [] reverseMap
-        (stopTime, ()) <- duration $ do
-            preservekvs <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
+        (stopTime, affected) <- duration $ do
+            (preservekvs, affected) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
             logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
+            return (affected)
         survivedDelivers <- shakePeekAsyncsDelivers shakeDb
         -- it is every important to update the dirty keys after we enter the critical section
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
@@ -976,14 +978,14 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         step <- shakeGetBuildStep shakeDb
 
         logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime res step survivedDelivers
-        return (shakeRestartArgs, newDirtyKeys)
+        return (shakeRestartArgs, newDirtyKeys, affected)
     )
     -- It is crucial to be masked here, otherwise we can get killed
     -- between spawning the new thread and updating shakeSession.
     -- See https://github.com/haskell/ghcide/issues/79
-    ( \(ShakeRestartArgs {..}, newDirtyKeys) ->
+    ( \(ShakeRestartArgs {..}, newDirtyKeys, affected) ->
         do
-          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason (fromListKeySet newDirtyKeys)
+          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason (fromListKeySet newDirtyKeys, affected)
           `finally` for_ sraWaitMVars (`putMVar` ())
     )
   where
@@ -1030,7 +1032,7 @@ newSession
     -> ShakeDatabase
     -> [DelayedActionInternal]
     -> String
-    -> KeySet
+    -> (KeySet, KeySet)
     -> IO ShakeSession
 newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKeys = do
 
@@ -1043,10 +1045,6 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
 
     reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress actionQueue
     step <- getShakeStep shakeDb
-    allPendingKeys <-
-        if optRunSubset
-          then Just <$> readTVarIO dirtyKeys
-          else return Nothing
     let
         -- A daemon-like action used to inject additional work
         -- Runs actions from the work queue sequentially
@@ -1075,14 +1073,21 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
         workRun start restore = withSpan "Shake session" $ \otSpan -> do
           setTag otSpan "reason" (fromString reason)
           setTag otSpan "queue" (fromString $ unlines $ map actionName reenqueued)
-          whenJust allPendingKeys $ \kk -> setTag otSpan "keys" (BS8.pack $ unlines $ map show $ toListKeySet kk)
           res <- try @SomeException $ restore start
           logWith recorder Info $ LogBuildSessionFinish step res
 
 
     let keysActs = pumpActionThread : map run (reenqueued ++ acts)
     -- first we increase the step, so any actions started from here on
-    startDatabase <- shakeRunDatabaseForKeysSep (toListKeySet <$> allPendingKeys) shakeDb keysActs
+    startDatabase <- shakeRunDatabaseForKeysSep (Just newDirtyKeys) shakeDb keysActs
+
+    -- push the upSweep actions for the dirty keys
+    mapM_
+      ( \k -> do
+          (_, act) <- instantiateDelayedAction (mkDelayedAction ("upsweep" ++ show k) Debug $ upSweepAction k k)
+          atomically $ unGetQueue act actionQueue
+      )
+      (toListKeySet $ fst newDirtyKeys)
     -- Do the work in a background thread
     workThread <- asyncWithUnmask $ \x -> do
         workRun startDatabase x

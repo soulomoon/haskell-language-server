@@ -73,26 +73,16 @@ unvoid = fmap undefined
 -- The nested IO is to
 -- seperate incrementing the step from running the build
 shakeRunDatabaseForKeysSep
-    :: Maybe [Key]
-      -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
+    :: Maybe (KeySet, KeySet) -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
     -> ShakeDatabase
     -> [Action a]
     -> IO (IO [Either SomeException a])
 shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
-    bottomUp <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase db keysChanged
-    -- Prepare upsweep actions for changed keys if provided
-    ups <- case keysChanged of
-        Nothing   -> pure []
-        Just keys -> do
-            Step s <- readTVarIO (databaseStep db)
-            -- we don't know the child that triggered; use a self-child to kick the chain
-            mapM (\k -> return $ upSweepAction (Step s) k k) keys
-    -- user actions
-    -- as2Delayed <- mapM (mkDelayedActionI "user" 1) as2
-    return $ drop lenAs1 <$> runActions  (newKey "root") db (map unvoid (as1 ++ ups) ++ as2)
+    traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase db keysChanged
+    return $ drop lenAs1 <$> runActions  (newKey "root") db (map unvoid as1 ++ as2)
 
 
-shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO [(Key, Async ())]
+shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], KeySet)
 shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
 
 -- | Compute the transitive closure of the given keys over reverse dependencies
@@ -108,7 +98,9 @@ shakeRunDatabaseForKeys
     -> ShakeDatabase
     -> [Action a]
     -> IO [Either SomeException a]
-shakeRunDatabaseForKeys keysChanged sdb as2 = join $ shakeRunDatabaseForKeysSep keysChanged sdb as2
+shakeRunDatabaseForKeys Nothing sdb as2 = join $ shakeRunDatabaseForKeysSep Nothing sdb as2
+shakeRunDatabaseForKeys (Just x) sdb as2 =
+    let y = fromListKeySet x in join $ shakeRunDatabaseForKeysSep (Just (y, y)) sdb as2
 
 
 shakePeekAsyncsDelivers :: ShakeDatabase -> IO [(DeliverStatus, KeySet)]

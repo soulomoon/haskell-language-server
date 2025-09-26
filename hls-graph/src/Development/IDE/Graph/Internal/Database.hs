@@ -66,18 +66,16 @@ newDatabase dataBaseLogger databaseQueue databaseExtra databaseRules = do
 -- | Increment the step and mark dirty.
 --   Assumes that the database is not running a build
 -- only some keys are dirty
-incDatabase :: Database -> Maybe [Key] -> IO [Key]
-incDatabase db (Just kk) = do
+incDatabase :: Database -> Maybe (KeySet, KeySet) -> IO ()
+incDatabase db (Just (kk, transitiveDirtyKeysNew)) = do
     atomicallyNamed "incDatabase" $ modifyTVar'  (databaseStep db) $ \(Step i) -> Step $ i + 1
-    transitiveDirtyKeysNew <- atomically $ computeTransitiveReverseDeps db (fromListKeySet kk)
-    transitiveDirtyKeysOld <- transitiveDirtySet db kk
+    transitiveDirtyKeysOld <- transitiveDirtySet db (toListKeySet kk)
     let transitiveDirtyKeys = toListKeySet $ transitiveDirtyKeysNew <> transitiveDirtyKeysOld
     traceEvent ("upsweep all dirties " ++ show transitiveDirtyKeys) $ for_ transitiveDirtyKeys $ \k ->
         -- Updating all the keys atomically is not necessary
         -- since we assume that no build is mutating the db.
         -- Therefore run one transaction per key to minimise contention.
         atomicallyNamed "incDatabase" $ SMap.focus updateDirty k (databaseValues db)
-    return transitiveDirtyKeys
 -- all keys are dirty
 incDatabase db Nothing = do
     atomically $ modifyTVar'  (databaseStep db) $ \(Step i) -> Step $ i + 1
@@ -85,21 +83,20 @@ incDatabase db Nothing = do
     -- all running keys are also dirty
     atomicallyNamed "incDatabase - all " $ flip ListT.traverse_ list $ \(k,_) ->
         SMap.focus updateDirty k (databaseValues db)
-    return []
 
 -- todo
 -- compute to preserve asyncs
 -- only the running stage 2 keys are actually running
 -- so we only need to preserve them if they are not affected by the dirty set
 
-computeToPreserve :: Database -> KeySet -> STM [(Key, Async ())]
+computeToPreserve :: Database -> KeySet -> STM ([(Key, Async ())], KeySet)
 computeToPreserve db dirtySet = do
   -- All keys that depend (directly or transitively) on any dirty key
   affected <- computeTransitiveReverseDeps db dirtySet
   threads <- readTVar $ databaseThreads db
   let isNonAffected (k, _async) = k /= newKey "root" && k `notMemberKeySet` affected
   let unaffected = filter isNonAffected $ first deliverKey <$> threads
-  pure unaffected
+  pure (unaffected, affected)
 
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
@@ -247,14 +244,10 @@ refreshDeps visited db stack key result = \case
 -- we mark transitively all the keys that depend on the changed key as dirty.
 -- then when we upSweep, we just fire and set it as clean
 
--- We try to compute the child key first,
--- and then check if the child key changed.
--- when a child key does not changed, we immediately remove the dirty mark from transitive parent keys.
--- when a child key did changed, propogate to all the parent key recursively.
-
--- the same event might reach the same key multiple times,
--- we need to make sure the key is only computed once for an event.
--- So if the key is running or clean, we stop here
+-- the same event or new event might reach the same key multiple times,
+-- but we only need to process it once.
+-- so when upSweep, we keep a eventStep, when the eventStep is older than the newest visit step of the key
+-- we just stop the key and stop propogating further.
 
 -- if we allow downsweep, it might see two diffrent state of the same key by peeking at
 -- a key the event have not reached yet, and a key the event have reached.
@@ -264,8 +257,8 @@ refreshDeps visited db stack key result = \case
 
 
 -- we need to enqueue it on restart.
-upSweep :: MonadIO m => Step -> Database -> Stack -> Key -> Key -> m BuildContinue
-upSweep eventStep db@Database{..} stack key childtKey = do
+upSweep :: MonadIO m => Database -> Stack -> Key -> Key -> m BuildContinue
+upSweep db@Database{..} stack key childtKey = do
   barrier <- newEmptyMVar
   tid <- liftIO myThreadId
   liftIO $ atomicallyNamed "upSweep" $ do
@@ -279,7 +272,7 @@ upSweep eventStep db@Database{..} stack key childtKey = do
                     -- computeAndSetRunningUpSweep eventStep db barrier current stack childtKey key s
                     -- return $ BCContinue $ readMVar barrier
                 -- if it is clean, other event update it, so it is fine.
-                    traceEvent ("[" ++ show tid ++ "] upsweep of " ++ show key) $ computeAndSetRunningUpSweep eventStep db barrier stack key s
+                    traceEvent ("[" ++ show tid ++ "] upsweep of " ++ show key) $ computeAndSetRunningUpSweep db barrier stack key s
                     return $ BCContinue $ readMVar barrier
                 (Clean r) -> return $ BCStop key r
                 -- if other event is updating it, just wait for it
@@ -296,34 +289,31 @@ wrapWaitEvent title key io = do
     traceEvent (title ++ " of " ++ show key ++ " finished") $ return ()
     return r
 
-computeAndSetRunningUpSweep :: Step
-                            -> Database
+computeAndSetRunningUpSweep :: Database
                             -> MVar (Either SomeException (Key, Result))
                             -> Stack
                             -> Key -- ^ current key being upswept
                             -> Maybe Result
                             -> STM ()
-computeAndSetRunningUpSweep eventStep db@Database{..} barrier stack key s = do
+computeAndSetRunningUpSweep db@Database{..} barrier stack key s = do
     spawnRefresh db stack key barrier s $ \db stack key s-> do
               result <- refresh db stack key s
-              -- if refresh already take place in newer step, we stop here
-              when (eventStep <= resultVisited result) $ do
-                -- parents of the current key (reverse dependencies)
-                -- we use this, because new incomming parent would be just fine, since they did not pick up the old result
-                -- only the old depend would be updated.
-                rdeps <- liftIO $ atomically $ getRunTimeRDeps db key
-                -- Regardless of whether this child changed, upsweep all parents once.
-                -- Parent refresh will determine if it needs to recompute and will clear its dirty mark.
-                for_ (maybe mempty toListKeySet rdeps) $ \rk -> void $ upSweep eventStep db stack rk key
+              -- parents of the current key (reverse dependencies)
+              -- we use this, because new incomming parent would be just fine, since they did not pick up the old result
+              -- only the old depend would be updated.
+              rdeps <- liftIO $ atomically $ getRunTimeRDeps db key
+              -- Regardless of whether this child changed, upsweep all parents once.
+              -- Parent refresh will determine if it needs to recompute and will clear its dirty mark.
+              for_ (maybe mempty toListKeySet rdeps) $ \rk ->
+                void $ upSweep db stack rk key
               return result
 
 
-
 -- | Wrap upSweep as an Action that runs it for a given event step/target/child
-upSweepAction :: Step -> Key -> Key -> Action ()
-upSweepAction eventStep target child = Action $ do
+upSweepAction :: Key -> Key -> Action ()
+upSweepAction target child = Action $ do
     SAction{..} <- RWS.ask
-    liftIO $ void $ upSweep eventStep actionDatabase actionStack target child
+    liftIO $ void $ upSweep actionDatabase actionStack target child
 
 -- refresh :: Database -> Stack -> Key -> Maybe Result -> IO Result
 -- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
