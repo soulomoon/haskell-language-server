@@ -607,12 +607,9 @@ typeCheckRule :: Recorder (WithPriority Log) -> Rules ()
 typeCheckRule recorder = define (cmapWithPrio LogShake recorder) $ \TypeCheck file -> do
     pm <- use_ GetParsedModule file
     hsc  <- hscEnv <$> use_ GhcSessionDeps file
-    foi <- use_ IsFileOfInterest file
     -- We should only call the typecheck rule for files of interest.
     -- Keeping typechecked modules in memory for other files is
     -- very expensive.
-    when (foi == NotFOI) $
-      logWith recorder Logger.Warning $ LogTypecheckedFOI file
     typeCheckRuleDefinition hsc pm
 
 knownFilesRule :: Recorder (WithPriority Log) -> Rules ()
@@ -836,7 +833,7 @@ getModIfaceFromDiskAndIndexRule recorder =
   -- GetModIfaceFromDisk should have written a `.hie` file, must check if it matches version in db
 
   -- this might not happens if the changes to cache dir does not actually inroduce a change to GetModIfaceFromDisk
-    
+
   let ms = hirModSummary x
       hie_loc = Compat.ml_hie_file $ ms_location ms
   fileHash <- liftIO $ Util.getFileHash hie_loc
