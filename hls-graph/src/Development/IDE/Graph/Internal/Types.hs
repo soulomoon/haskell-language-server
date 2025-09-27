@@ -308,6 +308,20 @@ runInThreadStmInNewThreads db mkDeliver acts = do
                     -- mapM_ (\(_preHook, _act, handler) ->  handler (Left $ SomeException AsyncCancelled)) acts
                 log "runInThreadStmInNewThreads submit end " (deliverName deliver)
 
+runInThreadStmInNewThreads1 ::  Database -> IO DeliverStatus -> (Async () -> IO ()) -> IO result -> (Either SomeException result -> IO ()) -> IO ()
+runInThreadStmInNewThreads1 db mkDeliver preHook  act  handler = do
+        -- Take an action from TQueue, run it and
+        -- use barrier to wait for the result
+        let log prefix title = dataBaseLogger db (prefix ++ title)
+        uninterruptibleMask $ \restore -> do
+            do
+                deliver <- mkDeliver
+                log "runInThreadStmInNewThreads submit begin " (deliverName deliver)
+                a <- async (handler =<< (restore (Right <$> act) `catch` \e@(SomeException _) -> return (Left e)))
+                preHook a
+                atomically $ modifyTVar' (databaseThreads db) ((deliver, a):)
+                log "runInThreadStmInNewThreads submit end " (deliverName deliver)
+
 runOneInDataBase :: IO DeliverStatus -> Database -> (Async () -> IO ()) -> IO result -> (Either SomeException result -> IO ()) -> STM ()
 runOneInDataBase mkDelivery db registerAsync act handler = do
   runInThreadStmInNewThreads
