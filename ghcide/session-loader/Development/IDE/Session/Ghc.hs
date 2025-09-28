@@ -413,15 +413,16 @@ setCacheDirs recorder CacheDirs{..} dflags = do
           & maybe id setHieDir hieCacheDir
           & maybe id setODir oCacheDir
 
-getCacheDirsDefault :: String -> [String] -> IO CacheDirs
-getCacheDirsDefault prefix opts = do
+getCacheDirsDefault :: String -> String -> [String] -> IO CacheDirs
+getCacheDirsDefault root prefix opts = do
     dir <- Just <$> getXdgDirectory XdgCache (cacheDir </> prefix ++ "-" ++ opts_hash)
     return $ CacheDirs dir dir dir
     where
         -- Create a unique folder per set of different GHC options, assuming that each different set of
         -- GHC options will create incompatible interface files.
         -- opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
-        opts_hash = "fixed"
+        -- opts_hash = "fixed"
+        opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack [root])
 
 setNameCache :: NameCache -> HscEnv -> HscEnv
 setNameCache nc hsc = hsc { hsc_NC = nc }
