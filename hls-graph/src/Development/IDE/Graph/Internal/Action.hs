@@ -2,7 +2,6 @@
 
 module Development.IDE.Graph.Internal.Action
 ( ShakeValue
-, actionFork
 , actionBracket
 , actionCatch
 , actionFinally
@@ -14,9 +13,11 @@ module Development.IDE.Graph.Internal.Action
 , runActions
 , Development.IDE.Graph.Internal.Action.getDirtySet
 , getKeysAndVisitedAge
+, runActionInDbCb
 ) where
 
 import           Control.Concurrent.Async
+import           Control.Concurrent.STM.Stats            (atomicallyNamed)
 import           Control.DeepSeq                         (force)
 import           Control.Exception
 import           Control.Monad.IO.Class
@@ -30,7 +31,11 @@ import           Development.IDE.Graph.Internal.Database
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules    (RuleResult)
 import           Development.IDE.Graph.Internal.Types
+import           Development.IDE.WorkerThread
 import           System.Exit
+import           UnliftIO                                (STM, atomically,
+                                                          newEmptyTMVarIO,
+                                                          putTMVar, readTMVar)
 
 type ShakeValue a = (Show a, Typeable a, Eq a, Hashable a, NFData a)
 
@@ -40,49 +45,58 @@ alwaysRerun = do
     ref <- Action $ asks actionDeps
     liftIO $ modifyIORef' ref (AlwaysRerunDeps mempty <>)
 
-parallel :: [Action a] -> Action [a]
-parallel [] = pure []
-parallel [x] = fmap (:[]) x
+parallel :: [Action a] -> Action [Either SomeException a]
+parallel [] = return []
 parallel xs = do
     a <- Action ask
     deps <- liftIO $ readIORef $ actionDeps a
     case deps of
         UnknownDeps ->
             -- if we are already in the rerun mode, nothing we do is going to impact our state
-            liftIO $ mapConcurrently (ignoreState a) xs
-        deps -> do
-            (newDeps, res) <- liftIO $ unzip <$> mapConcurrently (usingState a) xs
-            liftIO $ writeIORef (actionDeps a) $ mconcat $ deps : newDeps
-            pure res
-    where
-        usingState a x = do
-            ref <- newIORef mempty
-            res <- runReaderT (fromAction x) a{actionDeps=ref}
-            deps <- readIORef ref
-            pure (deps, res)
+            runActionInDb xs
+        deps -> error $ "parallel not supported when we have precise dependencies: " ++ show deps
+            -- (newDeps, res) <- liftIO $ unzip <$> runActionInDb usingState xs
+            -- liftIO $ writeIORef (actionDeps a) $ mconcat $ deps : newDeps
+            -- return ()
+
+-- non-blocking version of runActionInDb
+runActionInDbCb :: (a -> Key) -> (a -> Action result) -> STM a -> (Either SomeException result -> IO ()) -> Action a
+runActionInDbCb getTitle run getAct handler = do
+    a <- Action ask
+    liftIO $ atomicallyNamed "action queue - pop" $ do
+        act <- getAct
+        let key = getTitle act
+        -- might be not keep across session
+        runInDataBase (do
+            s <- atomically $ getDataBaseStepInt (actionDatabase a)
+            return $ DeliverStatus s key
+            ) (actionDatabase a) [(ignoreState a $ setActionKey key $ run act, handler)]
+        return act
+
+runActionInDb :: [Action a] -> Action [Either SomeException a]
+runActionInDb acts = do
+    a <- Action ask
+    xs <- mapM (\x -> do
+        barrier <- newEmptyTMVarIO
+        return (x, barrier)) acts
+    -- always rerun !
+    s <- atomically $ getDataBaseStepInt (actionDatabase a)
+    liftIO $ atomically $ runInDataBase (return $ DeliverStatus s (actionKey a)) (actionDatabase a)
+        (map (\(x, b) -> (ignoreState a x, atomically . putTMVar b)) xs)
+    results <- liftIO $ mapM (atomically . readTMVar) $ fmap snd xs
+    return results
 
 ignoreState :: SAction -> Action b -> IO b
 ignoreState a x = do
     ref <- newIORef mempty
     runReaderT (fromAction x) a{actionDeps=ref}
 
-actionFork :: Action a -> (Async a -> Action b) -> Action b
-actionFork act k = do
-    a <- Action ask
-    deps <- liftIO $ readIORef $ actionDeps a
-    let db = actionDatabase a
-    case deps of
-        UnknownDeps -> do
-            -- if we are already in the rerun mode, nothing we do is going to impact our state
-            [res] <- liftIO $ withAsync (ignoreState a act) $ \as -> runActions db [k as]
-            return res
-        _ ->
-            error "please help me"
-
 isAsyncException :: SomeException -> Bool
 isAsyncException e
+    | Just (_ :: SomeAsyncException) <- fromException e = True
     | Just (_ :: AsyncCancelled) <- fromException e = True
     | Just (_ :: AsyncException) <- fromException e = True
+    | Just (_ :: AsyncParentKill) <- fromException e = True
     | Just (_ :: ExitCode) <- fromException e = True
     | otherwise = False
 
@@ -114,7 +128,8 @@ apply :: (Traversable f, RuleResult key ~ value, ShakeValue key, Typeable value)
 apply ks = do
     db <- Action $ asks actionDatabase
     stack <- Action $ asks actionStack
-    (is, vs) <- liftIO $ build db stack ks
+    pk <- getActionKey
+    (is, vs) <- liftIO $ build pk db stack ks
     ref <- Action $ asks actionDeps
     let !ks = force $ fromListKeySet $ toList is
     liftIO $ modifyIORef' ref (ResultDeps [ks] <>)
@@ -125,13 +140,14 @@ applyWithoutDependency :: (Traversable f, RuleResult key ~ value, ShakeValue key
 applyWithoutDependency ks = do
     db <- Action $ asks actionDatabase
     stack <- Action $ asks actionStack
-    (_, vs) <- liftIO $ build db stack ks
+    pk <- getActionKey
+    (_, vs) <- liftIO $ build pk db stack ks
     pure vs
 
-runActions :: Database -> [Action a] -> IO [a]
-runActions db xs = do
+runActions :: Key -> Database -> [Action a] -> IO [Either SomeException a]
+runActions pk db xs = do
     deps <- newIORef mempty
-    runReaderT (fromAction $ parallel xs) $ SAction db deps emptyStack
+    runReaderT (fromAction $ parallel xs) $ SAction pk db deps emptyStack
 
 -- | Returns the set of dirty keys annotated with their age (in # of builds)
 getDirtySet  :: Action [(Key, Int)]
