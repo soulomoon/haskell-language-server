@@ -33,6 +33,7 @@ import           Development.IDE.Graph.Internal.Database
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules    (RuleResult)
 import           Development.IDE.Graph.Internal.Types
+import           Development.IDE.WorkerThread            (DeliverStatus (..))
 import           System.Exit
 import           UnliftIO                                (STM, atomically,
                                                           newEmptyTMVarIO,
@@ -75,10 +76,13 @@ parallel xs = do
 --       liftIO $ atomically $ doneQueue d actionQueue
 
 pumpActionThread :: ShakeDatabase -> (String -> IO ()) -> Action b
-pumpActionThread sdb@(ShakeDatabase _ _ _ actionQueue) logMsg = do
+pumpActionThread sdb@(ShakeDatabase _ _ db actionQueue) logMsg = do
   a <- ask
   d <- liftIO $ atomicallyNamed "action queue - pop" $ popQueue actionQueue
-  liftIO $ runInDataBase2 (actionName d) (actionDatabase a) (ignoreState a $ runOne d)
+  s <- atomically $ getDataBaseStepInt db
+  liftIO $ runInThreadStmInNewThreads db
+    (return $ DeliverStatus s (actionName d) (newKey "root"))
+    (ignoreState a $ runOne d) (const $ return ())
   liftIO $ logMsg ("pump executed: " ++ actionName d)
   pumpActionThread sdb logMsg
   where
@@ -88,14 +92,23 @@ pumpActionThread sdb@(ShakeDatabase _ _ _ actionQueue) logMsg = do
 
 runActionInDb :: String -> [Action a] -> Action [Either SomeException a]
 runActionInDb title acts = do
-    a <- ask
-    xs <- mapM (\x -> do
-        barrier <- newEmptyTMVarIO
-        return (x, barrier)) acts
-    liftIO $ runInDataBase title (actionDatabase a)
-        (map (\(x, b) -> (ignoreState a x, atomically . putTMVar b)) xs)
-    results <- liftIO $ mapM (atomically . readTMVar) $ fmap snd xs
-    return results
+  a <- ask
+  s <- atomically $ getDataBaseStepInt (actionDatabase a)
+  resultBarriers <-
+    mapM
+      ( \act -> do
+          barrier <- newEmptyTMVarIO
+          liftIO $
+            runInThreadStmInNewThreads
+              (actionDatabase a)
+              (return $ DeliverStatus s title (newKey "root"))
+              act
+              (atomically . putTMVar barrier)
+          return $ barrier
+      )
+      $ map (\x -> ignoreState a x) acts
+  results <- liftIO $ mapM (atomically . readTMVar) $ resultBarriers
+  return results
 
 ignoreState :: SAction -> Action b -> IO b
 ignoreState a x = do

@@ -225,7 +225,7 @@ setupLSP recorder defaultRoot getHieDbLoc userHandlers getIdeState clientMsgVar 
       let timeOutSeconds = 10
       timeout (timeOutSeconds * 1_000_000) (waitBarrier reactorConfirmBarrier) >>= \case
         Just () -> pure ()
-        -- If we don't get confirmation within 2 seconds, we log a warning and shutdown anyway.
+        -- If we don't get confirmation within 10 seconds, we log a warning and shutdown anyway.
         Nothing -> logWith recorder Warning $ LogShutDownTimeout timeOutSeconds
 
   -- Forcefully exit

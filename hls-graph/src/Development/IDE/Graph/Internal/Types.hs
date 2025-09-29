@@ -58,8 +58,9 @@ import           UnliftIO                           (Async (asyncThreadId),
                                                      MVar, MonadUnliftIO, async,
                                                      asyncExceptionFromException,
                                                      asyncExceptionToException,
-                                                     cancel, newEmptyTMVarIO,
-                                                     poll, putTMVar, readTMVar,
+                                                     cancelWith,
+                                                     newEmptyTMVarIO, poll,
+                                                     putTMVar, readTMVar,
                                                      readTVarIO, throwTo,
                                                      waitCatch, withAsync)
 import           UnliftIO.Concurrent                (ThreadId, myThreadId)
@@ -375,82 +376,49 @@ shakeDataBaseQueue = databaseQueue . (\(ShakeDatabase _ _ db _) -> db)
 awaitRunInDb :: Database -> IO result -> IO result
 awaitRunInDb db act = awaitRunInThread (databaseQueue db) act
 
-
 databaseGetActionQueueLength :: Database -> STM Int
 databaseGetActionQueueLength db = do
     counTaskQueue (databaseQueue db)
 
-runInDataBase2 :: String -> Database -> IO result -> IO ()
-runInDataBase2 title db ior = do
-    s <- atomically $ getDataBaseStepInt db
-    runInThreadStmInNewThreads1 db (return $ DeliverStatus s title (newKey "root"))  ior (const $ return ())
-
-runInThreadStmInNewThreadsOne :: Database -> IO DeliverStatus -> IO result -> (Either SomeException result -> IO ()) -> IO ()
-runInThreadStmInNewThreadsOne db mkD ior postHook =
-    atomically $ runInThreadStmInNewThreads db mkD  [(ior, postHook)]
-
-runInThreadStmInNewThreads ::  Database -> IO DeliverStatus -> [(IO result, Either SomeException result -> IO ())] -> STM ()
-runInThreadStmInNewThreads db mkDeliver acts = do
-  -- Take an action from TQueue, run it and
-  -- use barrier to wait for the result
-    let log prefix title = dataBaseLogger db (prefix ++ title)
-    writeTaskQueue (databaseQueue db) $ Right $ do
-        uninterruptibleMask $ \restore -> do
-            do
-                deliver <- mkDeliver
-                log "runInThreadStmInNewThreads submit begin " (deliverName deliver)
-                curStep <- atomically $ getDataBaseStepInt db
-                if curStep == deliverStep deliver then do
-                    syncs <- mapM (\(act, handler) -> do
-                        a <- async (handler =<< (restore (Right <$> act) `catch` \e@(SomeException _) -> return (Left e)))
-                        return (deliver, a)
-                        ) acts
-                    atomically $ modifyTVar' (databaseThreads db) (syncs++)
-                else do
-                    -- someone might be waiting for something that cancelled, but did not get notified
-                    -- because it is not only recorded in the runtime deps
-
-                    -- if it the wait is issue before restart, it would be recorded in the runtime deps
-                    -- if it is issued after restart, might not be recorded and causing a problem
-                    return ()
-                    -- mapM_ (\(_preHook, _act, handler) ->  handler (Left $ SomeException AsyncCancelled)) acts
-                log "runInThreadStmInNewThreads submit end " (deliverName deliver)
-
 runInDataBase :: String -> Database -> [(IO result, Either SomeException result -> IO ())] -> IO ()
 runInDataBase title db acts = do
     s <- atomically $ getDataBaseStepInt db
-    mapM_ (\(act, handler) -> runInThreadStmInNewThreads1 db (return $ DeliverStatus s title (newKey "root")) act handler) acts
+    mapM_ (\(act, handler) -> runInThreadStmInNewThreads db (return $ DeliverStatus s title (newKey "root")) act handler) acts
 
+-- | Abstract pattern for spawning async computations with database registration.
+-- This pattern is used by spawnRefresh1 and can be used by other functions that need:
+-- 1. Protected async creation with uninterruptibleMask
+-- 2. Database thread tracking and state updates
+-- 3. Controlled start coordination via barriers
+-- 4. Exception safety with rollback on registration failure
+-- @ inline
+{-# INLINE spawnAsyncWithDbRegistration #-}
+spawnAsyncWithDbRegistration :: Database -> IO DeliverStatus -> IO a1 -> STM b -> IO () -> (Either SomeException a1 -> IO ()) -> IO b
+spawnAsyncWithDbRegistration db@Database{..} mkdeliver asyncBody dbUpdate rollBack handler = do
+    startBarrier <- newEmptyTMVarIO
+    deliver <- mkdeliver
+    -- 1. we need to make sure the thread is registered before we actually start
+    -- 2. we should not start in between the restart
+    -- 3. if it is killed before we start, we need to cancel the async
+    let register a = do
+                    dbNotLocked db
+                    modifyTVar' databaseThreads ((deliver, a):)
+                    -- make sure we only start after the restart
+                    putTMVar startBarrier ()
+                    dbUpdate
+    uninterruptibleMask $ \restore -> do
+        a <- async (handler =<< (restore $ atomically (readTMVar startBarrier) >> (Right <$> asyncBody)) `catch` \e@(SomeException _) -> return (Left e))
+        (restore $ atomically $ register a)
+            `catch` \e@(SomeException _) -> do
+                    cancelWith a e
+                    rollBack
+                    throw e
 
-runInThreadStmInNewThreads1 :: Database -> IO DeliverStatus -> IO a -> (Either SomeException a -> IO ()) -> IO ()
-runInThreadStmInNewThreads1 db mkDeliver act handler = do
-        let log prefix title = dataBaseLogger db (prefix ++ title)
-        uninterruptibleMask $ \restore -> do
-            do
-                deliver <- mkDeliver
-                startBarrier <- newEmptyTMVarIO
-                log "runInThreadStmInNewThreads submit begin " (deliverName deliver)
-                a <- async (do
-                    restore $ atomically $ readTMVar startBarrier
-                    handler =<< (restore (Right <$> act) `catch` \e@(SomeException _) -> return (Left e)))
-                log "runInThreadStmInNewThreads submit end " (deliverName deliver)
-                -- two things:
-                -- 2. we need to make sure the thread is registered before we actually start
-                -- 1. we should not start in between the restart
-                -- if it is killed before we start, we need to cancel the async
-                (restore $
-                    atomically $ do
-                        dbNotLocked db
-                        modifyTVar' (databaseThreads db) ((deliver, a):)
-                        -- make sure we only start after the restart
-                        putTMVar startBarrier ()) `catch` \e@(SomeException _) -> do
-                            -- if we are killed before we start, we need to cancel the async
-                            log "runInThreadStmInNewThreads cancelled before start " (deliverName deliver)
-                            cancel a
-                            throw e
-
-                return ()
-
+-- inline
+{-# INLINE runInThreadStmInNewThreads #-}
+runInThreadStmInNewThreads :: Database -> IO DeliverStatus -> IO a -> (Either SomeException a -> IO ()) -> IO ()
+runInThreadStmInNewThreads db mkDeliver act handler =
+        spawnAsyncWithDbRegistration db mkDeliver act (return ()) (return ()) handler
 
 getDataBaseStepInt :: Database -> STM Int
 getDataBaseStepInt db = do
@@ -509,7 +477,7 @@ getDatabaseValues = atomically
                   . databaseValues
 
 -- todo if stage1 runtime as dirty since it is not yet submitted to the task queue
-data RunningStage = RunningStage1 | RunningStage2 (Async ())
+data RunningStage = RunningStage1 | RunningStage2
     deriving (Eq, Ord)
 data Status
     = Clean !Result

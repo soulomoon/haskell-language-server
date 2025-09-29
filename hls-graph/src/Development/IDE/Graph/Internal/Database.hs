@@ -5,10 +5,11 @@
 {-# LANGUAGE CPP                #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE LambdaCase         #-}
+{-# LANGUAGE RankNTypes         #-}
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TypeFamilies       #-}
 
-module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..), upSweepAction, updateClean, computeToPreserve, transitiveDirtyListBottomUp, getRunTimeRDeps) where
+module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..), upSweepAction, computeToPreserve, transitiveDirtyListBottomUp, getRunTimeRDeps, spawnAsyncWithDbRegistration) where
 
 import           Prelude                              hiding (unzip)
 
@@ -39,12 +40,9 @@ import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                    as SMap
 import           System.Time.Extra                    (duration)
-import           UnliftIO                             (Async, MVar, async,
-                                                       atomically, cancel,
-                                                       newEmptyMVar,
-                                                       newEmptyTMVarIO, putMVar,
-                                                       putTMVar, readMVar,
-                                                       readTMVar)
+import           UnliftIO                             (Async, MVar, atomically,
+                                                       newEmptyMVar, putMVar,
+                                                       readMVar)
 
 #if MIN_VERSION_base(4,19,0)
 import           Data.Functor                         (unzip)
@@ -107,12 +105,6 @@ updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
                   | otherwise = status
             in KeyDetails status' rdeps
 
-updateClean :: Monad m => Focus.Focus KeyDetails m ()
-updateClean = Focus.adjust $ \(KeyDetails status rdeps) ->
-            let status'
-                  | Dirty (Just x) <- status = Clean x
-                  | otherwise = status
-            in KeyDetails status' rdeps
 
 -- updateClean :: Monad m => Focus.Focus KeyDetails m ()
 -- updateClean = Focus.adjust $ \(KeyDetails _ rdeps) ->
@@ -146,7 +138,7 @@ data BuildContinue = BCContinue (IO (Either SomeException (Key, Result))) | BCSt
 -- interpreBuildContinue :: BuildContinue -> IO (Key, Result)
 interpreBuildContinue :: Database -> Key -> (Key, BuildContinue) -> IO (Key, Result)
 interpreBuildContinue _db _pk (_kid, BCStop k v)     = return (k, v)
-interpreBuildContinue db pk (kid, BCContinue ioR) = do
+interpreBuildContinue _db _pk (_kid, BCContinue ioR) = do
     r <- ioR
     case r of
         Right kv -> return kv
@@ -193,38 +185,7 @@ builderOne' firstTime parentKey db@Database {..} stack kid = do
         | memberStack kid stack -> throw $ StackException stack
         | otherwise -> pure . pure $ BCContinue $ wrapWaitEvent "builderOne wait running" kid $ readMVar wait
 
-spawnRefresh1 :: Database -> t -> Key -> MVar (Either SomeException (Key, Result)) -> Maybe Result
-    -> (Database -> t -> Key -> Maybe Result -> IO Result)
-    -> IO ()
-    -> IO ()
-spawnRefresh1 db@Database {..} stack key barrier prevResult refresher rollBack = do
-  -- we need to run serially to avoid summiting run but killed in the middle
-  Step current <- atomically $ readTVar databaseStep
-  let deliver = DeliverStatus current ("downsweep; " ++ show key) key
-  uninterruptibleMask $ \restore -> do
-    do
-      startBarrier <- newEmptyTMVarIO
-      a <- async (do
-        restore $ atomically $ readTMVar startBarrier
-        handleResult key barrier =<< (restore (Right <$> refresher db stack key prevResult) `catch` \e@(SomeException _) -> return (Left e)))
-      -- first we start the async, but we give barrier to halt it.
-      -- Then we registered and released the barrier so the thread actually start,
-      -- if we are killed before the stm. We just cancelled the async and then rolled back the changes.
-      -- todo, make use of it so running stage1 can keep running
-      (restore $
-          atomically $ do
-              dbNotLocked db
-              modifyTVar' databaseThreads ((deliver, a):)
-              -- make sure we only start after the restart
-              putTMVar startBarrier ()
-              SMap.focus (updateStatus $ Running (Step current) prevResult barrier (RunningStage2 a)) key databaseValues)
-              `catch` \e@(SomeException _) -> do
-                  -- if we are killed before we start, we need to cancel the async
-                  -- and roll back the database change
-                  cancel a
-                  rollBack
-                  putMVar barrier (Left e)
-                  throw e
+-- Original spawnRefresh1 implementation moved below to use the abstraction
 
 handleResult :: (Show a1, MonadIO m) => a1 -> MVar (Either a2 (a1, b)) -> Either a2 b -> m ()
 handleResult k barrier eResult = do
@@ -305,9 +266,9 @@ upSweep db@Database {..} stack key childtKey = mask $ \restore -> do
 -- wrapWaitEvent :: String -> Key -> IO a -> IO a
 wrapWaitEvent :: (Monad m, Show a) => [Char] -> a -> m b -> m b
 wrapWaitEvent title key io = do
-    traceEvent (title ++ " of " ++ show key) $ return ()
+    -- traceEvent (title ++ " of " ++ show key) $ return ()
     r <- io
-    traceEvent (title ++ " of " ++ show key ++ " finished") $ return ()
+    -- traceEvent (title ++ " of " ++ show key ++ " finished") $ return ()
     return r
 
 
@@ -365,6 +326,8 @@ compute db@Database{..} stack key mode result = do
                     deps
             _ -> pure ()
         runHook
+        -- todo
+        -- it might be overridden by error if another kills this thread
         SMap.focus (updateStatus $ Clean res) key databaseValues
     pure res
 
@@ -465,6 +428,28 @@ transitiveDirtyListBottomUp database seeds = do
         void $ State.runStateT (traverse_ go seeds) mempty
         reverse <$> readIORef acc
 
+
+-- | Original spawnRefresh1 using the general pattern
+-- inline
+{-# INLINE spawnRefresh1 #-}
+spawnRefresh1 ::
+  Database ->
+  t ->
+  Key ->
+  MVar (Either SomeException (Key, Result)) ->
+  Maybe Result ->
+  (Database -> t -> Key -> Maybe Result -> IO Result) ->
+  IO () ->
+  IO ()
+spawnRefresh1 db@Database {..} stack key barrier prevResult refresher rollBack = do
+  current@(Step currentStep) <- atomically $ readTVar databaseStep
+  spawnAsyncWithDbRegistration
+    db
+    (return $ DeliverStatus currentStep ("async computation; " ++ show key) key)
+    (refresher db stack key prevResult)
+    (SMap.focus (updateStatus $ Running current prevResult barrier RunningStage2) key databaseValues)
+    rollBack
+    (handleResult key barrier)
 
 -- Attempt to clear a Dirty parent that ended up with unchanged children during this event.
 -- If the parent is Dirty, and every direct child is either Clean/Exception/Running for a step < eventStep,

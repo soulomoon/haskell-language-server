@@ -35,8 +35,7 @@ import           Data.Foldable                           (for_)
 import           Data.Maybe
 import           Data.Set                                (Set)
 import           Data.Unique
-import           Debug.Trace                             (traceEvent,
-                                                          traceShowM)
+import           Debug.Trace                             (traceEvent)
 import           Development.IDE.Graph.Classes           ()
 import           Development.IDE.Graph.Internal.Action
 import           Development.IDE.Graph.Internal.Database
@@ -47,7 +46,6 @@ import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
 import qualified Development.IDE.Graph.Internal.Types    as Logger
 import           Development.IDE.WorkerThread            (DeliverStatus)
-import           Extra                                   (offsetTime)
 
 
 -- Placeholder to be the 'extra' if the user doesn't set it
@@ -110,18 +108,15 @@ shakeRunDatabaseForKeysSepWithPump keysChanged (ShakeDatabase _ as1 db actionQue
             Just (dirty, _) -> do
                 for_ (toListKeySet dirty) $ \k -> do
                     (_, act) <- instantiateDelayedAction (mkDelayedAction ("upsweep" ++ show k) Debug $ upSweepAction k k)
-                    atomically $ unGetQueue act actionQueue
-                    -- insertRunnning
-                -- return ()
-                -- void $ atomically $ popAllQueue actionQueue
-                -- todo why popAllQueue actionQueue won't work here?
-    reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress actionQueue
-    for_ reenqueued $ \d -> atomically $ unGetQueue d actionQueue
-                -- return []
-    traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase db keysChanged
+                    atomically $ insertRunnning act actionQueue
     reenqUpsweep
+    reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress actionQueue
+    -- for_ reenqueued $ \d -> atomically $ unGetQueue d actionQueue
+                -- return []
+    let ignoreResultAct = as1 ++ map runOne reenqueued
+    traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase db keysChanged
     -- let allActs = map (unvoid . runOne) reenqueued ++ acts
-    return $ drop (length as1) <$> runActions (newKey "root") db (map unvoid as1 ++ acts)
+    return $ drop (length ignoreResultAct) <$> runActions (newKey "root") db (map unvoid ignoreResultAct ++ acts)
 
 instantiateDelayedAction
     :: DelayedAction a
