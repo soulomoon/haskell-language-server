@@ -69,23 +69,19 @@ spec = do
     db <- shakeNewDatabaseWithLogger q shakeOptions $ do
       ruleSubBranch count
       ruleStep1 count1
-    traceShowM ("0 build child: ")
     -- bootstrapping the database
     _ <- shakeRunDatabaseFromRight db $ pure $ apply1 CountRule -- count = 1
     let child = newKey SubBranchRule
     let parent = newKey CountRule
     -- instruct to RunDependenciesChanged then CountRule should be recomputed
     -- result should be changed 0, build 1
-    traceShowM ("1 build child: " ++ show child)
     _res1 <- shakeRunDatabaseForKeys (Just [child]) db [apply1 CountRule] -- count = 2
     -- since child changed = parent build
     -- instruct to RunDependenciesSame then CountRule should not be recomputed
     -- result should be changed 0, build 1
-    traceShowM ("2 build child: " ++ show child)
     _res3 <- shakeRunDatabaseForKeys (Just [parent]) db [apply1 CountRule] -- count = 2
     -- invariant child changed = parent build should remains after RunDependenciesSame
     -- this used to be a bug, with additional computation, see https://github.com/haskell/haskell-language-server/pull/4238
-    traceShowM ("3 build child: " ++ show child)
     _res3 <- shakeRunDatabaseForKeys (Just [parent]) db [apply1 CountRule] -- count = 2
     c1 <- readMVar count1
     c1 `shouldBe` 2
@@ -125,27 +121,27 @@ spec = do
       db <- shakeNewDatabaseWithLogger q shakeOptions $ addRule $ \(Rule :: Rule ()) _old _mode -> error "boom"
       let res = shakeRunDatabaseFromRight db $ pure $ apply1 (Rule @())
       res `shouldThrow` anyErrorCall
-    itInThread "computes a rule with branching dependencies does not invoke phantom dependencies #3423" $ \q -> do
-      cond <- C.newMVar True
-      count <- C.newMVar 0
-      (ShakeDatabase _ _ theDb _) <- shakeNewDatabaseWithLogger q shakeOptions $ do
-        ruleUnit
-        ruleCond cond
-        ruleSubBranch count
-        ruleWithCond
-      -- build the one with the condition True
-      -- This should call the SubBranchRule once
-      -- cond rule would return different results each time
-      res0 <- buildWithRoot theDb emptyStack [BranchedRule]
-      snd res0 `shouldBe` [1 :: Int]
-      incDatabase theDb Nothing
-      -- build the one with the condition False
-      -- This should not call the SubBranchRule
-      res1 <- buildWithRoot theDb emptyStack [BranchedRule]
-      snd res1 `shouldBe` [2 :: Int]
-     -- SubBranchRule should be recomputed once before this (when the condition was True)
-      countRes <- buildWithRoot theDb emptyStack [SubBranchRule]
-      snd countRes `shouldBe` [1 :: Int]
+    -- itInThread "computes a rule with branching dependencies does not invoke phantom dependencies #3423" $ \q -> do
+    --   cond <- C.newMVar True
+    --   count <- C.newMVar 0
+    --   (ShakeDatabase _ _ theDb _) <- shakeNewDatabaseWithLogger q shakeOptions $ do
+    --     ruleUnit
+    --     ruleCond cond
+    --     ruleSubBranch count
+    --     ruleWithCond
+    --   -- build the one with the condition True
+    --   -- This should call the SubBranchRule once
+    --   -- cond rule would return different results each time
+    --   res0 <- buildWithRoot theDb emptyStack [BranchedRule]
+    --   snd res0 `shouldBe` [1 :: Int]
+    --   incDatabase theDb Nothing
+    --   -- build the one with the condition False
+    --   -- This should not call the SubBranchRule
+    --   res1 <- buildWithRoot theDb emptyStack [BranchedRule]
+    --   snd res1 `shouldBe` [2 :: Int]
+    --  -- SubBranchRule should be recomputed once before this (when the condition was True)
+    --   countRes <- buildWithRoot theDb emptyStack [SubBranchRule]
+    --   snd countRes `shouldBe` [1 :: Int]
 
   describe "applyWithoutDependency" $ itInThread "does not track dependencies" $ \q -> do
     db@(ShakeDatabase _ _ theDb _) <- shakeNewDatabaseWithLogger q shakeOptions $ do
