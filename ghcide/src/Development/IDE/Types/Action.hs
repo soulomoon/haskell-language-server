@@ -7,7 +7,9 @@ module Development.IDE.Types.Action
     popQueue,
     doneQueue,
     peekInProgress,
-  abortQueue,countQueue)
+    abortQueue,
+    countQueue,
+    isActionQueueEmpty)
 where
 
 import           Control.Concurrent.STM
@@ -86,3 +88,9 @@ countQueue ActionQueue{..} = do
 
 peekInProgress :: ActionQueue -> STM [DelayedActionInternal]
 peekInProgress ActionQueue {..} = Set.toList <$> readTVar inProgress
+
+isActionQueueEmpty :: ActionQueue -> STM Bool
+isActionQueueEmpty ActionQueue {..} = do
+    emptyQueue <- isEmptyTQueue newActions
+    inProg <- Set.null <$> readTVar inProgress
+    return (emptyQueue && inProg)

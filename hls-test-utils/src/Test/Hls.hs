@@ -770,7 +770,10 @@ runSessionWithTestConfig TestConfig{..} session =
 
     let plugins = testPluginDescriptor recorder <> lspRecorderPlugin
     timeoutOverride <- fmap read <$> lookupEnv "LSP_TIMEOUT"
-    let sconf' = testConfigSession { lspConfig = hlsConfigToClientConfig testLspConfig, messageTimeout = fromMaybe (messageTimeout defaultConfig) timeoutOverride}
+    let sconf' = testConfigSession { lspConfig = hlsConfigToClientConfig testLspConfig
+        , messageTimeout = fromMaybe (messageTimeout defaultConfig) timeoutOverride
+        , logStdErr = True
+        }
         arguments = testingArgs serverRoot recorderIde plugins
     server <- async $
         IDEMain.defaultMain (cmapWithPrio LogIDEMain recorderIde)
