@@ -195,6 +195,7 @@ library
     Development.IDE.Types.Monitoring
     Development.IDE.Types.Options
     Development.IDE.Types.Shake
+    Development.IDE.Types.Action
     Generics.SYB.GHC
     Text.Fuzzy.Parallel
 
@@ -202,7 +203,6 @@ library
     Development.IDE.Core.FileExists
     Development.IDE.GHC.CPP
     Development.IDE.GHC.Warnings
-    Development.IDE.Types.Action
     Development.IDE.Session.OrderedSet
 
   if flag(pedantic)

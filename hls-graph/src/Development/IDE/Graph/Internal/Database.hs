@@ -40,7 +40,8 @@ import qualified ListT
 import qualified StmContainers.Map                    as SMap
 import           System.Time.Extra                    (duration)
 import           UnliftIO                             (Async, MVar, async,
-                                                       atomically, newEmptyMVar,
+                                                       atomically, cancel,
+                                                       newEmptyMVar,
                                                        newEmptyTMVarIO, putMVar,
                                                        putTMVar, readMVar,
                                                        readTMVar)
@@ -178,6 +179,7 @@ builderOne' firstTime parentKey db@Database {..} stack kid = do
       Nothing -> do
         SMap.focus (updateStatus $ Running current Nothing barrier RunningStage1) kid databaseValues
         let register = spawnRefresh1 db stack kid barrier Nothing refresh
+                        $ atomicallyNamed "builderOne rollback" $ SMap.delete kid databaseValues
         return $ register >> return (BCContinue $ readMVar barrier)
       Just (Dirty _) -> case firstTime of
         FirstTime -> pure . pure $ BCContinue $ do
@@ -191,28 +193,38 @@ builderOne' firstTime parentKey db@Database {..} stack kid = do
         | memberStack kid stack -> throw $ StackException stack
         | otherwise -> pure . pure $ BCContinue $ wrapWaitEvent "builderOne wait running" kid $ readMVar wait
 
-spawnRefresh1 :: Database -> t -> Key -> MVar (Either SomeException (Key, Result)) -> Maybe Result -> (Database -> t -> Key -> Maybe Result -> IO Result) -> IO ()
-spawnRefresh1 db@Database {..} stack key barrier prevResult refresher = do
+spawnRefresh1 :: Database -> t -> Key -> MVar (Either SomeException (Key, Result)) -> Maybe Result
+    -> (Database -> t -> Key -> Maybe Result -> IO Result)
+    -> IO ()
+    -> IO ()
+spawnRefresh1 db@Database {..} stack key barrier prevResult refresher rollBack = do
   -- we need to run serially to avoid summiting run but killed in the middle
+  Step current <- atomically $ readTVar databaseStep
+  let deliver = DeliverStatus current ("downsweep; " ++ show key) key
   uninterruptibleMask $ \restore -> do
     do
-      Step current <- atomically $ readTVar databaseStep
-      let deliver = DeliverStatus current ("downsweep; " ++ show key) key
       startBarrier <- newEmptyTMVarIO
       a <- async (do
         restore $ atomically $ readTMVar startBarrier
         handleResult key barrier =<< (restore (Right <$> refresher db stack key prevResult) `catch` \e@(SomeException _) -> return (Left e)))
-      atomically $ modifyTVar' databaseThreads ((deliver, a) :)
-      restore $ atomically $ do
-        -- we need to make sure this won't happen: async is killed first and then we mark it as running
-        -- Because if the async is killed in restart, since this transaction won't happens inside shake restart
-        -- 1. this transaction is already dirty and killed
-        -- 2. this transaction is done and won't mark key as running again
-        dbNotLocked db
-        -- make sure we only start after the restart
-        putTMVar startBarrier ()
-        -- todo, make use of it so running stage1 can keep running
-        SMap.focus (updateStatus $ Running (Step current) prevResult barrier (RunningStage2 a)) key databaseValues
+      -- first we start the async, but we give barrier to halt it.
+      -- Then we registered and released the barrier so the thread actually start,
+      -- if we are killed before the stm. We just cancelled the async and then rolled back the changes.
+      -- todo, make use of it so running stage1 can keep running
+      (restore $
+          atomically $ do
+              dbNotLocked db
+              modifyTVar' databaseThreads ((deliver, a):)
+              -- make sure we only start after the restart
+              putTMVar startBarrier ()
+              SMap.focus (updateStatus $ Running (Step current) prevResult barrier (RunningStage2 a)) key databaseValues)
+              `catch` \e@(SomeException _) -> do
+                  -- if we are killed before we start, we need to cancel the async
+                  -- and roll back the database change
+                  cancel a
+                  rollBack
+                  putMVar barrier (Left e)
+                  throw e
 
 handleResult :: (Show a1, MonadIO m) => a1 -> MVar (Either a2 (a1, b)) -> Either a2 b -> m ()
 handleResult k barrier eResult = do
@@ -277,7 +289,7 @@ upSweep db@Database {..} stack key childtKey = mask $ \restore -> do
       (Dirty s) -> do
         SMap.focus (updateStatus $ Running current Nothing barrier RunningStage1) key databaseValues
         -- if it is clean, other event update it, so it is fine.
-        return $ spawnRefresh1 db stack key barrier s $ \db stack key s -> restore $ do
+        return $ spawnRefresh1 db stack key barrier s (\db stack key s -> restore $ do
           result <- refresh db stack key s
           -- parents of the current key (reverse dependencies)
           -- we use this, because new incomming parent would be just fine, since they did not pick up the old result
@@ -286,7 +298,7 @@ upSweep db@Database {..} stack key childtKey = mask $ \restore -> do
           -- Regardless of whether this child changed, upsweep all parents once.
           -- Parent refresh will determine if it needs to recompute and will clear its dirty mark.
           for_ (maybe mempty toListKeySet rdeps) $ \rk -> upSweep db stack rk key
-          return result
+          return result) $ atomicallyNamed "upSweep rollback" $ SMap.focus updateDirty key databaseValues
       _ -> pure $ pure ()
   ioa
 

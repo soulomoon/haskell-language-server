@@ -23,7 +23,9 @@ exractException (Left e : _) | Just ne@StackException{} <- fromGraphException e 
 exractException (_: xs) = exractException xs
 
 shakeNewDatabaseWithLogger :: DBQue -> ShakeOptions -> Rules () -> IO ShakeDatabase
-shakeNewDatabaseWithLogger = shakeNewDatabase (const $ return ())
+shakeNewDatabaseWithLogger q opts rules = do
+  aq <- newQueue
+  shakeNewDatabase (const $ return ()) q aq opts rules
 
 spec :: Spec
 spec = do
@@ -43,7 +45,7 @@ spec = do
 
     describe "compute" $ do
       itInThread "build step and changed step updated correctly" $ \q -> do
-        (ShakeDatabase _ _ theDb) <- shakeNewDatabaseWithLogger q shakeOptions $ do
+        (ShakeDatabase _ _ theDb _) <- shakeNewDatabaseWithLogger q shakeOptions $ do
           ruleStep
         let k = newKey $ Rule @()
         -- ChangedRecomputeSame

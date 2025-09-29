@@ -89,8 +89,8 @@ instance Pretty Log where
       "Server exited successfully"
     LogServerExitWith (Right code) ->
       "Server exited with failure code" <+> pretty code
-    LogServerExitWith (Left _) ->
-      "Server forcefully exited due to exception in reactor thread"
+    LogServerExitWith (Left error) ->
+      "Server forcefully exited due to exception in reactor thread" <+> pretty error
     LogShutDownTimeout seconds ->
         "Shutdown timeout, the server will exit now after waiting for" <+> pretty seconds  <+> "seconds"
     LogRegisteringIdeConfig ideConfig ->
@@ -193,7 +193,7 @@ runLanguageServer recorder options inH outH defaultConfig parseConfig onConfigCh
             outH
             serverDefinition
 
-    untilMVar' clientMsgVar runServer `finally` sequence_ onExit
+    (untilMVar' clientMsgVar runServer `finally` sequence_ onExit)
         >>= logWith recorder Info . LogServerExitWith
 
 setupLSP ::
@@ -307,7 +307,7 @@ handleInit initParams env (TRequestMessage _ _ m params) = otTracedHandler "Init
             tryReadMVar ideMVar >>= mapM_ shutdown
             case me of
                 Left e -> do
-                    lifetimeConfirm "due to exception in reactor thread"
+                    lifetimeConfirm ("due to exception in reactor thread: " <> T.pack (displayException e))
                     logWith recorder Error $ LogReactorThreadException e
                     ctxForceShutdown initParams
                 _ -> do
@@ -399,7 +399,8 @@ shutdownHandler _recorder requestReactorShutdown = LSP.requestHandler SMethod_Sh
 exitHandler :: Recorder (WithPriority Log) -> IO () -> LSP.Handlers (ServerM c)
 exitHandler _recorder exit = LSP.notificationHandler SMethod_Exit $ \_ -> do
     -- stop the reactor to free up the hiedb connection and shut down shake
-    liftIO exit
+    -- liftIO exit
+    return ()
 
 modifyOptions :: LSP.Options -> LSP.Options
 modifyOptions x = x{ LSP.optTextDocumentSync   = Just $ tweakTDS origTDS

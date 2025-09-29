@@ -133,7 +133,8 @@ scheduleGarbageCollection state = do
     writeVar var True
 
 doKick :: Action ()
-doKick = useNoFile_ Kick
+-- doKick = useNoFile_ Kick
+doKick = kick
 
 -- | Typecheck all the files of interest.
 --   Could be improved

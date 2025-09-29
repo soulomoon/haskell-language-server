@@ -13,8 +13,8 @@ module Development.IDE.Graph.Internal.Action
 , runActions
 , Development.IDE.Graph.Internal.Action.getDirtySet
 , getKeysAndVisitedAge
-, runActionInDbCb
 , isAsyncException
+, pumpActionThread
 ) where
 
 import           Control.Concurrent.Async
@@ -60,14 +60,31 @@ parallel xs = do
             -- liftIO $ writeIORef (actionDeps a) $ mconcat $ deps : newDeps
             -- return ()
 
--- non-blocking version of runActionInDb
-runActionInDbCb :: (a -> String) -> (a -> Action result) -> STM a -> (Either SomeException result -> IO ()) -> Action a
-runActionInDbCb getTitle work getAct handler = do
-    a <- ask
-    liftIO $ atomicallyNamed "action queue - pop" $ do
-        act <- getAct
-        runInDataBase (getTitle act) (actionDatabase a) [(ignoreState a $ work act, handler)]
-        return act
+-- pumpActionThread :: ShakeDatabase -> (String -> IO ()) -> Action b
+-- pumpActionThread sdb@(ShakeDatabase _ _ _ actionQueue) logMsg = do
+--   a <- ask
+--   d <- liftIO $ atomicallyNamed "action queue - pop" $ do
+--     d <- popQueue actionQueue
+--     runInDataBase1 (actionName d) (actionDatabase a) (ignoreState a $ runOne d) (const $ return ())
+--     return d
+--   liftIO $ logMsg ("pump executed: " ++ actionName d)
+--   pumpActionThread sdb logMsg
+--   where
+--     runOne d = do
+--       getAction d
+--       liftIO $ atomically $ doneQueue d actionQueue
+
+pumpActionThread :: ShakeDatabase -> (String -> IO ()) -> Action b
+pumpActionThread sdb@(ShakeDatabase _ _ _ actionQueue) logMsg = do
+  a <- ask
+  d <- liftIO $ atomicallyNamed "action queue - pop" $ popQueue actionQueue
+  liftIO $ runInDataBase2 (actionName d) (actionDatabase a) (ignoreState a $ runOne d)
+  liftIO $ logMsg ("pump executed: " ++ actionName d)
+  pumpActionThread sdb logMsg
+  where
+    runOne d = do
+      getAction d
+      liftIO $ atomically $ doneQueue d actionQueue
 
 runActionInDb :: String -> [Action a] -> Action [Either SomeException a]
 runActionInDb title acts = do
@@ -75,7 +92,7 @@ runActionInDb title acts = do
     xs <- mapM (\x -> do
         barrier <- newEmptyTMVarIO
         return (x, barrier)) acts
-    liftIO $ atomically $ runInDataBase title (actionDatabase a)
+    liftIO $ runInDataBase title (actionDatabase a)
         (map (\(x, b) -> (ignoreState a x, atomically . putTMVar b)) xs)
     results <- liftIO $ mapM (atomically . readTMVar) $ fmap snd xs
     return results

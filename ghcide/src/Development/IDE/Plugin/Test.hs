@@ -41,7 +41,7 @@ import           Development.IDE.Graph.Database       (ShakeDatabase,
 import           Development.IDE.Graph.Internal.Types (Result (resultBuilt, resultChanged, resultVisited),
                                                        Step (..))
 import qualified Development.IDE.Graph.Internal.Types as Graph
-import           Development.IDE.Types.Action
+import           Development.IDE.Types.Action         (countQueue)
 import           Development.IDE.Types.HscEnvEq       (HscEnvEq (hscEnv))
 import           Development.IDE.Types.Location       (fromUri)
 import           GHC.Generics                         (Generic)

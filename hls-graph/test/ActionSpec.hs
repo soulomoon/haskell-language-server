@@ -10,6 +10,7 @@ import           Control.Concurrent.STM
 import           Control.Monad.IO.Class                  (MonadIO (..))
 import           Control.Monad.Trans.Cont                (evalContT)
 import           Data.Typeable                           (Typeable)
+import           Debug.Trace                             (traceShowM)
 import           Development.IDE.Graph                   (RuleResult,
                                                           ShakeOptions,
                                                           shakeOptions)
@@ -31,7 +32,9 @@ import           Test.Hspec
 buildWithRoot :: forall f key value . (Traversable f, RuleResult key ~ value, Typeable key, Show key, Hashable key, Typeable value) => Database -> Stack -> f key -> IO (f Key, f value)
 buildWithRoot = build (newKey ("root" :: [Char]))
 shakeNewDatabaseWithLogger :: DBQue -> ShakeOptions -> Rules () -> IO ShakeDatabase
-shakeNewDatabaseWithLogger = shakeNewDatabase (const $ return ())
+shakeNewDatabaseWithLogger q opts rules = do
+  aq <- newQueue
+  shakeNewDatabase (const $ return ()) q aq opts rules
 
 itInThread :: String -> (DBQue -> IO ()) -> SpecWith ()
 itInThread name ex = it name $ evalContT $ do
@@ -66,19 +69,23 @@ spec = do
     db <- shakeNewDatabaseWithLogger q shakeOptions $ do
       ruleSubBranch count
       ruleStep1 count1
+    traceShowM ("0 build child: ")
     -- bootstrapping the database
     _ <- shakeRunDatabaseFromRight db $ pure $ apply1 CountRule -- count = 1
     let child = newKey SubBranchRule
     let parent = newKey CountRule
     -- instruct to RunDependenciesChanged then CountRule should be recomputed
     -- result should be changed 0, build 1
+    traceShowM ("1 build child: " ++ show child)
     _res1 <- shakeRunDatabaseForKeys (Just [child]) db [apply1 CountRule] -- count = 2
     -- since child changed = parent build
     -- instruct to RunDependenciesSame then CountRule should not be recomputed
     -- result should be changed 0, build 1
+    traceShowM ("2 build child: " ++ show child)
     _res3 <- shakeRunDatabaseForKeys (Just [parent]) db [apply1 CountRule] -- count = 2
     -- invariant child changed = parent build should remains after RunDependenciesSame
     -- this used to be a bug, with additional computation, see https://github.com/haskell/haskell-language-server/pull/4238
+    traceShowM ("3 build child: " ++ show child)
     _res3 <- shakeRunDatabaseForKeys (Just [parent]) db [apply1 CountRule] -- count = 2
     c1 <- readMVar count1
     c1 `shouldBe` 2
@@ -95,7 +102,7 @@ spec = do
       res <- shakeRunDatabaseFromRight db $ pure $ apply1 Rule
       res `shouldBe` [True]
     itInThread "tracks direct dependencies" $ \q -> do
-      db@(ShakeDatabase _ _ theDb) <- shakeNewDatabaseWithLogger q shakeOptions $ do
+      db@(ShakeDatabase _ _ theDb _) <- shakeNewDatabaseWithLogger q shakeOptions $ do
         ruleUnit
         ruleBool
       let theKey = Rule @Bool
@@ -105,7 +112,7 @@ spec = do
       Just (Clean res) <- lookup (newKey theKey) <$> getDatabaseValues theDb
       resultDeps res `shouldBe` ResultDeps [singletonKeySet $ newKey (Rule @())]
     itInThread "tracks reverse dependencies" $ \q -> do
-      db@(ShakeDatabase _ _ Database {..}) <- shakeNewDatabaseWithLogger q shakeOptions $ do
+      db@(ShakeDatabase _ _ Database {..} _) <- shakeNewDatabaseWithLogger q shakeOptions $ do
         ruleUnit
         ruleBool
       let theKey = Rule @Bool
@@ -121,7 +128,7 @@ spec = do
     itInThread "computes a rule with branching dependencies does not invoke phantom dependencies #3423" $ \q -> do
       cond <- C.newMVar True
       count <- C.newMVar 0
-      (ShakeDatabase _ _ theDb) <- shakeNewDatabaseWithLogger q shakeOptions $ do
+      (ShakeDatabase _ _ theDb _) <- shakeNewDatabaseWithLogger q shakeOptions $ do
         ruleUnit
         ruleCond cond
         ruleSubBranch count
@@ -141,7 +148,7 @@ spec = do
       snd countRes `shouldBe` [1 :: Int]
 
   describe "applyWithoutDependency" $ itInThread "does not track dependencies" $ \q -> do
-    db@(ShakeDatabase _ _ theDb) <- shakeNewDatabaseWithLogger q shakeOptions $ do
+    db@(ShakeDatabase _ _ theDb _) <- shakeNewDatabaseWithLogger q shakeOptions $ do
       ruleUnit
       addRule $ \Rule _old _mode -> do
           [()] <- applyWithoutDependency [Rule]

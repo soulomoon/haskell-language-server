@@ -4,7 +4,6 @@
 {-# LANGUAGE CPP                   #-}
 {-# LANGUAGE DerivingStrategies    #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE PackageImports        #-}
 {-# LANGUAGE RecursiveDo           #-}
 {-# LANGUAGE TypeFamilies          #-}
 
@@ -94,7 +93,6 @@ import           Data.Aeson                              (Result (Success),
                                                           toJSON)
 import qualified Data.Aeson.Types                        as A
 import qualified Data.ByteString.Char8                   as BS
-import qualified Data.ByteString.Char8                   as BS8
 import           Data.Coerce                             (coerce)
 import           Data.Default
 import           Data.Dynamic
@@ -131,7 +129,6 @@ import qualified Language.LSP.Server                     as LSP
 
 import           Data.Either                             (isRight, lefts)
 import           Data.Int                                (Int64)
-import           Data.IORef.Extra                        (atomicModifyIORef'_)
 import           Data.Set                                (Set)
 import qualified Data.Set                                as S
 import           Development.IDE.Core.Tracing
@@ -151,21 +148,21 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
                                                           shakeNewDatabase,
                                                           shakePeekAsyncsDelivers,
                                                           shakeProfileDatabase,
-                                                          shakeRunDatabaseForKeysSep,
-                                                          shakeShutDatabase,
-                                                          upSweepAction)
-import           Development.IDE.Graph.Internal.Action   (isAsyncException,
-                                                          runActionInDbCb)
+                                                          shakeRunDatabaseForKeysSepWithPump,
+                                                          shakeShutDatabase)
+import           Development.IDE.Graph.Internal.Action   (pumpActionThread)
 import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
 import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
-                                                          getShakeQueue,
                                                           getShakeStep,
-                                                          lockShakeDatabaseValues,
                                                           shakeDataBaseQueue,
-                                                          unlockShakeDatabaseValues,
                                                           withShakeDatabaseValuesLock)
 import           Development.IDE.Graph.Rule
-import           Development.IDE.Types.Action
+import           Development.IDE.Types.Action            (ActionQueue,
+                                                          DelayedAction (..),
+                                                          DelayedActionInternal,
+                                                          abortQueue, newQueue,
+                                                          peekInProgress,
+                                                          pushQueue)
 import           Development.IDE.Types.Diagnostics
 import           Development.IDE.Types.Exports           hiding (exportsMapSize)
 import qualified Development.IDE.Types.Exports           as ExportsMap
@@ -189,15 +186,14 @@ import           Language.LSP.Protocol.Message
 import           Language.LSP.Protocol.Types
 import qualified Language.LSP.Protocol.Types             as LSP
 import           Language.LSP.VFS                        hiding (start)
-import qualified "list-t" ListT
+import qualified ListT
 import           OpenTelemetry.Eventlog                  hiding (addEvent)
 import qualified Prettyprinter                           as Pretty
 import qualified StmContainers.Map                       as STM
 import           System.FilePath                         hiding (makeRelative)
 import           System.IO.Unsafe                        (unsafePerformIO)
 import           System.Time.Extra
-import           UnliftIO                                (MonadUnliftIO (withRunInIO),
-                                                          newIORef, readIORef)
+import           UnliftIO                                (MonadUnliftIO (withRunInIO))
 
 #if !MIN_VERSION_ghc(9,9,0)
 import           Data.Foldable                           (foldl')
@@ -779,8 +775,10 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         shakeNewDatabase
             (\logText -> logWith recorder Debug (LogShakeText $ T.pack logText))
             shakeControlQueue
+            (actionQueue shakeExtras)
             opts { shakeExtra = newShakeExtra shakeExtras }
             rules
+    -- queue is already stored in the database at creation
     shakeSession <- newEmptyMVar
     shakeDatabaseProfile <- shakeDatabaseProfileIO shakeProfileDir
 
@@ -815,23 +813,6 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
 
     let ideState = IdeState{..}
     return ideState
-
-newLogMonitoring :: MonadIO m => Recorder (WithPriority Log) -> m Monitoring
-newLogMonitoring logger = do
-    actions <- newIORef []
-    let registerCounter name readA = do
-            let update = do
-                    val <- readA
-                    logWith logger Info $ LogMonitering name (fromIntegral val)
-            atomicModifyIORef'_ actions (update :)
-        registerGauge = registerCounter
-    let start = do
-            a <- regularly 10 $ sequence_ =<< readIORef actions
-            return (cancel a)
-    return Monitoring{..}
-    where
-        regularly :: Seconds -> IO () -> IO (Async ())
-        regularly delay act = async $ forever (act >> sleep delay)
 
 getStateKeys :: ShakeExtras -> IO [Key]
 getStateKeys = (fmap.fmap) fst . atomically . ListT.toList . STM.listT . stateValues
@@ -871,7 +852,8 @@ withMVar' var unmasked masked = uninterruptibleMask $ \restore -> do
 
 
 mkDelayedAction :: String -> Logger.Priority -> Action a -> DelayedAction a
-mkDelayedAction = DelayedAction Nothing
+mkDelayedAction s p = DelayedAction Nothing s (toEnum (fromEnum p))
+
 
 -- | These actions are run asynchronously after the current action is
 -- finished running. For example, to trigger a key build after a rule
@@ -1031,56 +1013,20 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
       VFSUnmodified   -> pure ()
       VFSModified vfs -> atomically $ writeTVar vfsVar vfs
 
-    IdeOptions{optRunSubset} <- getIdeOptionsIO extras
-
-    reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress actionQueue
+    IdeOptions{} <- getIdeOptionsIO extras
+    -- Wrap delayed actions (both reenqueued and new) to preserve LogDelayedAction timing instrumentation
+    let pumpLogger msg = logWith recorder Debug $ LogShakeText (T.pack msg)
+    -- Use graph-level helper that runs the pump thread and enqueues upsweep actions
+    startDatabase <- shakeRunDatabaseForKeysSepWithPump (Just newDirtyKeys) shakeDb (pumpActionThread shakeDb pumpLogger: map getAction acts)
+    -- Capture step AFTER scheduling so logging reflects new build number inside workRun
     step <- getShakeStep shakeDb
-    let
-        -- A daemon-like action used to inject additional work
-        -- Runs actions from the work queue sequentially
-        logResult :: Show a => String -> [Either SomeException a] -> IO ()
-        logResult label results = for_ results $ \case
-            Left e | isAsyncException e -> logWith recorder Debug $ LogShakeText (T.pack $ label ++ " failed: " ++ show e)
-            Left e  -> logWith recorder Error $ LogShakeText (T.pack $ label ++ " failed: " ++ show e)
-            Right r -> logWith recorder Debug $ LogShakeText (T.pack $ label ++ " finished: " ++ show r)
-        pumpActionThread = do
-            logWith recorder Debug $ LogShakeText (T.pack $ "Starting action" ++ "(step: " <> show step)
-            d <- runActionInDbCb actionName run (popQueue actionQueue) (logResult "pumpActionThread" . return)
-            step <- getShakeStep shakeDb
-            logWith recorder Debug $ LogShakeText (T.pack $ "started action" ++ "(step: " <> show step <> "): " <> actionName d)
-            pumpActionThread
-
-        -- TODO figure out how to thread the otSpan into defineEarlyCutoff
-        run d = do
-            start <- liftIO offsetTime
-            getAction d
-            liftIO $ atomicallyNamed "actionQueue - done" $ doneQueue d actionQueue
-            runTime <- liftIO start
-            logWith recorder (actionPriority d) $ LogDelayedAction d runTime
-
-        -- The inferred type signature doesn't work in ghc >= 9.0.1
-        -- workRun :: (forall b. IO b -> IO b) -> IO ()
-        workRun start restore = withSpan "Shake session" $ \otSpan -> do
-          setTag otSpan "reason" (fromString reason)
-          setTag otSpan "queue" (fromString $ unlines $ map actionName reenqueued)
+    let workRun start restore = withSpan "Shake session" $ \otSpan -> do
+        --   setTag otSpan "reason" (fromString reason)
+        --   setTag otSpan "queue" (fromString $ unlines $ map actionName reenqueued)
           res <- try @SomeException $ restore start
           logWith recorder Info $ LogBuildSessionFinish step res
-
-
-    let keysActs = pumpActionThread : map run (reenqueued ++ acts)
-    -- first we increase the step, so any actions started from here on
-    startDatabase <- shakeRunDatabaseForKeysSep (Just newDirtyKeys) shakeDb keysActs
-
-    -- push the upSweep actions for the dirty keys
-    mapM_
-      ( \k -> do
-          (_, act) <- instantiateDelayedAction (mkDelayedAction ("upsweep" ++ show k) Debug $ upSweepAction k k)
-          atomically $ unGetQueue act actionQueue
-      )
-      (toListKeySet $ fst newDirtyKeys)
     -- Do the work in a background thread
-    workThread <- asyncWithUnmask $ \x -> do
-        workRun startDatabase x
+    workThread <- asyncWithUnmask $ \x -> workRun startDatabase x
 
     --  Cancelling is required to flush the Shake database when either
     --  the filesystem or the Ghc configuration have changed
@@ -1134,37 +1080,11 @@ garbageCollectDirtyKeys = do
     garbageCollectDirtyKeysOlderThan 0 checkParents
 
 garbageCollectDirtyKeysOlderThan :: Int -> CheckParents -> Action [Key]
-garbageCollectDirtyKeysOlderThan maxAge checkParents = otTracedGarbageCollection "dirty GC" $ do
+garbageCollectDirtyKeysOlderThan _maxAge _checkParents = otTracedGarbageCollection "dirty GC" $ do
     -- dirtySet <- getDirtySet
     -- garbageCollectKeys "dirty GC" maxAge checkParents dirtySet
     return []
 
-garbageCollectKeys :: String -> Int -> CheckParents -> [(Key, Int)] -> Action [Key]
-garbageCollectKeys label maxAge checkParents agedKeys = do
-    start <- liftIO offsetTime
-    ShakeExtras{stateValues, dirtyKeys, lspEnv, shakeRecorder, ideTesting} <- getShakeExtras
-    (n::Int, garbage) <- liftIO $
-        foldM (removeDirtyKey dirtyKeys stateValues) (0,[]) agedKeys
-    t <- liftIO start
-    when (n>0) $ liftIO $ do
-        logWith shakeRecorder Debug $ LogShakeGarbageCollection (T.pack label) n t
-    when (coerce ideTesting) $ liftIO $ mRunLspT lspEnv $
-        LSP.sendNotification (SMethod_CustomMethod (Proxy @"ghcide/GC"))
-                             (toJSON $ mapMaybe (fmap showKey . fromKeyType) garbage)
-    return garbage
-
-    where
-        showKey = show . Q
-        removeDirtyKey dk values st@(!counter, keys) (k, age)
-            | age > maxAge
-            , Just (kt,_) <- fromKeyType k
-            , not (kt `HSet.member` preservedKeys checkParents)
-            = atomicallyNamed "GC" $ do
-                gotIt <- STM.focus (Focus.member <* Focus.delete) k values
-                when gotIt $
-                   modifyTVar' dk (insertKeySet k)
-                return $ if gotIt then (counter+1, k:keys) else st
-            | otherwise = pure st
 
 countRelevantKeys :: CheckParents -> [Key] -> Int
 countRelevantKeys checkParents =
