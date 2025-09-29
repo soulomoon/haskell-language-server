@@ -304,15 +304,6 @@ data Database = Database {
 
     }
 
-withWaitingOnKey :: Database -> Key -> Key -> IO b -> IO b
-withWaitingOnKey Database{..} pk k ioAct = do
-    -- insert the dependency
-    -- atomically $ SMap.focus (Focus.alter (Just . maybe (singletonKeySet k) (insertKeySet k))) pk databaseRuntimeDep
-    r <- ioAct
-    -- remove the one dependency
-    -- atomically $ SMap.focus (Focus.alter (fmap (deleteKeySet k))) pk databaseRuntimeDep
-    return r
-
 
 ---------------------------------------------------------------------
 -- | Remove finished asyncs from 'databaseThreads' (non-blocking).
