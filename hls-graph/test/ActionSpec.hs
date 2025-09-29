@@ -21,6 +21,14 @@ import           Test.Hspec
 
 
 
+
+
+shakeRunDatabaseFromRight :: ShakeDatabase -> [Action a] -> IO [a]
+shakeRunDatabaseFromRight db as = do
+    res <- shakeRunDatabase db as
+    case sequence res of
+        Left e  -> error $ "shakeRunDatabaseFromRight: unexpected exception: " ++ show e
+        Right v -> return v
 spec :: Spec
 spec = do
   describe "apply1" $ it "Test build update, Buggy dirty mechanism in hls-graph #4237" $ do
@@ -43,7 +51,7 @@ spec = do
       ruleSubBranch count
       ruleStep1 count1
     -- bootstrapping the database
-    _ <- shakeRunDatabase db $ pure $ apply1 CountRule -- count = 1
+    _ <- shakeRunDatabaseFromRight db $ pure $ apply1 CountRule -- count = 1
     let child = newKey SubBranchRule
     let parent = newKey CountRule
     -- instruct to RunDependenciesChanged then CountRule should be recomputed
@@ -61,21 +69,21 @@ spec = do
   describe "apply1" $ do
     it "computes a rule with no dependencies" $ do
       db <- shakeNewDatabase shakeOptions ruleUnit
-      res <- shakeRunDatabase db $
+      res <- shakeRunDatabaseFromRight db $
         pure $ apply1 (Rule @())
       res `shouldBe` [()]
     it "computes a rule with one dependency" $ do
       db <- shakeNewDatabase shakeOptions $ do
         ruleUnit
         ruleBool
-      res <- shakeRunDatabase db $ pure $ apply1 Rule
+      res <- shakeRunDatabaseFromRight db $ pure $ apply1 Rule
       res `shouldBe` [True]
     it "tracks direct dependencies" $ do
       db@(ShakeDatabase _ _ theDb) <- shakeNewDatabase shakeOptions $ do
         ruleUnit
         ruleBool
       let theKey = Rule @Bool
-      res <- shakeRunDatabase db $
+      res <- shakeRunDatabaseFromRight db $
         pure $ apply1 theKey
       res `shouldBe` [True]
       Just (Clean res) <- lookup (newKey theKey) <$> getDatabaseValues theDb
@@ -85,14 +93,14 @@ spec = do
         ruleUnit
         ruleBool
       let theKey = Rule @Bool
-      res <- shakeRunDatabase db $
+      res <- shakeRunDatabaseFromRight db $
         pure $ apply1 theKey
       res `shouldBe` [True]
       Just KeyDetails {..} <- atomically $ STM.lookup (newKey (Rule @())) databaseValues
       keyReverseDeps `shouldBe` singletonKeySet (newKey theKey)
     it "rethrows exceptions" $ do
       db <- shakeNewDatabase shakeOptions $ addRule $ \(Rule :: Rule ()) _old _mode -> error "boom"
-      let res = shakeRunDatabase db $ pure $ apply1 (Rule @())
+      let res = shakeRunDatabaseFromRight db $ pure $ apply1 (Rule @())
       res `shouldThrow` anyErrorCall
     it "computes a rule with branching dependencies does not invoke phantom dependencies #3423" $ do
       cond <- C.newMVar True
@@ -124,7 +132,7 @@ spec = do
           return $ RunResult ChangedRecomputeDiff "" True $ return ()
 
     let theKey = Rule @Bool
-    res <- shakeRunDatabase db $
+    res <- shakeRunDatabaseFromRight db $
       pure $ applyWithoutDependency [theKey]
     res `shouldBe` [[True]]
     Just (Clean res) <- lookup (newKey theKey) <$> getDatabaseValues theDb
