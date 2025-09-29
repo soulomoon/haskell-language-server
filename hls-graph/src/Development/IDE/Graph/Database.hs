@@ -4,13 +4,19 @@ module Development.IDE.Graph.Database(
     shakeNewDatabase,
     shakeRunDatabase,
     shakeRunDatabaseForKeys,
+    shakeRunDatabaseForKeysSep,
     shakeProfileDatabase,
     shakeGetBuildStep,
     shakeGetDatabaseKeys,
     shakeGetDirtySet,
     shakeGetCleanKeys
-    ,shakeGetBuildEdges) where
-import           Control.Concurrent.STM.Stats            (readTVarIO)
+    ,shakeGetBuildEdges,
+    shakeShutDatabase,
+    shakeGetActionQueueLength) where
+import           Control.Concurrent.STM.Stats            (atomically,
+                                                          readTVarIO)
+import           Control.Exception                       (SomeException)
+import           Control.Monad                           (join)
 import           Data.Dynamic
 import           Data.Maybe
 import           Development.IDE.Graph.Classes           ()
@@ -26,15 +32,18 @@ import           Development.IDE.Graph.Internal.Types
 -- Placeholder to be the 'extra' if the user doesn't set it
 data NonExportedType = NonExportedType
 
-shakeNewDatabase :: ShakeOptions -> Rules () -> IO ShakeDatabase
-shakeNewDatabase opts rules = do
+shakeShutDatabase :: ShakeDatabase -> IO ()
+shakeShutDatabase (ShakeDatabase _ _ db) = shutDatabase db
+
+shakeNewDatabase :: DBQue -> ShakeOptions -> Rules () -> IO ShakeDatabase
+shakeNewDatabase que opts rules = do
     let extra = fromMaybe (toDyn NonExportedType) $ shakeExtra opts
     (theRules, actions) <- runRules extra rules
-    db <- newDatabase extra theRules
+    db <- newDatabase que extra theRules
     pure $ ShakeDatabase (length actions) actions db
 
-shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [a]
-shakeRunDatabase = shakeRunDatabaseForKeys Nothing
+shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [Either SomeException a]
+shakeRunDatabase s xs = shakeRunDatabaseForKeys Nothing s xs
 
 -- | Returns the set of dirty keys annotated with their age (in # of builds)
 shakeGetDirtySet :: ShakeDatabase -> IO [(Key, Int)]
@@ -52,15 +61,27 @@ unvoid :: Functor m => m () -> m a
 unvoid = fmap undefined
 
 -- | Assumes that the database is not running a build
+-- The nested IO is to
+-- seperate incrementing the step from running the build
+shakeRunDatabaseForKeysSep
+    :: Maybe [Key]
+      -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
+    -> ShakeDatabase
+    -> [Action a]
+    -> IO (IO [Either SomeException a])
+shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
+    incDatabase db keysChanged
+    return $ drop lenAs1 <$> runActions db (map unvoid as1 ++ as2)
+
 shakeRunDatabaseForKeys
     :: Maybe [Key]
       -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
     -> ShakeDatabase
     -> [Action a]
-    -> IO [a]
-shakeRunDatabaseForKeys keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
-    incDatabase db keysChanged
-    fmap (drop lenAs1) $ runActions db $ map unvoid as1 ++ as2
+    -> IO [Either SomeException a]
+shakeRunDatabaseForKeys keysChanged sdb as2 = join $ shakeRunDatabaseForKeysSep keysChanged sdb as2
+
+
 
 -- | Given a 'ShakeDatabase', write an HTML profile to the given file about the latest run.
 shakeProfileDatabase :: ShakeDatabase -> FilePath -> IO ()
@@ -83,3 +104,7 @@ shakeGetBuildEdges (ShakeDatabase _ _ db) = do
 --   annotated with how long ago (in # builds) they were visited
 shakeGetDatabaseKeys :: ShakeDatabase -> IO [(Key, Int)]
 shakeGetDatabaseKeys (ShakeDatabase _ _ db) = getKeysAndVisitAge db
+
+shakeGetActionQueueLength :: ShakeDatabase -> IO Int
+shakeGetActionQueueLength (ShakeDatabase _ _ db) =
+    atomically $ databaseGetActionQueueLength db

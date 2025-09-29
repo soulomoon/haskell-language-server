@@ -22,10 +22,10 @@ module Development.IDE.Core.FileStore(
     registerFileWatches,
     shareFilePath,
     Log(..),
+    setSomethingModifiedWait,
     ) where
 
 import           Control.Concurrent.STM.Stats                 (STM, atomically)
-import           Control.Concurrent.STM.TQueue                (writeTQueue)
 import           Control.Exception
 import           Control.Lens                                 ((^.))
 import           Control.Monad.Extra
@@ -52,6 +52,7 @@ import           Development.IDE.Types.Diagnostics
 import           Development.IDE.Types.Location
 import           Development.IDE.Types.Options
 import           Development.IDE.Types.Shake                  (toKey)
+import           Development.IDE.WorkerThread                 (writeTaskQueue)
 import           HieDb.Create                                 (deleteMissingRealFiles)
 import           Ide.Logger                                   (Pretty (pretty),
                                                                Priority (Info),
@@ -109,7 +110,7 @@ addWatchedFileRule recorder isWatched = defineNoDiagnostics (cmapWithPrio LogSha
 
 
 getModificationTimeRule :: Recorder (WithPriority Log) -> Rules ()
-getModificationTimeRule recorder = defineEarlyCutoff (cmapWithPrio LogShake recorder) $ Rule $ \(GetModificationTime_ missingFileDiags) file ->
+getModificationTimeRule recorder = defineEarlyCutoff (cmapWithPrio LogShake recorder) $ Rule $ \(GetModificationTime_ missingFileDiags) file -> do
     getModificationTimeImpl missingFileDiags file
 
 getModificationTimeImpl
@@ -252,8 +253,8 @@ getVersionedTextDoc doc = do
     maybe (pure Nothing) getVirtualFile $
         uriToNormalizedFilePath $ toNormalizedUri uri
   let ver = case mvf of
-        Just (VirtualFile lspver _ _) -> lspver
-        Nothing                       -> 0
+        Just (VirtualFile lspver _ _ _) -> lspver
+        Nothing                         -> 0
   return (VersionedTextDocumentIdentifier uri ver)
 
 fileStoreRules :: Recorder (WithPriority Log) -> (NormalizedFilePath -> Action Bool) -> Rules ()
@@ -279,11 +280,9 @@ setFileModified recorder vfs state saved nfp actionBefore = do
           AlwaysCheck -> True
           CheckOnSave -> saved
           _           -> False
-    restartShakeSession (shakeExtras state) vfs (fromNormalizedFilePath nfp ++ " (modified)") [] $ do
+    restartShakeSession (shakeExtras state) ShouldNotWait  vfs (fromNormalizedFilePath nfp ++ " (modified)") ([mkDelayedAction "ParentTC" L.Debug (typecheckParentsAction recorder nfp) | checkParents]) $ do
         keys<-actionBefore
         return (toKey GetModificationTime nfp:keys)
-    when checkParents $
-      typecheckParents recorder state nfp
 
 typecheckParents :: Recorder (WithPriority Log) -> IdeState -> NormalizedFilePath -> IO ()
 typecheckParents recorder state nfp = void $ shakeEnqueue (shakeExtras state) parents
@@ -295,17 +294,22 @@ typecheckParentsAction recorder nfp = do
     case revs of
       Nothing -> logWith recorder Info $ LogCouldNotIdentifyReverseDeps nfp
       Just rs -> do
-        logWith recorder Info $ LogTypeCheckingReverseDeps nfp revs
+        logWith recorder L.Debug $ LogTypeCheckingReverseDeps nfp revs
         void $ uses GetModIface rs
 
 -- | Note that some keys have been modified and restart the session
 --   Only valid if the virtual file system was initialised by LSP, as that
 --   independently tracks which files are modified.
-setSomethingModified :: VFSModified -> IdeState -> String -> IO [Key] -> IO ()
-setSomethingModified vfs state reason actionBetweenSession = do
+setSomethingModified' :: ShouldWait -> VFSModified -> IdeState -> String -> IO [Key] -> IO ()
+setSomethingModified' shouldWait vfs state reason actionBetweenSession = do
     -- Update database to remove any files that might have been renamed/deleted
-    atomically $ writeTQueue (indexQueue $ hiedbWriter $ shakeExtras state) (\withHieDb -> withHieDb deleteMissingRealFiles)
-    void $ restartShakeSession (shakeExtras state) vfs reason [] actionBetweenSession
+    atomically $ writeTaskQueue (indexQueue $ hiedbWriter $ shakeExtras state) (\withHieDb -> withHieDb deleteMissingRealFiles)
+    void $ restartShakeSession (shakeExtras state) shouldWait vfs reason [] actionBetweenSession
+setSomethingModified :: VFSModified -> IdeState -> String -> IO [Key] -> IO ()
+setSomethingModified vfs state reason actionBetweenSession = setSomethingModified' ShouldNotWait vfs state reason actionBetweenSession
+
+setSomethingModifiedWait :: VFSModified -> IdeState -> String -> IO [Key] -> IO ()
+setSomethingModifiedWait vfs state reason actionBetweenSession = setSomethingModified' ShouldWait vfs state reason actionBetweenSession
 
 registerFileWatches :: [String] -> LSP.LspT Config IO Bool
 registerFileWatches globs = do
