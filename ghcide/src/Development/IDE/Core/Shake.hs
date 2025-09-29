@@ -148,7 +148,7 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
                                                           shakeNewDatabase,
                                                           shakePeekAsyncsDelivers,
                                                           shakeProfileDatabase,
-                                                          shakeRunDatabaseForKeysSepWithPump,
+                                                          shakeRunDatabaseForKeysSep,
                                                           shakeShutDatabase)
 import           Development.IDE.Graph.Internal.Action   (pumpActionThread)
 import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
@@ -1017,7 +1017,7 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
     -- Wrap delayed actions (both reenqueued and new) to preserve LogDelayedAction timing instrumentation
     let pumpLogger msg = logWith recorder Debug $ LogShakeText (T.pack msg)
     -- Use graph-level helper that runs the pump thread and enqueues upsweep actions
-    startDatabase <- shakeRunDatabaseForKeysSepWithPump (Just newDirtyKeys) shakeDb (pumpActionThread shakeDb pumpLogger: map getAction acts)
+    startDatabase <- shakeRunDatabaseForKeysSep (Just newDirtyKeys) shakeDb (pumpActionThread shakeDb pumpLogger: map getAction acts)
     -- Capture step AFTER scheduling so logging reflects new build number inside workRun
     step <- getShakeStep shakeDb
     let workRun start restore = withSpan "Shake session" $ \otSpan -> do

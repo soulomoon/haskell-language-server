@@ -5,8 +5,6 @@ module Development.IDE.Graph.Database(
     shakeRunDatabase,
     shakeRunDatabaseForKeys,
     shakeRunDatabaseForKeysSep,
-    -- High-level helper: run with an action pump and enqueue upsweep for dirty keys
-    shakeRunDatabaseForKeysSepWithPump,
     shakeProfileDatabase,
     shakeGetBuildStep,
     shakeGetDatabaseKeys,
@@ -81,24 +79,14 @@ unvoid = fmap undefined
 
 -- | Assumes that the database is not running a build
 -- The nested IO is to
--- seperate incrementing the step from running the build
+-- seperate incrementing the step from running the build.
+-- Also immediately enqueues upsweep actions for the newly dirty keys.
 shakeRunDatabaseForKeysSep
     :: Maybe (KeySet, KeySet) -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
     -> ShakeDatabase
     -> [Action a]
     -> IO (IO [Either SomeException a])
-shakeRunDatabaseForKeysSep keysChanged sdb as2 = shakeRunDatabaseForKeysSepWithPump keysChanged sdb as2
-
--- | Like 'shakeRunDatabaseForKeysSep', but also:
---   - runs an action pump that sequentially executes delayed actions from the given ActionQueue
---   - immediately enqueues upsweep actions for the newly dirty keys
--- This avoids duplicating this ceremony in callers that want to tightly couple the pump with the step increment.
-shakeRunDatabaseForKeysSepWithPump
-    :: Maybe (KeySet, KeySet)
-    -> ShakeDatabase
-    -> [Action a]
-    -> IO (IO [Either SomeException a])
-shakeRunDatabaseForKeysSepWithPump keysChanged (ShakeDatabase _ as1 db actionQueue) acts = do
+shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase _ as1 db actionQueue) acts = do
     let runOne d = do
             getAction d
             liftIO $ atomically $ doneQueue d actionQueue
