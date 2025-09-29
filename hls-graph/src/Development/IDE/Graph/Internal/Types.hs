@@ -25,7 +25,6 @@ import qualified Data.ByteString                    as BS
 import           Data.Dynamic
 import           Data.Either                        (partitionEithers)
 import           Data.Foldable                      (fold)
-import           Data.Hashable                      (Hashable (..))
 import qualified Data.HashMap.Strict                as Map
 import           Data.HashSet                       (HashSet)
 import qualified Data.HashSet                       as Set
@@ -384,8 +383,8 @@ runInDataBase title db acts = do
 -- 4. Exception safety with rollback on registration failure
 -- @ inline
 {-# INLINE spawnAsyncWithDbRegistration #-}
-spawnAsyncWithDbRegistration :: Database -> IO DeliverStatus -> IO a1 -> STM b -> IO () -> (Either SomeException a1 -> IO ()) -> IO b
-spawnAsyncWithDbRegistration db@Database{..} mkdeliver asyncBody dbUpdate rollBack handler = do
+spawnAsyncWithDbRegistration :: Database -> IO DeliverStatus -> IO a1 -> IO () -> (Either SomeException a1 -> IO ()) -> IO ()
+spawnAsyncWithDbRegistration db@Database{..} mkdeliver asyncBody rollBack handler = do
     startBarrier <- newEmptyTMVarIO
     deliver <- mkdeliver
     -- 1. we need to make sure the thread is registered before we actually start
@@ -396,7 +395,6 @@ spawnAsyncWithDbRegistration db@Database{..} mkdeliver asyncBody dbUpdate rollBa
                     modifyTVar' databaseThreads ((deliver, a):)
                     -- make sure we only start after the restart
                     putTMVar startBarrier ()
-                    dbUpdate
     uninterruptibleMask $ \restore -> do
         a <- async (handler =<< (restore $ atomically (readTMVar startBarrier) >> (Right <$> asyncBody)) `catch` \e@(SomeException _) -> return (Left e))
         (restore $ atomically $ register a)
@@ -409,7 +407,7 @@ spawnAsyncWithDbRegistration db@Database{..} mkdeliver asyncBody dbUpdate rollBa
 {-# INLINE runInThreadStmInNewThreads #-}
 runInThreadStmInNewThreads :: Database -> IO DeliverStatus -> IO a -> (Either SomeException a -> IO ()) -> IO ()
 runInThreadStmInNewThreads db mkDeliver act handler =
-        spawnAsyncWithDbRegistration db mkDeliver act (return ()) (return ()) handler
+        spawnAsyncWithDbRegistration db mkDeliver act (return ()) handler
 
 getDataBaseStepInt :: Database -> STM Int
 getDataBaseStepInt db = do
@@ -468,8 +466,6 @@ getDatabaseValues = atomically
                   . databaseValues
 
 -- todo if stage1 runtime as dirty since it is not yet submitted to the task queue
-data RunningStage = RunningStage1 | RunningStage2
-    deriving (Eq, Ord)
 data Status
     = Clean !Result
     -- todo
@@ -479,11 +475,10 @@ data Status
     -- once event is represeted by a step
     | Dirty (Maybe Result)
     | Running {
-        runningStep  :: !Step,
+        runningStep :: !Step,
         -- runningResult :: Result,     -- LAZY
-        runningPrev  :: !(Maybe Result),
-        runningWait  :: !(MVar (Either SomeException (Key, Result))),
-        runningStage :: !RunningStage
+        runningPrev :: !(Maybe Result),
+        runningWait :: !(MVar (Either SomeException (Key, Result)))
         }
 
 viewDirty :: Step -> Status -> Status
@@ -497,9 +492,9 @@ viewToRun :: Step -> Status -> Maybe Status
 viewToRun _ other = Just other
 
 getResult :: Status -> Maybe Result
-getResult (Clean re)           = Just re
-getResult (Dirty m_re)         = m_re
-getResult (Running _ m_re _ _) = m_re -- watch out: this returns the previous result
+getResult (Clean re)         = Just re
+getResult (Dirty m_re)       = m_re
+getResult (Running _ m_re _) = m_re -- watch out: this returns the previous result
 
 
 data Result = Result {

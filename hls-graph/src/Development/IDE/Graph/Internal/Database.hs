@@ -100,7 +100,7 @@ computeToPreserve db dirtySet = do
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
             let status'
-                  | Running _ x _ _ <- status = Dirty x
+                  | Running _ x _ <- status = Dirty x
                   | Clean x <- status = Dirty (Just x)
                   | otherwise = status
             in KeyDetails status' rdeps
@@ -169,7 +169,7 @@ builderOne' firstTime parentKey db@Database {..} stack kid = do
     current <- readTVar databaseStep
     case (viewToRun current . keyStatus) =<< status of
       Nothing -> do
-        SMap.focus (updateStatus $ Running current Nothing barrier RunningStage1) kid databaseValues
+        SMap.focus (updateStatus $ Running current Nothing barrier) kid databaseValues
         let register = spawnRefresh1 db stack kid barrier Nothing refresh
                         $ atomicallyNamed "builderOne rollback" $ SMap.delete kid databaseValues
         return $ register >> return (BCContinue $ readMVar barrier)
@@ -179,11 +179,11 @@ builderOne' firstTime parentKey db@Database {..} stack kid = do
                 case br of
                     BCContinue ioR -> ioR
                     BCStop k r     -> pure $ Right (k, r)
-        NotFirstTime -> wrapWaitEvent "builderOne retry waiting dirty upsweep" kid retry
+        NotFirstTime -> retry
       Just (Clean r) -> pure . pure $ BCStop kid r
-      Just (Running _step _s wait _)
+      Just (Running _step _s wait)
         | memberStack kid stack -> throw $ StackException stack
-        | otherwise -> pure . pure $ BCContinue $ wrapWaitEvent "builderOne wait running" kid $ readMVar wait
+        | otherwise -> pure . pure $ BCContinue $ readMVar wait
 
 -- Original spawnRefresh1 implementation moved below to use the abstraction
 
@@ -248,7 +248,7 @@ upSweep db@Database {..} stack key childtKey = mask $ \restore -> do
     case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
       -- if it is still dirty, we update it and propogate further
       (Dirty s) -> do
-        SMap.focus (updateStatus $ Running current Nothing barrier RunningStage1) key databaseValues
+        SMap.focus (updateStatus $ Running current s barrier) key databaseValues
         -- if it is clean, other event update it, so it is fine.
         return $ spawnRefresh1 db stack key barrier s (\db stack key s -> restore $ do
           result <- refresh db stack key s
@@ -262,15 +262,6 @@ upSweep db@Database {..} stack key childtKey = mask $ \restore -> do
           return result) $ atomicallyNamed "upSweep rollback" $ SMap.focus updateDirty key databaseValues
       _ -> pure $ pure ()
   ioa
-
--- wrapWaitEvent :: String -> Key -> IO a -> IO a
-wrapWaitEvent :: (Monad m, Show a) => [Char] -> a -> m b -> m b
-wrapWaitEvent title key io = do
-    -- traceEvent (title ++ " of " ++ show key) $ return ()
-    r <- io
-    -- traceEvent (title ++ " of " ++ show key ++ " finished") $ return ()
-    return r
-
 
 -- | Wrap upSweep as an Action that runs it for a given event step/target/child
 upSweepAction :: Key -> Key -> Action ()
@@ -442,12 +433,11 @@ spawnRefresh1 ::
   IO () ->
   IO ()
 spawnRefresh1 db@Database {..} stack key barrier prevResult refresher rollBack = do
-  current@(Step currentStep) <- atomically $ readTVar databaseStep
+  Step currentStep <- atomically $ readTVar databaseStep
   spawnAsyncWithDbRegistration
     db
     (return $ DeliverStatus currentStep ("async computation; " ++ show key) key)
     (refresher db stack key prevResult)
-    (SMap.focus (updateStatus $ Running current prevResult barrier RunningStage2) key databaseValues)
     rollBack
     (handleResult key barrier)
 

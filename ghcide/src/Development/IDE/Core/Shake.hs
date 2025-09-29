@@ -1021,8 +1021,7 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
     -- Capture step AFTER scheduling so logging reflects new build number inside workRun
     step <- getShakeStep shakeDb
     let workRun start restore = withSpan "Shake session" $ \otSpan -> do
-        --   setTag otSpan "reason" (fromString reason)
-        --   setTag otSpan "queue" (fromString $ unlines $ map actionName reenqueued)
+          setTag otSpan "reason" (fromString reason)
           res <- try @SomeException $ restore start
           logWith recorder Info $ LogBuildSessionFinish step res
     -- Do the work in a background thread

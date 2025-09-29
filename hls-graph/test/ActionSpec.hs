@@ -10,7 +10,6 @@ import           Control.Concurrent.STM
 import           Control.Monad.IO.Class                  (MonadIO (..))
 import           Control.Monad.Trans.Cont                (evalContT)
 import           Data.Typeable                           (Typeable)
-import           Debug.Trace                             (traceShowM)
 import           Development.IDE.Graph                   (RuleResult,
                                                           ShakeOptions,
                                                           shakeOptions)
@@ -18,7 +17,7 @@ import           Development.IDE.Graph.Classes           (Hashable)
 import           Development.IDE.Graph.Database          (shakeNewDatabase,
                                                           shakeRunDatabase,
                                                           shakeRunDatabaseForKeys)
-import           Development.IDE.Graph.Internal.Database (build, incDatabase)
+import           Development.IDE.Graph.Internal.Database (build)
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Types
 import           Development.IDE.Graph.Rule
