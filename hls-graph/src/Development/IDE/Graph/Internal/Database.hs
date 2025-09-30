@@ -9,7 +9,7 @@
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TypeFamilies       #-}
 
-module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..), upSweepAction, computeToPreserve, transitiveDirtyListBottomUp, getRunTimeRDeps, spawnAsyncWithDbRegistration) where
+module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..), computeToPreserve, transitiveDirtyListBottomUp, getRunTimeRDeps, spawnAsyncWithDbRegistration, upsweepAction, incDatabase1) where
 
 import           Prelude                              hiding (unzip)
 
@@ -30,7 +30,7 @@ import           Data.IORef.Extra
 import           Data.Maybe
 import           Data.Traversable                     (for)
 import           Data.Tuple.Extra
-import           Debug.Trace                          (traceEvent)
+import           Debug.Trace                          (traceEvent, traceEventIO)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules
@@ -40,9 +40,11 @@ import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                    as SMap
 import           System.Time.Extra                    (duration)
-import           UnliftIO                             (Async, MVar, atomically,
+import           UnliftIO                             (Async, MVar, TVar,
+                                                       atomically,
+                                                       isAsyncException,
                                                        newEmptyMVar, putMVar,
-                                                       readMVar)
+                                                       readMVar, writeTVar)
 
 #if MIN_VERSION_base(4,19,0)
 import           Data.Functor                         (unzip)
@@ -62,19 +64,25 @@ newDatabase dataBaseLogger databaseQueue databaseExtra databaseRules = do
 
     pure Database{..}
 
+incDatabase1 :: Database -> Maybe (KeySet, KeySet) -> KeySet -> IO [Key]
+incDatabase1 db (Just (kk, transitiveDirtyKeysNew)) oldDirties = incDatabase db (Just (kk <> oldDirties, transitiveDirtyKeysNew ))
+incDatabase1 db Nothing oldDirties = incDatabase db (Just (oldDirties, mempty))
+
 -- | Increment the step and mark dirty.
 --   Assumes that the database is not running a build
 -- only some keys are dirty
-incDatabase :: Database -> Maybe (KeySet, KeySet) -> IO ()
+incDatabase :: Database -> Maybe (KeySet, KeySet) -> IO [Key]
 incDatabase db (Just (kk, transitiveDirtyKeysNew)) = do
     atomicallyNamed "incDatabase" $ modifyTVar'  (databaseStep db) $ \(Step i) -> Step $ i + 1
-    transitiveDirtyKeysOld <- transitiveDirtySet db (toListKeySet kk)
-    let transitiveDirtyKeys = toListKeySet $ transitiveDirtyKeysNew <> transitiveDirtyKeysOld
+    transitiveDirtyKeysOld <- transitiveDirtyListBottomUp db (toListKeySet kk)
+    let transitiveDirtyKeys = toListKeySet transitiveDirtyKeysNew <> transitiveDirtyKeysOld
+    -- let transitiveDirtyKeys = toListKeySet transitiveDirtyKeysOld
     traceEvent ("upsweep all dirties " ++ show transitiveDirtyKeys) $ for_ transitiveDirtyKeys $ \k ->
         -- Updating all the keys atomically is not necessary
         -- since we assume that no build is mutating the db.
         -- Therefore run one transaction per key to minimise contention.
         atomicallyNamed "incDatabase" $ SMap.focus updateDirty k (databaseValues db)
+    return transitiveDirtyKeys
 -- all keys are dirty
 incDatabase db Nothing = do
     atomically $ modifyTVar'  (databaseStep db) $ \(Step i) -> Step $ i + 1
@@ -82,6 +90,7 @@ incDatabase db Nothing = do
     -- all running keys are also dirty
     atomicallyNamed "incDatabase - all " $ flip ListT.traverse_ list $ \(k,_) ->
         SMap.focus updateDirty k (databaseValues db)
+    return []
 
 -- todo
 -- compute to preserve asyncs
@@ -170,7 +179,7 @@ builderOne' firstTime parentKey db@Database {..} stack kid = do
     case (viewToRun current . keyStatus) =<< status of
       Nothing -> do
         SMap.focus (updateStatus $ Running current Nothing barrier) kid databaseValues
-        let register = spawnRefresh1 db stack kid barrier Nothing refresh
+        let register = spawnRefresh db stack kid barrier Nothing refresh
                         $ atomicallyNamed "builderOne rollback" $ SMap.delete kid databaseValues
         return $ register >> return (BCContinue $ readMVar barrier)
       Just (Dirty _) -> case firstTime of
@@ -185,7 +194,7 @@ builderOne' firstTime parentKey db@Database {..} stack kid = do
         | memberStack kid stack -> throw $ StackException stack
         | otherwise -> pure . pure $ BCContinue $ readMVar wait
 
--- Original spawnRefresh1 implementation moved below to use the abstraction
+-- Original spawnRefresh implementation moved below to use the abstraction
 
 handleResult :: (Show a1, MonadIO m) => a1 -> MVar (Either a2 (a1, b)) -> Either a2 b -> m ()
 handleResult k barrier eResult = do
@@ -222,11 +231,11 @@ refreshDeps visited db stack key result = \case
 
 -- When an change event happens,
 -- we mark transitively all the keys that depend on the changed key as dirty.
--- then when we upSweep, we just fire and set it as clean
+-- then when we upsweep, we just fire and set it as clean
 
 -- the same event or new event might reach the same key multiple times,
 -- but we only need to process it once.
--- so when upSweep, we keep a eventStep, when the eventStep is older than the newest visit step of the key
+-- so when upsweep, we keep a eventStep, when the eventStep is older than the newest visit step of the key
 -- we just stop the key and stop propogating further.
 
 -- if we allow downsweep, it might see two diffrent state of the same key by peeking at
@@ -235,14 +244,48 @@ refreshDeps visited db stack key result = \case
 -- so we simply wait for the upsweep to finish before allowing to peek at the key.
 -- But if it is not there at all, we compute it. Since upsweep only propogate when a key changed,
 
+-- a version of upsweep that only freshes the key in order and use semophore to limit the concurrency
+-- it is simpler and should be more efficient in the case of many keys to upsweep
+upsweep1 :: Database -> Stack -> TVar [Key] -> TVar KeySet -> IO ()
+upsweep1 db@Database {..} stack keys runnings = go
+    where
+        go = do
+            mkey <- atomically $ do
+                ks <- readTVar keys
+                case ks of
+                    [] -> return Nothing
+                    (k:ks) -> do
+                        writeTVar keys ks
+                        modifyTVar' runnings (insertKeySet k)
+                        return (Just k)
+            case mkey of
+                Nothing -> return ()
+                Just k -> do
+                    upsweep db stack (const $ do
+                        traceEventIO ("upsweep1 key done" ++ show k)
+                        atomically (modifyTVar' runnings (deleteKeySet k))) k
+                    -- trace event
+                    runningCount <- lengthKeySet <$> readTVarIO runnings
+                    traceEventIO ("upsweep running key" ++ show k ++ " running keys count: " ++ show runningCount)
+                    -- waitUntilRunningNoMorethan 16
+                    go
+        -- waitUntilRunningNoMorethan n = do
+        --     atomically $ do
+        --         rs <- readTVar runnings
+        --         when (lengthKeySet rs > n) retry
+
+upsweepAction :: TVar [Key] -> TVar KeySet -> Action ()
+upsweepAction targets runnings = Action $ do
+    SAction{..} <- RWS.ask
+    liftIO $ upsweep1 actionDatabase actionStack targets runnings
 
 -- we need to enqueue it on restart.
-upSweep :: Database -> Stack -> Key -> Key -> IO ()
-upSweep db@Database {..} stack key childtKey = mask $ \restore -> do
+upsweep :: Database -> Stack -> (Key -> IO ()) -> Key -> IO ()
+upsweep db@Database {..} stack sweepParent key = mask $ \restore -> do
   barrier <- newEmptyMVar
-  ioa <- atomicallyNamed "upSweep" $ do
+  join $ atomicallyNamed "upsweep" $ do
     dbNotLocked db
-    insertdatabaseRuntimeDep childtKey key db
+    -- insertdatabaseRuntimeDep childtKey key db
     status <- SMap.lookup key databaseValues
     current <- readTVar databaseStep
     case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
@@ -250,24 +293,12 @@ upSweep db@Database {..} stack key childtKey = mask $ \restore -> do
       (Dirty s) -> do
         SMap.focus (updateStatus $ Running current s barrier) key databaseValues
         -- if it is clean, other event update it, so it is fine.
-        return $ spawnRefresh1 db stack key barrier s (\db stack key s -> restore $ do
-          result <- refresh db stack key s
-          -- parents of the current key (reverse dependencies)
-          -- we use this, because new incomming parent would be just fine, since they did not pick up the old result
-          -- only the old depend would be updated.
-          rdeps <- liftIO $ atomically $ getRunTimeRDeps db key
-          -- Regardless of whether this child changed, upsweep all parents once.
-          -- Parent refresh will determine if it needs to recompute and will clear its dirty mark.
-          for_ (maybe mempty toListKeySet rdeps) $ \rk -> upSweep db stack rk key
-          return result) $ atomicallyNamed "upSweep rollback" $ SMap.focus updateDirty key databaseValues
+        return $ do
+            spawnRefresh db stack key barrier s (\db stack key s -> restore $ do
+                result <- refresh db stack key s
+                sweepParent key
+                return result) $ atomicallyNamed "upsweep rollback" $ SMap.focus updateDirty key databaseValues
       _ -> pure $ pure ()
-  ioa
-
--- | Wrap upSweep as an Action that runs it for a given event step/target/child
-upSweepAction :: Key -> Key -> Action ()
-upSweepAction target child = Action $ do
-    SAction{..} <- RWS.ask
-    liftIO $ void $ upSweep actionDatabase actionStack target child
 
 -- refresh :: Database -> Stack -> Key -> Maybe Result -> IO Result
 -- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
@@ -401,29 +432,29 @@ transitiveDirtySet database = flip State.execStateT mempty . traverse_ loop
 -- in a bottom-up dependency order (children before parents).
 --
 -- Edges in the reverse-dependency graph go from a child to its parents.
--- We perform a DFS and append a node after exploring all its outgoing edges,
--- then reverse the accumulated list to obtain children-before-parents order.
-transitiveDirtyListBottomUp :: Foldable t => Database -> t Key -> IO [Key]
+-- We perform a DFS and, after exploring all outgoing edges, cons the node onto
+-- the accumulator. This yields children-before-parents order directly.
+transitiveDirtyListBottomUp :: Database -> [Key] -> IO [Key]
 transitiveDirtyListBottomUp database seeds = do
-        acc <- newIORef ([] :: [Key])
-        let go x = do
-                        seen <- State.get
-                        if x `memberKeySet` seen
-                            then pure ()
-                            else do
-                                State.put (insertKeySet x seen)
-                                mnext <- lift $ atomically $ getReverseDependencies database x
-                                traverse_ go (maybe mempty toListKeySet mnext)
-                                lift $ modifyIORef' acc (x:)
-        -- traverse all seeds
-        void $ State.runStateT (traverse_ go seeds) mempty
-        reverse <$> readIORef acc
+  acc <- newIORef ([] :: [Key])
+  let go x = do
+        seen <- State.get
+        if x `memberKeySet` seen
+          then pure ()
+          else do
+            State.put (insertKeySet x seen)
+            mnext <- lift $ atomically $ getRunTimeRDeps database x
+            traverse_ go (maybe mempty toListKeySet mnext)
+            lift $ modifyIORef' acc (x :)
+  -- traverse all seeds
+  void $ State.runStateT (traverse_ go seeds) mempty
+  readIORef acc
 
 
--- | Original spawnRefresh1 using the general pattern
+-- | Original spawnRefresh using the general pattern
 -- inline
-{-# INLINE spawnRefresh1 #-}
-spawnRefresh1 ::
+{-# INLINE spawnRefresh #-}
+spawnRefresh ::
   Database ->
   t ->
   Key ->
@@ -432,14 +463,18 @@ spawnRefresh1 ::
   (Database -> t -> Key -> Maybe Result -> IO Result) ->
   IO () ->
   IO ()
-spawnRefresh1 db@Database {..} stack key barrier prevResult refresher rollBack = do
+spawnRefresh db@Database {..} stack key barrier prevResult refresher rollBack = do
   Step currentStep <- atomically $ readTVar databaseStep
   spawnAsyncWithDbRegistration
     db
     (return $ DeliverStatus currentStep ("async computation; " ++ show key) key)
     (refresher db stack key prevResult)
-    rollBack
-    (handleResult key barrier)
+    (\r -> do
+        case r of
+            Left e  -> when (isAsyncException e) rollBack --- IGNORE ---
+            Right _ -> return ()
+        handleResult key barrier r
+    )
 
 -- Attempt to clear a Dirty parent that ended up with unchanged children during this event.
 -- If the parent is Dirty, and every direct child is either Clean/Exception/Running for a step < eventStep,

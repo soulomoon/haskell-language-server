@@ -16,7 +16,7 @@ module Development.IDE.Graph.Database(
     shakeComputeToPreserve,
     -- shakedatabaseRuntimeDep,
     shakePeekAsyncsDelivers,
-    upSweepAction,
+    upsweepAction,
     shakeGetTransitiveDirtyListBottomUp) where
 import           Control.Concurrent.Async                (Async)
 import           Control.Concurrent.Extra                (Barrier, newBarrier,
@@ -24,14 +24,15 @@ import           Control.Concurrent.Extra                (Barrier, newBarrier,
                                                           waitBarrierMaybe)
 import           Control.Concurrent.STM.Stats            (atomically,
                                                           atomicallyNamed,
-                                                          readTVarIO)
+                                                          newTVarIO, readTVar,
+                                                          readTVarIO, writeTVar)
 import           Control.Exception                       (SomeException, try)
 import           Control.Monad                           (join, unless, void)
 import           Control.Monad.IO.Class                  (liftIO)
 import           Data.Dynamic
 import           Data.Foldable                           (for_)
 import           Data.Maybe
-import           Data.Set                                (Set)
+import           Data.Set                                (Set, empty)
 import           Data.Unique
 import           Debug.Trace                             (traceEvent)
 import           Development.IDE.Graph.Classes           ()
@@ -57,7 +58,9 @@ shakeNewDatabase l que aq opts rules = do
     let extra = fromMaybe (toDyn NonExportedType) $ shakeExtra opts
     (theRules, actions) <- runRules extra rules
     db <- newDatabase l que extra theRules
-    pure $ ShakeDatabase (length actions) actions db aq
+    dirtyVar <- newTVarIO []
+    dirtyVarRunning <- newTVarIO mempty
+    pure $ ShakeDatabase (length actions) actions db (dirtyVar, dirtyVarRunning, aq)
 
 shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [Either SomeException a]
 shakeRunDatabase s xs = shakeRunDatabaseForKeys Nothing s xs
@@ -86,25 +89,23 @@ shakeRunDatabaseForKeysSep
     -> ShakeDatabase
     -> [Action a]
     -> IO (IO [Either SomeException a])
-shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase _ as1 db actionQueue) acts = do
+shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase _ as1 db (dirty, runningDirties, actionQueue)) acts = do
     let runOne d = do
             getAction d
             liftIO $ atomically $ doneQueue d actionQueue
 
-    let reenqUpsweep = case keysChanged of
-            Nothing -> return ()
-            Just (dirty, _) -> do
-                for_ (toListKeySet dirty) $ \k -> do
-                    (_, act) <- instantiateDelayedAction (mkDelayedAction ("upsweep" ++ show k) Debug $ upSweepAction k k)
-                    atomically $ insertRunnning act actionQueue
-    reenqUpsweep
+    -- we can to upsweep these keys in order one by one,
+    oldDirties <- atomically $ do
+        old <- readTVar dirty
+        oldRunnings <- readTVar runningDirties
+        return $ oldRunnings `unionKeySet` fromListKeySet old
+    upsweepKeys <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase1 db keysChanged oldDirties
+    atomically $ writeTVar dirty upsweepKeys
+    atomically $ writeTVar runningDirties mempty
+    (_, act) <- instantiateDelayedAction (mkDelayedAction "upsweep" Debug $ upsweepAction dirty runningDirties)
     reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress actionQueue
-    -- for_ reenqueued $ \d -> atomically $ unGetQueue d actionQueue
-                -- return []
-    let ignoreResultAct = as1 ++ map runOne reenqueued
-    traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase db keysChanged
-    -- let allActs = map (unvoid . runOne) reenqueued ++ acts
-    return $ drop (length ignoreResultAct) <$> runActions (newKey "root") db (map unvoid ignoreResultAct ++ acts)
+    let ignoreResultActs = (getAction act) : as1 ++ map runOne reenqueued
+    return $ drop (length ignoreResultActs) <$> runActions (newKey "root") db (map unvoid ignoreResultActs ++ acts)
 
 instantiateDelayedAction
     :: DelayedAction a
@@ -176,5 +177,5 @@ shakeGetDatabaseKeys :: ShakeDatabase -> IO [(Key, Int)]
 shakeGetDatabaseKeys (ShakeDatabase _ _ db _) = getKeysAndVisitAge db
 
 shakeGetActionQueueLength :: ShakeDatabase -> IO Int
-shakeGetActionQueueLength (ShakeDatabase _ _ _ aq) = do
+shakeGetActionQueueLength (ShakeDatabase _ _ _ (_, _,aq)) = do
     fromIntegral <$> atomically (countQueue aq)

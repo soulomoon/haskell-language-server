@@ -31,7 +31,7 @@ module Development.IDE.Graph.Internal.Key
     , fromListKeySet
     , deleteKeySet
     , differenceKeySet
-    , unionKyeSet
+    , unionKeySet
     , notMemberKeySet
     ) where
 
@@ -144,8 +144,8 @@ differenceKeySet :: KeySet -> KeySet -> KeySet
 differenceKeySet = coerce IS.difference
 
 
-unionKyeSet :: KeySet -> KeySet -> KeySet
-unionKyeSet = coerce IS.union
+unionKeySet :: KeySet -> KeySet -> KeySet
+unionKeySet = coerce IS.union
 
 deleteKeySet :: Key -> KeySet -> KeySet
 deleteKeySet = coerce IS.delete

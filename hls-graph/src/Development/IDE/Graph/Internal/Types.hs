@@ -222,7 +222,7 @@ isActionQueueEmpty ActionQueue {..} = do
         inProg <- Set.null <$> readTVar inProgress
         return (emptyQueue && inProg)
 
-data ShakeDatabase = ShakeDatabase !Int [Action ()] Database ActionQueue
+data ShakeDatabase = ShakeDatabase !Int [Action ()] Database (TVar [Key], TVar KeySet, ActionQueue)
 
 newtype Step = Step Int
     deriving newtype (Eq,Ord,Hashable,Show,Num,Enum,Real,Integral)
@@ -370,21 +370,16 @@ databaseGetActionQueueLength :: Database -> STM Int
 databaseGetActionQueueLength db = do
     counTaskQueue (databaseQueue db)
 
-runInDataBase :: String -> Database -> [(IO result, Either SomeException result -> IO ())] -> IO ()
-runInDataBase title db acts = do
-    s <- atomically $ getDataBaseStepInt db
-    mapM_ (\(act, handler) -> runInThreadStmInNewThreads db (return $ DeliverStatus s title (newKey "root")) act handler) acts
-
 -- | Abstract pattern for spawning async computations with database registration.
--- This pattern is used by spawnRefresh1 and can be used by other functions that need:
+-- This pattern is used by spawnRefresh and can be used by other functions that need:
 -- 1. Protected async creation with uninterruptibleMask
 -- 2. Database thread tracking and state updates
 -- 3. Controlled start coordination via barriers
 -- 4. Exception safety with rollback on registration failure
 -- @ inline
 {-# INLINE spawnAsyncWithDbRegistration #-}
-spawnAsyncWithDbRegistration :: Database -> IO DeliverStatus -> IO a1 -> IO () -> (Either SomeException a1 -> IO ()) -> IO ()
-spawnAsyncWithDbRegistration db@Database{..} mkdeliver asyncBody rollBack handler = do
+spawnAsyncWithDbRegistration :: Database -> IO DeliverStatus -> IO a1 -> (Either SomeException a1 -> IO ()) -> IO ()
+spawnAsyncWithDbRegistration db@Database{..} mkdeliver asyncBody handler = do
     startBarrier <- newEmptyTMVarIO
     deliver <- mkdeliver
     -- 1. we need to make sure the thread is registered before we actually start
@@ -400,14 +395,13 @@ spawnAsyncWithDbRegistration db@Database{..} mkdeliver asyncBody rollBack handle
         (restore $ atomically $ register a)
             `catch` \e@(SomeException _) -> do
                     cancelWith a e
-                    rollBack
                     throw e
 
 -- inline
 {-# INLINE runInThreadStmInNewThreads #-}
 runInThreadStmInNewThreads :: Database -> IO DeliverStatus -> IO a -> (Either SomeException a -> IO ()) -> IO ()
 runInThreadStmInNewThreads db mkDeliver act handler =
-        spawnAsyncWithDbRegistration db mkDeliver act (return ()) handler
+        spawnAsyncWithDbRegistration db mkDeliver act handler
 
 getDataBaseStepInt :: Database -> STM Int
 getDataBaseStepInt db = do

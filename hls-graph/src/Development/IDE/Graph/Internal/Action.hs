@@ -76,7 +76,7 @@ parallel xs = do
 --       liftIO $ atomically $ doneQueue d actionQueue
 
 pumpActionThread :: ShakeDatabase -> (String -> IO ()) -> Action b
-pumpActionThread sdb@(ShakeDatabase _ _ db actionQueue) logMsg = do
+pumpActionThread sdb@(ShakeDatabase _ _ db (_, _, actionQueue)) logMsg = do
   a <- ask
   d <- liftIO $ atomicallyNamed "action queue - pop" $ popQueue actionQueue
   s <- atomically $ getDataBaseStepInt db
