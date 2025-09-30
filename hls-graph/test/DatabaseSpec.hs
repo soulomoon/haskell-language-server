@@ -45,7 +45,7 @@ spec = do
 
     describe "compute" $ do
       itInThread "build step and changed step updated correctly" $ \q -> do
-        (ShakeDatabase _ _ theDb _) <- shakeNewDatabaseWithLogger q shakeOptions $ do
+        (ShakeDatabase _ _ theDb) <- shakeNewDatabaseWithLogger q shakeOptions $ do
           ruleStep
         let k = newKey $ Rule @()
         -- ChangedRecomputeSame

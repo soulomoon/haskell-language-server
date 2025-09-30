@@ -53,14 +53,16 @@ import           Data.List.NonEmpty                   (unzip)
 #endif
 
 
-newDatabase :: (String -> IO ()) ->  DBQue -> Dynamic -> TheRules -> IO Database
-newDatabase dataBaseLogger databaseQueue databaseExtra databaseRules = do
+newDatabase :: (String -> IO ()) ->  DBQue -> ActionQueue -> Dynamic -> TheRules -> IO Database
+newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra databaseRules = do
     databaseStep <- newTVarIO $ Step 0
     databaseThreads <- newTVarIO []
     databaseValuesLock <- newTVarIO True
     databaseValues <- atomically SMap.new
     databaseRuntimeDep <- atomically SMap.new
     databaseRRuntimeDep <- atomically SMap.new
+    databaseDirtyTargets <- newTVarIO []
+    databaseRunningDirties <- newTVarIO mempty
 
     pure Database{..}
 
@@ -247,7 +249,7 @@ refreshDeps visited db stack key result = \case
 -- a version of upsweep that only freshes the key in order and use semophore to limit the concurrency
 -- it is simpler and should be more efficient in the case of many keys to upsweep
 upsweep1 :: Database -> Stack -> TVar [Key] -> TVar KeySet -> IO ()
-upsweep1 db@Database {..} stack keys runnings = go
+upsweep1 db stack keys runnings = go
     where
         go = do
             mkey <- atomically $ do
@@ -418,15 +420,16 @@ getRunTimeRDeps db k = do
 
 
 
-transitiveDirtySet :: Foldable t => Database -> t Key -> IO KeySet
-transitiveDirtySet database = flip State.execStateT mempty . traverse_ loop
-  where
-    loop x = do
-        seen <- State.get
-        if x `memberKeySet` seen then pure () else do
-            State.put (insertKeySet x seen)
-            next <- lift $ atomically $ getReverseDependencies database x
-            traverse_ loop (maybe mempty toListKeySet next)
+-- Legacy helper (no longer used): compute transitive dirty set
+-- transitiveDirtySet :: Foldable t => Database -> t Key -> IO KeySet
+-- transitiveDirtySet database = flip State.execStateT mempty . traverse_ loop
+--   where
+--     loop x = do
+--         seen <- State.get
+--         if x `memberKeySet` seen then pure () else do
+--             State.put (insertKeySet x seen)
+--             next <- lift $ atomically $ getReverseDependencies database x
+--             traverse_ loop (maybe mempty toListKeySet next)
 
 -- | A variant of 'transitiveDirtySet' that returns the affected keys
 -- in a bottom-up dependency order (children before parents).

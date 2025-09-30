@@ -35,7 +35,7 @@ import           Development.IDE.Graph.Internal.Rules    (RuleResult)
 import           Development.IDE.Graph.Internal.Types
 import           Development.IDE.WorkerThread            (DeliverStatus (..))
 import           System.Exit
-import           UnliftIO                                (STM, atomically,
+import           UnliftIO                                (atomically,
                                                           newEmptyTMVarIO,
                                                           putTMVar, readTMVar)
 
@@ -76,19 +76,20 @@ parallel xs = do
 --       liftIO $ atomically $ doneQueue d actionQueue
 
 pumpActionThread :: ShakeDatabase -> (String -> IO ()) -> Action b
-pumpActionThread sdb@(ShakeDatabase _ _ db (_, _, actionQueue)) logMsg = do
-  a <- ask
-  d <- liftIO $ atomicallyNamed "action queue - pop" $ popQueue actionQueue
-  s <- atomically $ getDataBaseStepInt db
-  liftIO $ runInThreadStmInNewThreads db
-    (return $ DeliverStatus s (actionName d) (newKey "root"))
-    (ignoreState a $ runOne d) (const $ return ())
-  liftIO $ logMsg ("pump executed: " ++ actionName d)
-  pumpActionThread sdb logMsg
+pumpActionThread sdb@(ShakeDatabase _ _ db) logMsg = do
+    do
+        a <- ask
+        d <- liftIO $ atomicallyNamed "action queue - pop" $ popQueue (databaseActionQueue db)
+        s <- atomically $ getDataBaseStepInt db
+        liftIO $ runInThreadStmInNewThreads db
+            (return $ DeliverStatus s (actionName d) (newKey "root"))
+            (ignoreState a $ runOne d) (const $ return ())
+        liftIO $ logMsg ("pump executed: " ++ actionName d)
+        pumpActionThread sdb logMsg
   where
     runOne d = do
-      getAction d
-      liftIO $ atomically $ doneQueue d actionQueue
+            _ <- getAction d
+            liftIO $ atomically $ doneQueue d (databaseActionQueue db)
 
 runActionInDb :: String -> [Action a] -> Action [Either SomeException a]
 runActionInDb title acts = do

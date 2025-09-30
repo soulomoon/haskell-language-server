@@ -222,23 +222,23 @@ isActionQueueEmpty ActionQueue {..} = do
         inProg <- Set.null <$> readTVar inProgress
         return (emptyQueue && inProg)
 
-data ShakeDatabase = ShakeDatabase !Int [Action ()] Database (TVar [Key], TVar KeySet, ActionQueue)
+data ShakeDatabase = ShakeDatabase !Int [Action ()] Database
 
 newtype Step = Step Int
     deriving newtype (Eq,Ord,Hashable,Show,Num,Enum,Real,Integral)
 
 
 getShakeStep :: MonadIO m => ShakeDatabase -> m Step
-getShakeStep (ShakeDatabase _ _ db _) = do
+getShakeStep (ShakeDatabase _ _ db) = do
     s <- readTVarIO $ databaseStep db
     return s
 
 lockShakeDatabaseValues :: MonadIO m => ShakeDatabase -> m ()
-lockShakeDatabaseValues (ShakeDatabase _ _ db _) = do
+lockShakeDatabaseValues (ShakeDatabase _ _ db) = do
     liftIO $ atomically $ modifyTVar' (databaseValuesLock db) (const False)
 
 unlockShakeDatabaseValues :: MonadIO m => ShakeDatabase -> m ()
-unlockShakeDatabaseValues (ShakeDatabase _ _ db _) = do
+unlockShakeDatabaseValues (ShakeDatabase _ _ db) = do
     liftIO $ atomically $ modifyTVar' (databaseValuesLock db) (const True)
 
 withShakeDatabaseValuesLock :: ShakeDatabase -> IO c -> IO c
@@ -252,7 +252,7 @@ dbNotLocked db = do
 
 
 getShakeQueue :: ShakeDatabase -> DBQue
-getShakeQueue (ShakeDatabase _ _ db _) = databaseQueue db
+getShakeQueue (ShakeDatabase _ _ db) = databaseQueue db
 ---------------------------------------------------------------------
 -- Keys
 newtype Value = Value Dynamic
@@ -279,27 +279,31 @@ raedAllLeftsDBQue q = do
 
 
 data Database = Database {
-    databaseExtra       :: Dynamic,
+    databaseExtra          :: Dynamic,
 
-    databaseThreads     :: TVar [(DeliverStatus, Async ())],
+    databaseThreads        :: TVar [(DeliverStatus, Async ())],
 
-    databaseRuntimeDep  :: SMap.Map Key KeySet,
-    databaseRRuntimeDep :: SMap.Map Key KeySet,
+    databaseRuntimeDep     :: SMap.Map Key KeySet,
+    databaseRRuntimeDep    :: SMap.Map Key KeySet,
     -- it is used to compute the transitive reverse deps, so
     -- if not in any of the transitive reverse deps of a dirty node, it is clean
     -- we can skip clean the threads.
     -- this is update right before we query the database for the key result.
-    dataBaseLogger      :: String -> IO (),
+    dataBaseLogger         :: String -> IO (),
 
-    databaseQueue       :: DBQue,
+    databaseQueue          :: DBQue,
+    -- The action queue and bookkeeping for upsweep scheduling
+    databaseActionQueue    :: ActionQueue,
+    databaseDirtyTargets   :: TVar [Key],
+    databaseRunningDirties :: TVar KeySet,
 
-    databaseRules       :: TheRules,
-    databaseStep        :: !(TVar Step),
+    databaseRules          :: TheRules,
+    databaseStep           :: !(TVar Step),
 
-    databaseValuesLock  :: !(TVar Bool),
+    databaseValuesLock     :: !(TVar Bool),
     -- when we restart a build, we set this to False to block any other
     -- threads from reading databaseValues
-    databaseValues      :: !(Map Key KeyDetails)
+    databaseValues         :: !(Map Key KeyDetails)
 
     }
 
@@ -361,7 +365,7 @@ getDatabaseRuntimeDep db k = do
 ---------------------------------------------------------------------
 
 shakeDataBaseQueue :: ShakeDatabase -> DBQue
-shakeDataBaseQueue = databaseQueue . (\(ShakeDatabase _ _ db _) -> db)
+shakeDataBaseQueue = databaseQueue . (\(ShakeDatabase _ _ db) -> db)
 
 awaitRunInDb :: Database -> IO result -> IO result
 awaitRunInDb db act = awaitRunInThread (databaseQueue db) act

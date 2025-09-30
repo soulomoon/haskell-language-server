@@ -24,15 +24,14 @@ import           Control.Concurrent.Extra                (Barrier, newBarrier,
                                                           waitBarrierMaybe)
 import           Control.Concurrent.STM.Stats            (atomically,
                                                           atomicallyNamed,
-                                                          newTVarIO, readTVar,
-                                                          readTVarIO, writeTVar)
+                                                          readTVar, readTVarIO,
+                                                          writeTVar)
 import           Control.Exception                       (SomeException, try)
 import           Control.Monad                           (join, unless, void)
 import           Control.Monad.IO.Class                  (liftIO)
 import           Data.Dynamic
-import           Data.Foldable                           (for_)
 import           Data.Maybe
-import           Data.Set                                (Set, empty)
+import           Data.Set                                (Set)
 import           Data.Unique
 import           Debug.Trace                             (traceEvent)
 import           Development.IDE.Graph.Classes           ()
@@ -51,28 +50,26 @@ import           Development.IDE.WorkerThread            (DeliverStatus)
 data NonExportedType = NonExportedType
 
 shakeShutDatabase :: Set (Async ()) -> ShakeDatabase -> IO ()
-shakeShutDatabase preserve (ShakeDatabase _ _ db _) = shutDatabase preserve db
+shakeShutDatabase preserve (ShakeDatabase _ _ db) = shutDatabase preserve db
 
 shakeNewDatabase :: (String -> IO ()) -> DBQue -> ActionQueue -> ShakeOptions -> Rules () -> IO ShakeDatabase
 shakeNewDatabase l que aq opts rules = do
     let extra = fromMaybe (toDyn NonExportedType) $ shakeExtra opts
     (theRules, actions) <- runRules extra rules
-    db <- newDatabase l que extra theRules
-    dirtyVar <- newTVarIO []
-    dirtyVarRunning <- newTVarIO mempty
-    pure $ ShakeDatabase (length actions) actions db (dirtyVar, dirtyVarRunning, aq)
+    db <- newDatabase l que aq extra theRules
+    pure $ ShakeDatabase (length actions) actions db
 
 shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [Either SomeException a]
 shakeRunDatabase s xs = shakeRunDatabaseForKeys Nothing s xs
 
 -- | Returns the set of dirty keys annotated with their age (in # of builds)
 shakeGetDirtySet :: ShakeDatabase -> IO [(Key, Int)]
-shakeGetDirtySet (ShakeDatabase _ _ db _) =
+shakeGetDirtySet (ShakeDatabase _ _ db) =
     Development.IDE.Graph.Internal.Database.getDirtySet db
 
 -- | Returns the build number
 shakeGetBuildStep :: ShakeDatabase -> IO Int
-shakeGetBuildStep (ShakeDatabase _ _ db _) = do
+shakeGetBuildStep (ShakeDatabase _ _ db) = do
     Step s <- readTVarIO $ databaseStep db
     return s
 
@@ -89,21 +86,21 @@ shakeRunDatabaseForKeysSep
     -> ShakeDatabase
     -> [Action a]
     -> IO (IO [Either SomeException a])
-shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase _ as1 db (dirty, runningDirties, actionQueue)) acts = do
+shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase _ as1 db) acts = do
     let runOne d = do
             getAction d
-            liftIO $ atomically $ doneQueue d actionQueue
+            liftIO $ atomically $ doneQueue d (databaseActionQueue db)
 
     -- we can to upsweep these keys in order one by one,
     oldDirties <- atomically $ do
-        old <- readTVar dirty
-        oldRunnings <- readTVar runningDirties
+        old <- readTVar (databaseDirtyTargets db)
+        oldRunnings <- readTVar (databaseRunningDirties db)
         return $ oldRunnings `unionKeySet` fromListKeySet old
     upsweepKeys <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase1 db keysChanged oldDirties
-    atomically $ writeTVar dirty upsweepKeys
-    atomically $ writeTVar runningDirties mempty
-    (_, act) <- instantiateDelayedAction (mkDelayedAction "upsweep" Debug $ upsweepAction dirty runningDirties)
-    reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress actionQueue
+    atomically $ writeTVar (databaseDirtyTargets db) upsweepKeys
+    atomically $ writeTVar (databaseRunningDirties db) mempty
+    (_, act) <- instantiateDelayedAction (mkDelayedAction "upsweep" Debug $ upsweepAction (databaseDirtyTargets db) (databaseRunningDirties db))
+    reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress (databaseActionQueue db)
     let ignoreResultActs = (getAction act) : as1 ++ map runOne reenqueued
     return $ drop (length ignoreResultActs) <$> runActions (newKey "root") db (map unvoid ignoreResultActs ++ acts)
 
@@ -131,12 +128,12 @@ mkDelayedAction s p = DelayedAction Nothing s (toEnum (fromEnum p))
 
 
 shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], KeySet)
-shakeComputeToPreserve (ShakeDatabase _ _ db _) ks = atomically (computeToPreserve db ks)
+shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
 
 -- | Compute the transitive closure of the given keys over reverse dependencies
 -- and return them in bottom-up order (children before parents).
 shakeGetTransitiveDirtyListBottomUp :: ShakeDatabase -> [Key] -> IO [Key]
-shakeGetTransitiveDirtyListBottomUp (ShakeDatabase _ _ db _) seeds =
+shakeGetTransitiveDirtyListBottomUp (ShakeDatabase _ _ db) seeds =
     transitiveDirtyListBottomUp db seeds
 
 -- fds make it possible to do al ot of jobs
@@ -152,21 +149,21 @@ shakeRunDatabaseForKeys (Just x) sdb as2 =
 
 
 shakePeekAsyncsDelivers :: ShakeDatabase -> IO [DeliverStatus]
-shakePeekAsyncsDelivers (ShakeDatabase _ _ db _) = peekAsyncsDelivers db
+shakePeekAsyncsDelivers (ShakeDatabase _ _ db) = peekAsyncsDelivers db
 
 -- | Given a 'ShakeDatabase', write an HTML profile to the given file about the latest run.
 shakeProfileDatabase :: ShakeDatabase -> FilePath -> IO ()
-shakeProfileDatabase (ShakeDatabase _ _ s _) file = writeProfile file s
+shakeProfileDatabase (ShakeDatabase _ _ db) file = writeProfile file db
 
 -- | Returns the clean keys in the database
 shakeGetCleanKeys :: ShakeDatabase -> IO [(Key, Result )]
-shakeGetCleanKeys (ShakeDatabase _ _ db _) = do
+shakeGetCleanKeys (ShakeDatabase _ _ db) = do
     keys <- getDatabaseValues db
     return [ (k,res) | (k, Clean res) <- keys]
 
 -- | Returns the total count of edges in the build graph
 shakeGetBuildEdges :: ShakeDatabase -> IO Int
-shakeGetBuildEdges (ShakeDatabase _ _ db _) = do
+shakeGetBuildEdges (ShakeDatabase _ _ db) = do
     keys <- getDatabaseValues db
     let ress = mapMaybe (getResult . snd) keys
     return $ sum $ map (lengthKeySet . getResultDepsDefault mempty . resultDeps) ress
@@ -174,8 +171,8 @@ shakeGetBuildEdges (ShakeDatabase _ _ db _) = do
 -- | Returns an approximation of the database keys,
 --   annotated with how long ago (in # builds) they were visited
 shakeGetDatabaseKeys :: ShakeDatabase -> IO [(Key, Int)]
-shakeGetDatabaseKeys (ShakeDatabase _ _ db _) = getKeysAndVisitAge db
+shakeGetDatabaseKeys (ShakeDatabase _ _ db) = getKeysAndVisitAge db
 
 shakeGetActionQueueLength :: ShakeDatabase -> IO Int
-shakeGetActionQueueLength (ShakeDatabase _ _ _ (_, _,aq)) = do
-    fromIntegral <$> atomically (countQueue aq)
+shakeGetActionQueueLength (ShakeDatabase _ _ db) = do
+    fromIntegral <$> atomically (countQueue (databaseActionQueue db))

@@ -97,7 +97,7 @@ spec = do
       res <- shakeRunDatabaseFromRight db $ pure $ apply1 Rule
       res `shouldBe` [True]
     itInThread "tracks direct dependencies" $ \q -> do
-      db@(ShakeDatabase _ _ theDb _) <- shakeNewDatabaseWithLogger q shakeOptions $ do
+      db@(ShakeDatabase _ _ theDb) <- shakeNewDatabaseWithLogger q shakeOptions $ do
         ruleUnit
         ruleBool
       let theKey = Rule @Bool
@@ -107,7 +107,7 @@ spec = do
       Just (Clean res) <- lookup (newKey theKey) <$> getDatabaseValues theDb
       resultDeps res `shouldBe` ResultDeps [singletonKeySet $ newKey (Rule @())]
     itInThread "tracks reverse dependencies" $ \q -> do
-      db@(ShakeDatabase _ _ Database {..} _) <- shakeNewDatabaseWithLogger q shakeOptions $ do
+      db@(ShakeDatabase _ _ Database {..}) <- shakeNewDatabaseWithLogger q shakeOptions $ do
         ruleUnit
         ruleBool
       let theKey = Rule @Bool
@@ -143,7 +143,7 @@ spec = do
     --   snd countRes `shouldBe` [1 :: Int]
 
   describe "applyWithoutDependency" $ itInThread "does not track dependencies" $ \q -> do
-    db@(ShakeDatabase _ _ theDb _) <- shakeNewDatabaseWithLogger q shakeOptions $ do
+    db@(ShakeDatabase _ _ theDb) <- shakeNewDatabaseWithLogger q shakeOptions $ do
       ruleUnit
       addRule $ \Rule _old _mode -> do
           [()] <- applyWithoutDependency [Rule]
