@@ -18,32 +18,33 @@ module Development.IDE.Graph.Database(
     shakePeekAsyncsDelivers,
     upsweepAction,
     shakeGetTransitiveDirtyListBottomUp) where
-import           Control.Concurrent.Async                (Async)
-import           Control.Concurrent.Extra                (Barrier, newBarrier,
-                                                          signalBarrier,
-                                                          waitBarrierMaybe)
-import           Control.Concurrent.STM.Stats            (atomically,
-                                                          atomicallyNamed,
-                                                          readTVar, readTVarIO,
-                                                          writeTVar)
-import           Control.Exception                       (SomeException, try)
-import           Control.Monad                           (join, unless, void)
-import           Control.Monad.IO.Class                  (liftIO)
+import           Control.Concurrent.Async                 (Async)
+import           Control.Concurrent.Extra                 (Barrier, newBarrier,
+                                                           signalBarrier,
+                                                           waitBarrierMaybe)
+import           Control.Concurrent.STM.Stats             (atomically,
+                                                           atomicallyNamed,
+                                                           readTVar, readTVarIO,
+                                                           writeTVar)
+import           Control.Exception                        (SomeException, try)
+import           Control.Monad                            (join, unless, void)
+import           Control.Monad.IO.Class                   (liftIO)
 import           Data.Dynamic
 import           Data.Maybe
-import           Data.Set                                (Set)
+import           Data.Set                                 (Set)
 import           Data.Unique
-import           Debug.Trace                             (traceEvent)
-import           Development.IDE.Graph.Classes           ()
+import           Debug.Trace                              (traceEvent)
+import           Development.IDE.Graph.Classes            ()
 import           Development.IDE.Graph.Internal.Action
 import           Development.IDE.Graph.Internal.Database
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Options
-import           Development.IDE.Graph.Internal.Profile  (writeProfile)
+import           Development.IDE.Graph.Internal.Profile   (writeProfile)
 import           Development.IDE.Graph.Internal.Rules
+import           Development.IDE.Graph.Internal.Scheduler
 import           Development.IDE.Graph.Internal.Types
-import qualified Development.IDE.Graph.Internal.Types    as Logger
-import           Development.IDE.WorkerThread            (DeliverStatus)
+import qualified Development.IDE.Graph.Internal.Types     as Logger
+import           Development.IDE.WorkerThread             (DeliverStatus)
 
 
 -- Placeholder to be the 'extra' if the user doesn't set it
@@ -92,17 +93,13 @@ shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase _ as1 db) acts = do
             liftIO $ atomically $ doneQueue d (databaseActionQueue db)
 
     -- we can to upsweep these keys in order one by one,
-    oldDirties <- atomically $ do
-        old <- readTVar (databaseDirtyTargets db)
-        oldRunnings <- readTVar (databaseRunningDirties db)
-        return $ oldRunnings `unionKeySet` fromListKeySet old
-    upsweepKeys <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase1 db keysChanged oldDirties
-    atomically $ writeTVar (databaseDirtyTargets db) upsweepKeys
-    atomically $ writeTVar (databaseRunningDirties db) mempty
-    (_, act) <- instantiateDelayedAction (mkDelayedAction "upsweep" Debug $ upsweepAction (databaseDirtyTargets db) (databaseRunningDirties db))
+    _upsweepKeys <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase1 db keysChanged
+    (_, act) <- instantiateDelayedAction (mkDelayedAction "upsweep" Debug $ upsweepAction)
     reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress (databaseActionQueue db)
-    let ignoreResultActs = (getAction act) : as1 ++ map runOne reenqueued
-    return $ drop (length ignoreResultActs) <$> runActions (newKey "root") db (map unvoid ignoreResultActs ++ acts)
+    let ignoreResultActs = (getAction act) : (liftIO $ prepareToRunKeysRealTime db) : as1 ++ map runOne reenqueued
+    return $ do
+        -- prepareToRunKeys db upsweepKeys
+        drop (length ignoreResultActs) <$> runActions (newKey "root") db (map unvoid ignoreResultActs ++ acts)
 
 instantiateDelayedAction
     :: DelayedAction a

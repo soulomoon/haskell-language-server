@@ -203,7 +203,7 @@ import           Data.Foldable                           (foldl')
 data Log
   = LogCreateHieDbExportsMapStart
   | LogCreateHieDbExportsMapFinish !Int
-  | LogBuildSessionRestart !ShakeRestartArgs ![DelayedActionInternal] !KeySet !Seconds !(Maybe FilePath) !Int ![DeliverStatus]
+  | LogBuildSessionRestart !ShakeRestartArgs ![DelayedActionInternal] !KeySet !Seconds !(Maybe FilePath) !Int ![DeliverStatus] !Seconds
   | LogBuildSessionRestartTakingTooLong !Seconds
   | LogDelayedAction !(DelayedAction ()) !Seconds
   | LogBuildSessionFinish !Step !(Either SomeException [Either SomeException ()])
@@ -247,7 +247,7 @@ instance Pretty Log where
       "Initializing exports map from hiedb"
     LogCreateHieDbExportsMapFinish exportsMapSize ->
       "Done initializing exports map from hiedb. Size:" <+> pretty exportsMapSize
-    LogBuildSessionRestart restartArgs actionQueue keyBackLog abortDuration shakeProfilePath step delivers ->
+    LogBuildSessionRestart restartArgs actionQueue keyBackLog abortDuration shakeProfilePath step delivers prepare ->
       vcat
         [ "Restarting build session due to" <+> pretty (sraReason restartArgs)
         , "Restarts num:" <+> pretty (sraCount $ restartArgs)
@@ -256,7 +256,9 @@ instance Pretty Log where
         , "Keys:" <+> pretty (length $ toListKeySet keyBackLog)
         , "Deliveries still alive:" <+> pretty delivers
         , "Current step:" <+> pretty (show step)
-        , "Aborting previous build session took" <+> pretty (showDuration abortDuration) <+> pretty shakeProfilePath ]
+        , "Aborting previous build session took" <+> pretty (showDuration abortDuration) <+> pretty shakeProfilePath
+        , "prepare new session took" <+> pretty (showDuration prepare)
+        ]
     LogBuildSessionRestartTakingTooLong seconds ->
         "Build restart is taking too long (" <> pretty (showDuration seconds) <> ")"
     LogDelayedAction delayedAct seconds ->
@@ -823,7 +825,7 @@ shakeSessionInit recorder IdeState{..} = do
     -- Take a snapshot of the VFS - it should be empty as we've received no notifications
     -- till now, but it can't hurt to be in sync with the `lsp` library.
     vfs <- vfsSnapshot (lspEnv shakeExtras)
-    initSession <- newSession recorder shakeExtras (VFSModified vfs) shakeDb [] "shakeSessionInit" mempty
+    initSession <- newSession recorder shakeExtras (VFSModified vfs) shakeDb [] "shakeSessionInit" mempty (const $ return ())
     putMVar shakeSession initSession
     logWith recorder Debug LogSessionInitialised
 
@@ -949,15 +951,15 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         -- this log is required by tests
         step <- shakeGetBuildStep shakeDb
 
-        logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime res step survivedDelivers
-        return (shakeRestartArgs, newDirtyKeys, affected)
+        let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime res step survivedDelivers x
+        return (shakeRestartArgs, newDirtyKeys, affected, logRestart)
     )
     -- It is crucial to be masked here, otherwise we can get killed
     -- between spawning the new thread and updating shakeSession.
     -- See https://github.com/haskell/ghcide/issues/79
-    ( \(ShakeRestartArgs {..}, newDirtyKeys, affected) ->
+    ( \(ShakeRestartArgs {..}, newDirtyKeys, affected, logRestart) ->
         do
-          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason (fromListKeySet newDirtyKeys, affected)
+          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason (fromListKeySet newDirtyKeys, affected) logRestart
           `finally` for_ sraWaitMVars (`putMVar` ())
     )
   where
@@ -1005,8 +1007,9 @@ newSession
     -> [DelayedActionInternal]
     -> String
     -> (KeySet, KeySet)
+    -> (Seconds  -> IO ())
     -> IO ShakeSession
-newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKeys = do
+newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKeys logrestart = do
 
     -- Take a new VFS snapshot
     case vfsMod of
@@ -1017,7 +1020,8 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
     -- Wrap delayed actions (both reenqueued and new) to preserve LogDelayedAction timing instrumentation
     let pumpLogger msg = logWith recorder Debug $ LogShakeText (T.pack msg)
     -- Use graph-level helper that runs the pump thread and enqueues upsweep actions
-    startDatabase <- shakeRunDatabaseForKeysSep (Just newDirtyKeys) shakeDb (pumpActionThread shakeDb pumpLogger: map getAction acts)
+    (seconds, startDatabase) <- duration $ shakeRunDatabaseForKeysSep (Just newDirtyKeys) shakeDb (pumpActionThread shakeDb pumpLogger: map getAction acts)
+    logrestart seconds
     -- Capture step AFTER scheduling so logging reflects new build number inside workRun
     step <- getShakeStep shakeDb
     let workRun start restore = withSpan "Shake session" $ \otSpan -> do

@@ -11,7 +11,7 @@ import           Control.Concurrent.STM             (STM, TQueue, TVar, check,
                                                      modifyTVar', newTQueue,
                                                      newTVar, readTQueue,
                                                      readTVar, unGetTQueue,
-                                                     writeTQueue)
+                                                     writeTQueue, writeTVar)
 import           Control.Exception                  (throw)
 import           Control.Monad                      (forM, forM_, forever,
                                                      unless, when)
@@ -46,7 +46,7 @@ import           Development.IDE.WorkerThread       (DeliverStatus (..),
                                                      flushTaskQueue,
                                                      writeTaskQueue)
 import qualified Focus
-import           GHC.Conc                           (atomically)
+import           GHC.Conc                           ()
 import           GHC.Generics                       (Generic)
 import qualified ListT
 import           Numeric.Natural
@@ -57,7 +57,7 @@ import           UnliftIO                           (Async (asyncThreadId),
                                                      MVar, MonadUnliftIO, async,
                                                      asyncExceptionFromException,
                                                      asyncExceptionToException,
-                                                     cancelWith,
+                                                     atomically, cancelWith,
                                                      newEmptyTMVarIO, poll,
                                                      putTMVar, readTMVar,
                                                      readTVarIO, throwTo,
@@ -292,10 +292,20 @@ data Database = Database {
     dataBaseLogger         :: String -> IO (),
 
     databaseQueue          :: DBQue,
-    -- The action queue and bookkeeping for upsweep scheduling
+    -- The action queue and
     databaseActionQueue    :: ActionQueue,
-    databaseDirtyTargets   :: TVar [Key],
+
+    -- bookkeeping for upsweep scheduling
+    databaseUpsweepQueue   :: TQueue Key,
+    -- Keys that are currently being processed
     databaseRunningDirties :: TVar KeySet,
+    -- Subset of running dirties currently blocked (e.g., waiting on deps)
+    databaseRunningBlocked :: TVar KeySet,
+    -- keys that are ready to run since all their deps are clean
+    databaseRunningReady   :: TQueue Key,
+    -- keys that are pending, with their pending count
+    databaseRunningPending :: SMap.Map Key Int,
+
 
     databaseRules          :: TheRules,
     databaseStep           :: !(TVar Step),

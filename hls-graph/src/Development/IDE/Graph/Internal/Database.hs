@@ -11,45 +11,55 @@
 
 module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..), computeToPreserve, transitiveDirtyListBottomUp, getRunTimeRDeps, spawnAsyncWithDbRegistration, upsweepAction, incDatabase1) where
 
-import           Prelude                              hiding (unzip)
+import           Prelude                                  hiding (unzip)
 
-import           Control.Concurrent.STM.Stats         (STM, atomicallyNamed,
-                                                       modifyTVar', newTVarIO,
-                                                       readTVar, readTVarIO,
-                                                       retry)
+import           Control.Concurrent.STM.Stats             (STM, atomicallyNamed,
+                                                           modifyTVar',
+                                                           newTQueue,
+                                                           newTQueueIO,
+                                                           newTVarIO,
+                                                           readTQueue, readTVar,
+                                                           readTVarIO, retry)
 import           Control.Exception
 import           Control.Monad
-import           Control.Monad.IO.Class               (MonadIO (liftIO))
-import qualified Control.Monad.RWS                    as RWS
-import           Control.Monad.Trans.Class            (lift)
+import           Control.Monad.IO.Class                   (MonadIO (liftIO))
+import qualified Control.Monad.RWS                        as RWS
+import           Control.Monad.Trans.Class                (lift)
 import           Control.Monad.Trans.Reader
-import qualified Control.Monad.Trans.State.Strict     as State
+import qualified Control.Monad.Trans.State.Strict         as State
 import           Data.Dynamic
-import           Data.Foldable                        (for_, traverse_)
+import           Data.Foldable                            (for_, traverse_)
 import           Data.IORef.Extra
 import           Data.Maybe
-import           Data.Traversable                     (for)
+import           Data.Traversable                         (for)
 import           Data.Tuple.Extra
-import           Debug.Trace                          (traceEvent, traceEventIO)
+import           Debug.Trace                              (traceEvent,
+                                                           traceEventIO)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
-import           Development.IDE.WorkerThread         (DeliverStatus (..))
+import           Development.IDE.WorkerThread             (DeliverStatus (..))
 import qualified Focus
 import qualified ListT
-import qualified StmContainers.Map                    as SMap
-import           System.Time.Extra                    (duration)
-import           UnliftIO                             (Async, MVar, TVar,
-                                                       atomically,
-                                                       isAsyncException,
-                                                       newEmptyMVar, putMVar,
-                                                       readMVar, writeTVar)
+import qualified StmContainers.Map                        as SMap
+import           System.Time.Extra                        (duration)
+import           UnliftIO                                 (Async, MVar, TVar,
+                                                           atomically,
+                                                           isAsyncException,
+                                                           newEmptyMVar,
+                                                           putMVar, readMVar,
+                                                           writeTVar)
 
 #if MIN_VERSION_base(4,19,0)
-import           Data.Functor                         (unzip)
+import           Data.Functor                             (unzip)
+import           Development.IDE.Graph.Internal.Scheduler (cleanHook,
+                                                           insertBlockedKey,
+                                                           popOutDirtykeysDB,
+                                                           readReadyQueue,
+                                                           writeUpsweepQueue)
 #else
-import           Data.List.NonEmpty                   (unzip)
+import           Data.List.NonEmpty                       (unzip)
 #endif
 
 
@@ -61,30 +71,37 @@ newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra datab
     databaseValues <- atomically SMap.new
     databaseRuntimeDep <- atomically SMap.new
     databaseRRuntimeDep <- atomically SMap.new
-    databaseDirtyTargets <- newTVarIO []
     databaseRunningDirties <- newTVarIO mempty
-
+    databaseRunningBlocked  <- newTVarIO mempty
+    databaseRunningReady    <- newTQueueIO
+    databaseRunningPending <- atomically SMap.new
+    databaseUpsweepQueue <- newTQueueIO
     pure Database{..}
 
-incDatabase1 :: Database -> Maybe (KeySet, KeySet) -> KeySet -> IO [Key]
-incDatabase1 db (Just (kk, transitiveDirtyKeysNew)) oldDirties = incDatabase db (Just (kk <> oldDirties, transitiveDirtyKeysNew ))
-incDatabase1 db Nothing oldDirties = incDatabase db (Just (oldDirties, mempty))
+incDatabase1 :: Database -> Maybe (KeySet, KeySet) -> IO [Key]
+incDatabase1 db (Just (kk, transitiveDirtyKeysNew)) = incDatabase db (Just (kk, transitiveDirtyKeysNew ))
+incDatabase1 db Nothing = incDatabase db Nothing
 
 -- | Increment the step and mark dirty.
 --   Assumes that the database is not running a build
 -- only some keys are dirty
 incDatabase :: Database -> Maybe (KeySet, KeySet) -> IO [Key]
-incDatabase db (Just (kk, transitiveDirtyKeysNew)) = do
+incDatabase db (Just (kk, _transitiveDirtyKeysNew)) = do
+    oldUpSweepDirties <- atomically $ popOutDirtykeysDB db
     atomicallyNamed "incDatabase" $ modifyTVar'  (databaseStep db) $ \(Step i) -> Step $ i + 1
-    transitiveDirtyKeysOld <- transitiveDirtyListBottomUp db (toListKeySet kk)
-    let transitiveDirtyKeys = toListKeySet transitiveDirtyKeysNew <> transitiveDirtyKeysOld
+    -- transitiveDirtyKeys <- transitiveDirtyListBottomUp db (toListKeySet $ kk <> transitiveDirtyKeysNew <> upSweepDirties)
+    transitiveDirtyKeys <- transitiveDirtyListBottomUpDiff db (toListKeySet kk) (toListKeySet oldUpSweepDirties)
     -- let transitiveDirtyKeys = toListKeySet transitiveDirtyKeysOld
-    traceEvent ("upsweep all dirties " ++ show transitiveDirtyKeys) $ for_ transitiveDirtyKeys $ \k ->
+    results <- traceEvent ("upsweep all dirties " ++ show transitiveDirtyKeys) $ for transitiveDirtyKeys $ \k ->
         -- Updating all the keys atomically is not necessary
         -- since we assume that no build is mutating the db.
         -- Therefore run one transaction per key to minimise contention.
-        atomicallyNamed "incDatabase" $ SMap.focus updateDirty k (databaseValues db)
-    return transitiveDirtyKeys
+        case k of
+            Left oldKey -> return oldKey
+            Right newKey -> atomicallyNamed "incDatabase" $ SMap.focus updateDirty newKey (databaseValues db) >> return newKey
+    atomically $ writeUpsweepQueue results db
+    return $ results
+
 -- all keys are dirty
 incDatabase db Nothing = do
     atomically $ modifyTVar'  (databaseStep db) $ \(Step i) -> Step $ i + 1
@@ -94,19 +111,17 @@ incDatabase db Nothing = do
         SMap.focus updateDirty k (databaseValues db)
     return []
 
--- todo
--- compute to preserve asyncs
--- only the running stage 2 keys are actually running
--- so we only need to preserve them if they are not affected by the dirty set
-
 computeToPreserve :: Database -> KeySet -> STM ([(Key, Async ())], KeySet)
 computeToPreserve db dirtySet = do
   -- All keys that depend (directly or transitively) on any dirty key
   affected <- computeTransitiveReverseDeps db dirtySet
+--   upSweepDirties <- popOutDirtykeysDB db
+--   let allAffected = upSweepDirties `unionKeySet` affected
+  let allAffected = affected
   threads <- readTVar $ databaseThreads db
-  let isNonAffected (k, _async) = k /= newKey "root" && k `notMemberKeySet` affected
+  let isNonAffected (k, _async) = k /= newKey "root" && k `notMemberKeySet` allAffected
   let unaffected = filter isNonAffected $ first deliverKey <$> threads
-  pure (unaffected, affected)
+  pure (unaffected, allAffected)
 
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
@@ -178,23 +193,29 @@ builderOne' firstTime parentKey db@Database {..} stack kid = do
         NotFirstTime -> return ()
     status <- SMap.lookup kid databaseValues
     current <- readTVar databaseStep
+
     case (viewToRun current . keyStatus) =<< status of
       Nothing -> do
+        insertBlockedKey parentKey db
         SMap.focus (updateStatus $ Running current Nothing barrier) kid databaseValues
         let register = spawnRefresh db stack kid barrier Nothing refresh
                         $ atomicallyNamed "builderOne rollback" $ SMap.delete kid databaseValues
         return $ register >> return (BCContinue $ readMVar barrier)
-      Just (Dirty _) -> case firstTime of
-        FirstTime -> pure . pure $ BCContinue $ do
-                br <- builderOne' NotFirstTime parentKey db stack kid
-                case br of
-                    BCContinue ioR -> ioR
-                    BCStop k r     -> pure $ Right (k, r)
-        NotFirstTime -> retry
+      Just (Dirty _) -> do
+        insertBlockedKey parentKey db
+        case firstTime of
+            FirstTime -> pure . pure $ BCContinue $ do
+                    br <- builderOne' NotFirstTime parentKey db stack kid
+                    case br of
+                        BCContinue ioR -> ioR
+                        BCStop k r     -> pure $ Right (k, r)
+            NotFirstTime -> retry
       Just (Clean r) -> pure . pure $ BCStop kid r
       Just (Running _step _s wait)
         | memberStack kid stack -> throw $ StackException stack
-        | otherwise -> pure . pure $ BCContinue $ readMVar wait
+        | otherwise -> do
+            insertBlockedKey parentKey db
+            pure . pure $ BCContinue $ readMVar wait
 
 -- Original spawnRefresh implementation moved below to use the abstraction
 
@@ -248,42 +269,40 @@ refreshDeps visited db stack key result = \case
 
 -- a version of upsweep that only freshes the key in order and use semophore to limit the concurrency
 -- it is simpler and should be more efficient in the case of many keys to upsweep
-upsweep1 :: Database -> Stack -> TVar [Key] -> TVar KeySet -> IO ()
-upsweep1 db stack keys runnings = go
+upsweep1 :: Database -> Stack -> IO ()
+upsweep1 db stack = go
     where
         go = do
-            mkey <- atomically $ do
-                ks <- readTVar keys
-                case ks of
-                    [] -> return Nothing
-                    (k:ks) -> do
-                        writeTVar keys ks
-                        modifyTVar' runnings (insertKeySet k)
-                        return (Just k)
-            case mkey of
-                Nothing -> return ()
-                Just k -> do
-                    upsweep db stack (const $ do
-                        traceEventIO ("upsweep1 key done" ++ show k)
-                        atomically (modifyTVar' runnings (deleteKeySet k))) k
-                    -- trace event
-                    runningCount <- lengthKeySet <$> readTVarIO runnings
-                    traceEventIO ("upsweep running key" ++ show k ++ " running keys count: " ++ show runningCount)
-                    -- waitUntilRunningNoMorethan 16
-                    go
+            k <- atomically $ readReadyQueue db
+            upsweep db stack (do
+                traceEventIO ("upsweep1 key done" ++ show k)
+                -- atomically (modifyTVar' runnings (deleteKeySet k))) k
+                atomically $ cleanHook k db
+                ) k
+            -- -- trace event
+            -- runningCount <- lengthKeySet <$> readTVarIO runnings
+            -- traceEventIO ("upsweep running key" ++ show k ++ " running keys count: " ++ show runningCount)
+            -- waitUntilRunningNoMorethan 16
+            go
         -- waitUntilRunningNoMorethan n = do
         --     atomically $ do
         --         rs <- readTVar runnings
         --         when (lengthKeySet rs > n) retry
 
-upsweepAction :: TVar [Key] -> TVar KeySet -> Action ()
-upsweepAction targets runnings = Action $ do
+upsweepAction :: Action ()
+upsweepAction = Action $ do
     SAction{..} <- RWS.ask
-    liftIO $ upsweep1 actionDatabase actionStack targets runnings
+    let db@Database{..} = actionDatabase
+    liftIO $ upsweep1 db actionStack
+        -- we can to upsweep these keys in order one by one,
+    -- let go = do
+    --         ready <- atomically $ readReadyQueue db
+    --         upsweep db actionStack (const $ atomically $ cleanHook ready db) ready
+    -- liftIO $ go
 
--- we need to enqueue it on restart.
-upsweep :: Database -> Stack -> (Key -> IO ()) -> Key -> IO ()
-upsweep db@Database {..} stack sweepParent key = mask $ \restore -> do
+-- do
+upsweep :: Database -> Stack -> IO () -> Key -> IO ()
+upsweep db@Database {..} stack cleanup key = mask $ \restore -> do
   barrier <- newEmptyMVar
   join $ atomicallyNamed "upsweep" $ do
     dbNotLocked db
@@ -298,9 +317,9 @@ upsweep db@Database {..} stack sweepParent key = mask $ \restore -> do
         return $ do
             spawnRefresh db stack key barrier s (\db stack key s -> restore $ do
                 result <- refresh db stack key s
-                sweepParent key
+                cleanup
                 return result) $ atomicallyNamed "upsweep rollback" $ SMap.focus updateDirty key databaseValues
-      _ -> pure $ pure ()
+      _ -> return cleanup
 
 -- refresh :: Database -> Stack -> Key -> Maybe Result -> IO Result
 -- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
@@ -451,6 +470,33 @@ transitiveDirtyListBottomUp database seeds = do
             lift $ modifyIORef' acc (x :)
   -- traverse all seeds
   void $ State.runStateT (traverse_ go seeds) mempty
+  readIORef acc
+
+-- the lefts are keys that are no longer affected, we can try to mark them clean
+-- the rights are new affected keys, we need to mark them dirty
+transitiveDirtyListBottomUpDiff :: Database -> [Key] -> [Key] -> IO [Either Key Key]
+transitiveDirtyListBottomUpDiff database seeds lastSeeds = do
+  acc <- newIORef []
+  let go1 x = do
+        seen <- State.get
+        if x `memberKeySet` seen
+          then pure ()
+          else do
+            State.put (insertKeySet x seen)
+            mnext <- lift $ atomically $ getRunTimeRDeps database x
+            traverse_ go1 (maybe mempty toListKeySet mnext)
+            lift $ modifyIORef' acc (Right x :)
+  let go2 x = do
+        seen <- State.get
+        if x `memberKeySet` seen
+          then pure ()
+          else do
+            State.put (insertKeySet x seen)
+            mnext <- lift $ atomically $ getRunTimeRDeps database x
+            traverse_ go2 (maybe mempty toListKeySet mnext)
+            lift $ modifyIORef' acc (Left x :)
+  -- traverse all seeds
+  void $ State.runStateT (do traverse_ go1 seeds; traverse_ go2 lastSeeds) mempty
   readIORef acc
 
 
