@@ -15,10 +15,8 @@ import           Prelude                                  hiding (unzip)
 
 import           Control.Concurrent.STM.Stats             (STM, atomicallyNamed,
                                                            modifyTVar',
-                                                           newTQueue,
                                                            newTQueueIO,
-                                                           newTVarIO,
-                                                           readTQueue, readTVar,
+                                                           newTVarIO, readTVar,
                                                            readTVarIO, retry)
 import           Control.Exception
 import           Control.Monad
@@ -28,7 +26,7 @@ import           Control.Monad.Trans.Class                (lift)
 import           Control.Monad.Trans.Reader
 import qualified Control.Monad.Trans.State.Strict         as State
 import           Data.Dynamic
-import           Data.Foldable                            (for_, traverse_)
+import           Data.Foldable                            (traverse_)
 import           Data.IORef.Extra
 import           Data.Maybe
 import           Data.Traversable                         (for)
@@ -39,21 +37,22 @@ import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
+import           Development.IDE.Graph.Internal.Types     ()
 import           Development.IDE.WorkerThread             (DeliverStatus (..))
 import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                        as SMap
 import           System.Time.Extra                        (duration)
-import           UnliftIO                                 (Async, MVar, TVar,
+import           UnliftIO                                 (Async, MVar,
                                                            atomically,
                                                            isAsyncException,
                                                            newEmptyMVar,
-                                                           putMVar, readMVar,
-                                                           writeTVar)
+                                                           putMVar, readMVar)
 
 #if MIN_VERSION_base(4,19,0)
 import           Data.Functor                             (unzip)
 import           Development.IDE.Graph.Internal.Scheduler (cleanHook,
+                                                           decreaseMyReverseDepsPendingCount,
                                                            insertBlockedKey,
                                                            popOutDirtykeysDB,
                                                            readReadyQueue,
@@ -71,11 +70,13 @@ newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra datab
     databaseValues <- atomically SMap.new
     databaseRuntimeDep <- atomically SMap.new
     databaseRRuntimeDep <- atomically SMap.new
-    databaseRunningDirties <- newTVarIO mempty
-    databaseRunningBlocked  <- newTVarIO mempty
-    databaseRunningReady    <- newTQueueIO
-    databaseRunningPending <- atomically SMap.new
-    databaseUpsweepQueue <- newTQueueIO
+    -- Initialize scheduler state
+    schedulerRunningDirties <- newTVarIO mempty
+    schedulerRunningBlocked  <- newTVarIO mempty
+    schedulerRunningReady    <- newTQueueIO
+    schedulerRunningPending <- atomically SMap.new
+    schedulerUpsweepQueue <- newTQueueIO
+    let databaseScheduler = SchedulerState{..}
     pure Database{..}
 
 incDatabase1 :: Database -> Maybe (KeySet, KeySet) -> IO [Key]
@@ -292,7 +293,7 @@ upsweep1 db stack = go
 upsweepAction :: Action ()
 upsweepAction = Action $ do
     SAction{..} <- RWS.ask
-    let db@Database{..} = actionDatabase
+    let db = actionDatabase
     liftIO $ upsweep1 db actionStack
         -- we can to upsweep these keys in order one by one,
     -- let go = do
@@ -369,6 +370,7 @@ compute db@Database{..} stack key mode result = do
                     deps
             _ -> pure ()
         runHook
+        decreaseMyReverseDepsPendingCount key db
         -- todo
         -- it might be overridden by error if another kills this thread
         SMap.focus (updateStatus $ Clean res) key databaseValues

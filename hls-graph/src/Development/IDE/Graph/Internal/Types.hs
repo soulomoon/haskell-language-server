@@ -11,7 +11,7 @@ import           Control.Concurrent.STM             (STM, TQueue, TVar, check,
                                                      modifyTVar', newTQueue,
                                                      newTVar, readTQueue,
                                                      readTVar, unGetTQueue,
-                                                     writeTQueue, writeTVar)
+                                                     writeTQueue)
 import           Control.Exception                  (throw)
 import           Control.Monad                      (forM, forM_, forever,
                                                      unless, when)
@@ -278,42 +278,47 @@ raedAllLeftsDBQue q = do
 
 
 
+-- Encapsulated scheduler state, previously scattered on Database
+data SchedulerState = SchedulerState
+    { schedulerUpsweepQueue   :: TQueue Key
+    , schedulerRunningDirties :: TVar KeySet
+    , schedulerRunningBlocked :: TVar KeySet
+    , schedulerRunningReady   :: TQueue Key
+    , schedulerRunningPending :: SMap.Map Key Int
+    }
+
+
+
 data Database = Database {
-    databaseExtra          :: Dynamic,
+    databaseExtra       :: Dynamic,
 
-    databaseThreads        :: TVar [(DeliverStatus, Async ())],
+    databaseThreads     :: TVar [(DeliverStatus, Async ())],
 
-    databaseRuntimeDep     :: SMap.Map Key KeySet,
-    databaseRRuntimeDep    :: SMap.Map Key KeySet,
+    databaseRuntimeDep  :: SMap.Map Key KeySet,
+    databaseRRuntimeDep :: SMap.Map Key KeySet,
     -- it is used to compute the transitive reverse deps, so
     -- if not in any of the transitive reverse deps of a dirty node, it is clean
     -- we can skip clean the threads.
     -- this is update right before we query the database for the key result.
-    dataBaseLogger         :: String -> IO (),
+    dataBaseLogger      :: String -> IO (),
 
-    databaseQueue          :: DBQue,
+    databaseQueue       :: DBQue,
     -- The action queue and
-    databaseActionQueue    :: ActionQueue,
+    databaseActionQueue :: ActionQueue,
 
-    -- bookkeeping for upsweep scheduling
-    databaseUpsweepQueue   :: TQueue Key,
-    -- Keys that are currently being processed
-    databaseRunningDirties :: TVar KeySet,
-    -- Subset of running dirties currently blocked (e.g., waiting on deps)
-    databaseRunningBlocked :: TVar KeySet,
-    -- keys that are ready to run since all their deps are clean
-    databaseRunningReady   :: TQueue Key,
-    -- keys that are pending, with their pending count
-    databaseRunningPending :: SMap.Map Key Int,
+    -- All scheduling-related state is grouped under a standalone scheduler
+    -- to improve encapsulation and make refactors simpler.
+    -- unpack this field
+    databaseScheduler   :: {-# UNPACK #-} !SchedulerState,
 
 
-    databaseRules          :: TheRules,
-    databaseStep           :: !(TVar Step),
+    databaseRules       :: TheRules,
+    databaseStep        :: !(TVar Step),
 
-    databaseValuesLock     :: !(TVar Bool),
+    databaseValuesLock  :: !(TVar Bool),
     -- when we restart a build, we set this to False to block any other
     -- threads from reading databaseValues
-    databaseValues         :: !(Map Key KeyDetails)
+    databaseValues      :: !(Map Key KeyDetails)
 
     }
 
