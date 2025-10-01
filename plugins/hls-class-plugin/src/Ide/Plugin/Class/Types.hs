@@ -226,9 +226,8 @@ getInstanceBindTypeSigsRule recorder = do
             whenMaybe (isBindingName name) $ do
                 env <- tcInitTidyEnv
 #if MIN_VERSION_ghc(9,11,0)
-                let ty =
+                let ty = tidyOpenType env (idType id)
 #else
-                let (_, ty) =
+                let (_, ty) = tidyOpenType env (idType id)
 #endif
-                              tidyOpenType env (idType id)
                 pure $ InstanceBindTypeSig name ty
