@@ -28,6 +28,8 @@ import           Control.Monad.Trans.Class
 import           Data.Foldable                           (toList)
 import           Data.Functor.Identity
 import           Data.IORef
+import           Data.Maybe                              (fromJust)
+import           Data.Unique                             (hashUnique)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Database
 import           Development.IDE.Graph.Internal.Key
@@ -82,7 +84,8 @@ pumpActionThread sdb@(ShakeDatabase _ _ db) logMsg = do
         d <- liftIO $ atomicallyNamed "action queue - pop" $ popQueue (databaseActionQueue db)
         s <- atomically $ getDataBaseStepInt db
         liftIO $ runInThreadStmInNewThreads db
-            (return $ DeliverStatus s (actionName d) (newKey "root"))
+            -- (return $ DeliverStatus s (actionName d) (newKey "root"))
+            (return $ DeliverStatus s (actionName d) (newDirectKey $ fromJust $ hashUnique <$> uniqueID d))
             (ignoreState a $ runOne d) (const $ return ())
         liftIO $ logMsg ("pump executed: " ++ actionName d)
         pumpActionThread sdb logMsg

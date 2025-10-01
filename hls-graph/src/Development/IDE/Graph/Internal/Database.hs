@@ -68,8 +68,8 @@ newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra datab
     databaseThreads <- newTVarIO []
     databaseValuesLock <- newTVarIO True
     databaseValues <- atomically SMap.new
-    databaseRuntimeDep <- atomically SMap.new
     databaseRRuntimeDep <- atomically SMap.new
+    databaseRuntimeDepRoot <- atomically SMap.new
     -- Initialize scheduler state
     schedulerRunningDirties <- newTVarIO mempty
     schedulerRunningBlocked  <- newTVarIO mempty
@@ -79,15 +79,16 @@ newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra datab
     let databaseScheduler = SchedulerState{..}
     pure Database{..}
 
-incDatabase1 :: Database -> Maybe (KeySet, KeySet) -> IO [Key]
-incDatabase1 db (Just (kk, transitiveDirtyKeysNew)) = incDatabase db (Just (kk, transitiveDirtyKeysNew ))
-incDatabase1 db Nothing = incDatabase db Nothing
+-- incDatabase1 :: Database -> Maybe (KeySet, KeySet) -> IO [Key]
+incDatabase1 :: Database -> Maybe (KeySet, KeySet) -> IO KeySet
+incDatabase1 db (Just (kk, preserves)) = incDatabase db (Just (kk, preserves ))
+incDatabase1 db Nothing                = incDatabase db Nothing
 
 -- | Increment the step and mark dirty.
 --   Assumes that the database is not running a build
 -- only some keys are dirty
-incDatabase :: Database -> Maybe (KeySet, KeySet) -> IO [Key]
-incDatabase db (Just (kk, _transitiveDirtyKeysNew)) = do
+incDatabase :: Database -> Maybe (KeySet, KeySet) -> IO KeySet
+incDatabase db (Just (kk, preserves)) = do
     oldUpSweepDirties <- atomically $ popOutDirtykeysDB db
     atomicallyNamed "incDatabase" $ modifyTVar'  (databaseStep db) $ \(Step i) -> Step $ i + 1
     -- transitiveDirtyKeys <- transitiveDirtyListBottomUp db (toListKeySet $ kk <> transitiveDirtyKeysNew <> upSweepDirties)
@@ -100,8 +101,8 @@ incDatabase db (Just (kk, _transitiveDirtyKeysNew)) = do
         case k of
             Left oldKey -> return oldKey
             Right newKey -> atomicallyNamed "incDatabase" $ SMap.focus updateDirty newKey (databaseValues db) >> return newKey
-    atomically $ writeUpsweepQueue results db
-    return $ results
+    atomically $ writeUpsweepQueue (filter (not . isRootKey) results) db
+    return $ preserves
 
 -- all keys are dirty
 incDatabase db Nothing = do
@@ -110,7 +111,7 @@ incDatabase db Nothing = do
     -- all running keys are also dirty
     atomicallyNamed "incDatabase - all " $ flip ListT.traverse_ list $ \(k,_) ->
         SMap.focus updateDirty k (databaseValues db)
-    return []
+    return $ mempty
 
 computeToPreserve :: Database -> KeySet -> STM ([(Key, Async ())], KeySet)
 computeToPreserve db dirtySet = do
@@ -122,7 +123,7 @@ computeToPreserve db dirtySet = do
   threads <- readTVar $ databaseThreads db
   let isNonAffected (k, _async) = k /= newKey "root" && k `notMemberKeySet` allAffected
   let unaffected = filter isNonAffected $ first deliverKey <$> threads
-  pure (unaffected, allAffected)
+  pure (unaffected, fromListKeySet $ fst <$> unaffected)
 
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->

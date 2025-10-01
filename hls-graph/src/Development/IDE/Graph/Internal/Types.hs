@@ -290,35 +290,35 @@ data SchedulerState = SchedulerState
 
 
 data Database = Database {
-    databaseExtra       :: Dynamic,
+    databaseExtra          :: Dynamic,
 
-    databaseThreads     :: TVar [(DeliverStatus, Async ())],
+    databaseThreads        :: TVar [(DeliverStatus, Async ())],
 
-    databaseRuntimeDep  :: SMap.Map Key KeySet,
-    databaseRRuntimeDep :: SMap.Map Key KeySet,
+    databaseRuntimeDepRoot :: SMap.Map Key KeySet,
+    databaseRRuntimeDep    :: SMap.Map Key KeySet,
     -- it is used to compute the transitive reverse deps, so
     -- if not in any of the transitive reverse deps of a dirty node, it is clean
     -- we can skip clean the threads.
     -- this is update right before we query the database for the key result.
-    dataBaseLogger      :: String -> IO (),
+    dataBaseLogger         :: String -> IO (),
 
-    databaseQueue       :: DBQue,
+    databaseQueue          :: DBQue,
     -- The action queue and
-    databaseActionQueue :: ActionQueue,
+    databaseActionQueue    :: ActionQueue,
 
     -- All scheduling-related state is grouped under a standalone scheduler
     -- to improve encapsulation and make refactors simpler.
     -- unpack this field
-    databaseScheduler   :: {-# UNPACK #-} !SchedulerState,
+    databaseScheduler      :: {-# UNPACK #-} !SchedulerState,
 
 
-    databaseRules       :: TheRules,
-    databaseStep        :: !(TVar Step),
+    databaseRules          :: TheRules,
+    databaseStep           :: !(TVar Step),
 
-    databaseValuesLock  :: !(TVar Bool),
+    databaseValuesLock     :: !(TVar Bool),
     -- when we restart a build, we set this to False to block any other
     -- threads from reading databaseValues
-    databaseValues      :: !(Map Key KeyDetails)
+    databaseValues         :: !(Map Key KeyDetails)
 
     }
 
@@ -341,7 +341,15 @@ pruneFinished db@Database{..} = do
 
 deleteDatabaseRuntimeDep :: Key -> Database -> STM ()
 deleteDatabaseRuntimeDep k db = do
-    SMap.delete k (databaseRuntimeDep db)
+    result <- SMap.lookup k (databaseRuntimeDepRoot db)
+    case result of
+        Nothing -> return ()
+        Just deps -> do
+            -- also remove from reverse map
+            SMap.delete k (databaseRuntimeDepRoot db)
+            -- also remove k from all its reverse deps
+            forM_ (toListKeySet deps) $ \d -> do
+                SMap.focus (Focus.alter (fmap (deleteKeySet k))) d (databaseRRuntimeDep db)
 
 
 -- compute the transitive reverse dependencies of a set of keys
@@ -372,11 +380,12 @@ computeTransitiveReverseDeps db seeds = do
 insertdatabaseRuntimeDep :: Key -> Key -> Database -> STM ()
 insertdatabaseRuntimeDep k pk db = do
     SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k (databaseRRuntimeDep db)
+    when (isRootKey pk) $ SMap.focus (Focus.alter (Just . maybe (singletonKeySet k) (insertKeySet k))) pk (databaseRuntimeDepRoot db)
 
-getDatabaseRuntimeDep :: Database -> Key -> STM KeySet
-getDatabaseRuntimeDep db k = do
-    mDeps <- SMap.lookup k (databaseRuntimeDep db)
-    return $ fromMaybe mempty mDeps
+isRootKey :: Key -> Bool
+isRootKey (DirectKey _a) = True
+isRootKey _              = False
+
 ---------------------------------------------------------------------
 
 shakeDataBaseQueue :: ShakeDatabase -> DBQue

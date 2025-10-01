@@ -11,8 +11,10 @@ module Development.IDE.Types.Action ( Action
                                                        , abortQueue
                                                        , countQueue
                                                        , isActionQueueEmpty
-                                                       , unGetQueue) where
+                                                       , unGetQueue
+                                                       , countInProgress) where
 
+import           Control.Concurrent.STM
 import           Development.IDE.Graph.Internal.Types (Action, ActionQueue,
                                                        DelayedAction (..),
                                                        Priority (..),
@@ -25,3 +27,5 @@ import           Development.IDE.Graph.Internal.Types (Action, ActionQueue,
 
 -- | Alias specialized to the graph Action monad
 type DelayedActionInternal = DelayedAction ()
+countInProgress :: ActionQueue -> STM Int
+countInProgress queue = fmap length $ peekInProgress queue

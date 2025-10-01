@@ -4,6 +4,7 @@ module Development.IDE.Graph(
     Rules,
     Action, action,
     pattern Key,
+    pattern DirectKey,
     newKey, renderKey,
     actionFinally, actionBracket, actionCatch,
     -- * Configuration

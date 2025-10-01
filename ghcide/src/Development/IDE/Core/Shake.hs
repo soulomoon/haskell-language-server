@@ -1020,7 +1020,8 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
     -- Wrap delayed actions (both reenqueued and new) to preserve LogDelayedAction timing instrumentation
     let pumpLogger msg = logWith recorder Debug $ LogShakeText (T.pack msg)
     -- Use graph-level helper that runs the pump thread and enqueues upsweep actions
-    (seconds, startDatabase) <- duration $ shakeRunDatabaseForKeysSep (Just newDirtyKeys) shakeDb (pumpActionThread shakeDb pumpLogger: map getAction acts)
+    let IdeTesting isTesting = ideTesting
+    (seconds, startDatabase) <- duration $ shakeRunDatabaseForKeysSep (Just newDirtyKeys) shakeDb (pumpActionThread shakeDb pumpLogger: map getAction acts) isTesting
     logrestart seconds
     -- Capture step AFTER scheduling so logging reflects new build number inside workRun
     step <- getShakeStep shakeDb

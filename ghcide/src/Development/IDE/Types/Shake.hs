@@ -25,6 +25,7 @@ import           Data.Vector                          (Vector)
 import           Development.IDE.Core.PositionMapping
 import           Development.IDE.Core.RuleTypes       (FileVersion)
 import           Development.IDE.Graph                (Key, RuleResult, newKey,
+                                                       pattern DirectKey,
                                                        pattern Key)
 import qualified Development.IDE.Graph                as Shake
 import           Development.IDE.Types.Diagnostics
@@ -82,6 +83,7 @@ fromKey :: Typeable k => Key -> Maybe (k, NormalizedFilePath)
 fromKey (Key k)
   | Just (Q (k', f)) <- cast k = Just (k', f)
   | otherwise = Nothing
+fromKey (DirectKey _k) = Nothing
 
 -- | fromKeyType (Q (k,f)) = (typeOf k, f)
 fromKeyType :: Key -> Maybe (SomeTypeRep, NormalizedFilePath)
@@ -91,6 +93,7 @@ fromKeyType (Key k)
   , Q (_, f) <- k
   = Just (SomeTypeRep a, f)
   | otherwise = Nothing
+fromKeyType (DirectKey _k) = Nothing
 
 toNoFileKey :: (Show k, Typeable k, Eq k, Hashable k) => k -> Key
 toNoFileKey k = newKey $ Q (k, emptyFilePath)
