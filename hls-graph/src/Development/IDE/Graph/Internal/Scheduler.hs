@@ -14,17 +14,19 @@ module Development.IDE.Graph.Internal.Scheduler
   , insertBlockedKey
   , prepareToRunKeysRealTime
   , writeUpsweepQueue
+  , dumpSchedulerState
   ) where
 
 import           Control.Concurrent.STM               (STM, atomically, check,
                                                        flushTQueue, modifyTVar,
                                                        readTQueue, readTVar,
                                                        writeTQueue, writeTVar)
-import           Control.Monad                        (forM, forM_)
+import           Control.Monad                        (forM_)
 import           Data.Maybe                           (fromMaybe)
 import qualified ListT
 import qualified StmContainers.Map                    as SMap
 
+import           Debug.Trace                          (traceEvent)
 import           Development.IDE.Graph.Internal.Key   (Key, KeySet,
                                                        deleteKeySet,
                                                        fromListKeySet,
@@ -36,10 +38,9 @@ import           Development.IDE.Graph.Internal.Key   (Key, KeySet,
                                                        unionKeySet)
 import           Development.IDE.Graph.Internal.Types (Database (..),
                                                        KeyDetails (..),
-                                                       Result (..),
                                                        SchedulerState (..),
-                                                       Status (..), getResult,
-                                                       getResultDepsDefault)
+                                                       dumpSchedulerState,
+                                                       getBlockedBy)
 
 -- prepare to run a key in databaseDirtyTargets
 -- we first peek if all the deps are clean
@@ -47,27 +48,13 @@ import           Development.IDE.Graph.Internal.Types (Database (..),
 -- otherwise, we insert it into databaseRunningPending with the pending count(the number of deps not clean)
 -- so when a dep is cleaned, we can decrement the pending count, and when it reaches zero, we can move it to databaseRunningReady
 prepareToRunKey :: Key -> Database -> STM ()
-prepareToRunKey k Database {..} = do
-  -- Determine the last known direct dependencies of k from its stored Result
-  mKd <- SMap.lookup k databaseValues
-  let deps = case mKd of
-        Nothing -> mempty
-        Just KeyDetails {keyStatus = st} ->
-          let mRes = getResult st
-           in maybe mempty (getResultDepsDefault mempty . resultDeps) mRes
-      depList = filter (/= k) (toListKeySet deps)
-
-  -- Peek dependency statuses to see how many are not yet clean
-  depStatuses <- forM depList $ \d -> SMap.lookup d databaseValues
-  let isCleanDep = \case
-        Just KeyDetails {keyStatus = Clean _} -> True
-        _ -> False
-      pendingCount = length (filter (not . isCleanDep) depStatuses)
-
+prepareToRunKey k db@Database {..} = do
+  pendingCount <- length <$> getBlockedBy k db
   let SchedulerState {..} = databaseScheduler
   if pendingCount == 0
     then do
-      writeTQueue schedulerRunningReady k
+      traceEvent ("prepareToRunKey ready: " ++ show k) $
+        writeTQueue schedulerRunningReady k
       SMap.delete k schedulerRunningPending
     else do
       SMap.insert pendingCount k schedulerRunningPending
@@ -84,8 +71,12 @@ insertBlockedKey pk k Database {..} = do
     then do
       blockedSet <- readTVar schedulerRunningBlocked
       writeTVar schedulerRunningBlocked $ insertKeySet pk blockedSet
+      writeTVar schedulerRunningDirties $ deleteKeySet pk runnings
     else
-      return ()
+    --   if pk `memberKeySet` runnings
+    --     then traceEvent ("insertBlockedKey: " ++show pk ++ " blocked by already running: " ++ show k) $ return ()
+    --     else
+            return ()
 
 -- take out all databaseDirtyTargets and prepare them to run
 prepareToRunKeys :: Foldable t => Database -> t Key -> IO ()
@@ -148,6 +139,8 @@ writeUpsweepQueue :: [Key] -> Database -> STM ()
 writeUpsweepQueue ks Database{..} = do
     let SchedulerState{..} = databaseScheduler
     forM_ ks $ \k -> writeTQueue schedulerUpsweepQueue k
+    writeTVar schedulerRunningOrigins ks
+
 
 -- gather all dirty keys that is not finished, to reschedule after restart
 -- includes keys in databaseDirtyTargets, databaseRunningReady, databaseRunningPending, databaseRunningDirties
@@ -185,7 +178,8 @@ readReadyQueue db@Database{..} = do
     blockedOnThreadLimit db 16
     let SchedulerState{..} = databaseScheduler
     r <- readTQueue schedulerRunningReady
-    modifyTVar schedulerRunningDirties $ insertKeySet r
+    traceEvent ("readReadyQueue: " ++ show r) $
+        modifyTVar schedulerRunningDirties $ insertKeySet r
     return r
 
 

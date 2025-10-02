@@ -131,6 +131,7 @@ import           Data.Either                             (isRight, lefts)
 import           Data.Int                                (Int64)
 import           Data.Set                                (Set)
 import qualified Data.Set                                as S
+import           Debug.Trace                             (traceEventIO)
 import           Development.IDE.Core.Tracing
 import           Development.IDE.GHC.Compat              (NameCache,
                                                           NameCacheUpdater,
@@ -831,6 +832,9 @@ shakeSessionInit recorder IdeState{..} = do
 
 shakeShut :: IdeState -> IO ()
 shakeShut IdeState{..} = do
+    -- let dumpPath = "scheduler.dump"
+    -- dump <- dumpSchedulerState (shakeGetDatabase shakeDb)
+    -- writeFile dumpPath dump
     runner <- tryReadMVar shakeSession
     -- Shake gets unhappy if you try to close when there is a running
     -- request so we first abort that.
@@ -933,6 +937,7 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
   withMVar'
     shakeSession
     ( \runner -> do
+        traceEventIO ("runRestartTask")
         newDirtyKeys <- sraBetweenSessions shakeRestartArgs
         -- reverseMap <- shakedatabaseRuntimeDep shakeDb
         -- logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys [] reverseMap

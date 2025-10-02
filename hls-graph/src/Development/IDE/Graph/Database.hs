@@ -94,7 +94,7 @@ shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase _ as1 db) acts isTesting =
             liftIO $ atomically $ doneQueue d (databaseActionQueue db)
 
     -- we can to upsweep these keys in order one by one,
-    preserves <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase1 db keysChanged
+    preserves <- incDatabase1 db keysChanged
     (_, act) <- instantiateDelayedAction (mkDelayedAction "upsweep" Debug $ upsweepAction)
     reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress (databaseActionQueue db)
     reenqueuedExceptPreserves <-

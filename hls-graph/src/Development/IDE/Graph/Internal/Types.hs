@@ -252,6 +252,11 @@ dbNotLocked db = do
  check =<< readTVar (databaseValuesLock db)
 
 
+shakeGetDatabase :: ShakeDatabase -> Database
+shakeGetDatabase (ShakeDatabase _ _ db) = db
+
+shakeGetScheduler :: ShakeDatabase -> SchedulerState
+shakeGetScheduler (ShakeDatabase _ _ db) = databaseScheduler db
 
 getShakeQueue :: ShakeDatabase -> DBQue
 getShakeQueue (ShakeDatabase _ _ db) = databaseQueue db
@@ -292,43 +297,9 @@ data SchedulerState = SchedulerState
     -- ^ Keys that are ready to run
     , schedulerRunningPending :: SMap.Map Key Int
     -- ^ Keys that are pending because they are waiting for dependencies to complete
+    , schedulerRunningOrigins :: TVar [Key]
     }
 
--- dump scheduler state
-dumpSchedulerState :: SchedulerState -> IO String
-dumpSchedulerState SchedulerState{..} = atomically $ do
-    -- Snapshot queues (drain then restore) to avoid side effects
-    ups <- flushTQueue schedulerUpsweepQueue
-    mapM_ (writeTQueue schedulerUpsweepQueue) ups
-
-    ready <- flushTQueue schedulerRunningReady
-    mapM_ (writeTQueue schedulerRunningReady) ready
-
-    -- Snapshot sets and pending map
-    dirties <- readTVar schedulerRunningDirties
-    blocked <- readTVar schedulerRunningBlocked
-    pendingPairs <- ListT.toList (SMap.listT schedulerRunningPending)
-
-    let ppKey k    = PP.pretty k
-        ppKeys ks  = if null ks then PP.brackets mempty else PP.vsep (map (\k -> PP.hsep [PP.pretty ("-" :: String), ppKey k]) ks)
-        ppPairs xs = if null xs then PP.brackets mempty else PP.vsep (map (\(k,c) -> PP.hsep [PP.pretty ("-" :: String), ppKey k, PP.pretty (":" :: String), PP.pretty c]) xs)
-
-        doc = PP.vsep
-          [ PP.pretty ("SchedulerState" :: String)
-          , PP.indent 2 $ PP.vsep
-              [ PP.pretty ("upsweep:" :: String) <> PP.pretty (length ups)
-              , PP.indent 2 (ppKeys ups)
-              , PP.pretty ("ready:" :: String) <> PP.pretty (length ready)
-              , PP.indent 2 (ppKeys ready)
-              , PP.pretty ("pending:" :: String) <> PP.pretty (length pendingPairs)
-              , PP.indent 2 (ppPairs pendingPairs)
-              , PP.pretty ("running:" :: String) <> PP.pretty (length (toListKeySet dirties))
-              , PP.indent 2 (ppKeys (toListKeySet dirties))
-              , PP.pretty ("blocked:" :: String) <> PP.pretty (length (toListKeySet blocked))
-              , PP.indent 2 (ppKeys (toListKeySet blocked))
-              ]
-          ]
-    pure $ renderString (PP.layoutPretty PP.defaultLayoutOptions doc)
 
 
 
@@ -487,12 +458,68 @@ instance Exception AsyncParentKill where
   toException = asyncExceptionToException
   fromException = asyncExceptionFromException
 
+
+getBlockedBy :: Key -> Database -> STM [Key]
+getBlockedBy k Database{..} = do
+  -- Determine the last known direct dependencies of k from its stored Result
+  mKd <- SMap.lookup k databaseValues
+  let deps = case mKd of
+        Nothing -> mempty
+        Just KeyDetails {keyStatus = st} ->
+          let mRes = getResult st
+           in maybe mempty (getResultDepsDefault mempty . resultDeps) mRes
+      depList = filter (/= k) (toListKeySet deps)
+  depStatuses <- forM depList $ \d -> SMap.lookup d databaseValues
+  let isCleanDep = \case
+        Just KeyDetails {keyStatus = Clean _} -> True
+        _ -> False
+      blocked = (filter (not . isCleanDep . snd) $ zip depList depStatuses)
+  return $ fst <$> blocked
+
+-- dump scheduler state
+dumpSchedulerState :: Database -> IO String
+dumpSchedulerState db@Database{..} = atomically $ do
+    let SchedulerState{..} = databaseScheduler
+    -- Snapshot queues (drain then restore) to avoid side effects
+    ups <- flushTQueue schedulerUpsweepQueue
+    ready <- flushTQueue schedulerRunningReady
+    -- Snapshot sets and pending map
+    dirties <- readTVar schedulerRunningDirties
+    blocked <- readTVar schedulerRunningBlocked
+    pendingPairs <- ListT.toList (SMap.listT schedulerRunningPending)
+    origins <- readTVar schedulerRunningOrigins
+    runningUnblocked <- mapM (\x ->
+        do
+            b <- getBlockedBy x db
+            return (x, b)) $ toListKeySet $ dirties `differenceKeySet` blocked
+
+    let ppKey k    = PP.pretty k
+        ppKeys ks  = if null ks then PP.brackets mempty else PP.vsep (map (\k -> PP.hsep [PP.pretty ("-" :: String), ppKey k]) ks)
+        ppKeysWithDeps ks = if null ks then PP.brackets mempty else PP.vsep (map (\(k,bs) -> PP.hsep [PP.pretty ("-" :: String), ppKey k, PP.pretty ("blocked by:" :: String), PP.pretty (bs)]) ks)
+        ppPairs xs = if null xs then PP.brackets mempty else PP.vsep (map (\(k,c) -> PP.hsep [PP.pretty ("-" :: String), ppKey k, PP.pretty (":" :: String), PP.pretty c]) xs)
+
+        doc = PP.vsep
+          [ PP.pretty ("SchedulerState" :: String)
+          , PP.indent 2 $ PP.vsep
+              [ PP.pretty ("upsweep:" :: String) <> PP.pretty (length ups)
+              , PP.indent 2 (ppKeys ups)
+              , PP.pretty ("ready:" :: String) <> PP.pretty (length ready)
+              , PP.indent 2 (ppKeys ready)
+              , PP.pretty ("pending:" :: String) <> PP.pretty (length pendingPairs)
+              , PP.indent 2 (ppPairs pendingPairs)
+              , PP.pretty ("running:" :: String) <> PP.pretty (length runningUnblocked)
+              , PP.indent 2 (ppKeysWithDeps (runningUnblocked))
+              , PP.pretty ("blocked:" :: String) <> PP.pretty (length (toListKeySet blocked))
+              , PP.indent 2 (ppKeys (toListKeySet $ blocked))
+                , PP.pretty ("origins:" :: String) <> PP.pretty (length origins)
+                , PP.indent 2 (ppKeys origins)
+              ]
+          ]
+    pure $ renderString (PP.layoutPretty PP.defaultLayoutOptions doc)
+
 shutDatabase ::Set (Async ()) -> Database -> IO ()
 shutDatabase preserve db@Database{..} = uninterruptibleMask $ \unmask -> do
     -- Dump scheduler state on shutdown for diagnostics
-    let dumpPath = "scheduler.dump"
-    dump <- dumpSchedulerState databaseScheduler
-    writeFile dumpPath dump
     -- wait for all threads to finish
     asyncs <- readTVarIO databaseThreads
     step <- readTVarIO databaseStep

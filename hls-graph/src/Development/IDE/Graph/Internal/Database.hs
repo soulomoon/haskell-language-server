@@ -73,6 +73,7 @@ newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra datab
     schedulerRunningReady    <- newTQueueIO
     schedulerRunningPending <- atomically SMap.new
     schedulerUpsweepQueue <- newTQueueIO
+    schedulerRunningOrigins <- newTVarIO []
     let databaseScheduler = SchedulerState{..}
     pure Database{..}
 
@@ -91,7 +92,7 @@ incDatabase db (Just (kk, preserves)) = do
     -- transitiveDirtyKeys <- transitiveDirtyListBottomUp db (toListKeySet $ kk <> transitiveDirtyKeysNew <> upSweepDirties)
     transitiveDirtyKeys <- transitiveDirtyListBottomUpDiff db (toListKeySet kk) (toListKeySet oldUpSweepDirties)
     -- let transitiveDirtyKeys = toListKeySet transitiveDirtyKeysOld
-    results <- traceEvent ("upsweep all dirties " ++ show transitiveDirtyKeys) $ for transitiveDirtyKeys $ \k ->
+    results <- for transitiveDirtyKeys $ \k ->
         -- Updating all the keys atomically is not necessary
         -- since we assume that no build is mutating the db.
         -- Therefore run one transaction per key to minimise contention.
