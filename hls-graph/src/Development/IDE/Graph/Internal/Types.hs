@@ -50,6 +50,8 @@ import           GHC.Conc                           ()
 import           GHC.Generics                       (Generic)
 import qualified ListT
 import           Numeric.Natural
+import qualified Prettyprinter                      as PP
+import           Prettyprinter.Render.String        (renderString)
 import qualified StmContainers.Map                  as SMap
 import           StmContainers.Map                  (Map)
 import           System.Time.Extra                  (Seconds, sleep)
@@ -281,11 +283,53 @@ raedAllLeftsDBQue q = do
 -- Encapsulated scheduler state, previously scattered on Database
 data SchedulerState = SchedulerState
     { schedulerUpsweepQueue   :: TQueue Key
+    -- ^ Keys that need to be upswept (i.e., re-evaluated because they are dirty)
     , schedulerRunningDirties :: TVar KeySet
+    -- ^ Keys that are currently running
     , schedulerRunningBlocked :: TVar KeySet
+    -- ^ Keys that are blocked because one of their dependencies is running
     , schedulerRunningReady   :: TQueue Key
+    -- ^ Keys that are ready to run
     , schedulerRunningPending :: SMap.Map Key Int
+    -- ^ Keys that are pending because they are waiting for dependencies to complete
     }
+
+-- dump scheduler state
+dumpSchedulerState :: SchedulerState -> IO String
+dumpSchedulerState SchedulerState{..} = atomically $ do
+    -- Snapshot queues (drain then restore) to avoid side effects
+    ups <- flushTQueue schedulerUpsweepQueue
+    mapM_ (writeTQueue schedulerUpsweepQueue) ups
+
+    ready <- flushTQueue schedulerRunningReady
+    mapM_ (writeTQueue schedulerRunningReady) ready
+
+    -- Snapshot sets and pending map
+    dirties <- readTVar schedulerRunningDirties
+    blocked <- readTVar schedulerRunningBlocked
+    pendingPairs <- ListT.toList (SMap.listT schedulerRunningPending)
+
+    let ppKey k    = PP.pretty k
+        ppKeys ks  = if null ks then PP.brackets mempty else PP.vsep (map (\k -> PP.hsep [PP.pretty ("-" :: String), ppKey k]) ks)
+        ppPairs xs = if null xs then PP.brackets mempty else PP.vsep (map (\(k,c) -> PP.hsep [PP.pretty ("-" :: String), ppKey k, PP.pretty (":" :: String), PP.pretty c]) xs)
+
+        doc = PP.vsep
+          [ PP.pretty ("SchedulerState" :: String)
+          , PP.indent 2 $ PP.vsep
+              [ PP.pretty ("upsweep:" :: String) <> PP.pretty (length ups)
+              , PP.indent 2 (ppKeys ups)
+              , PP.pretty ("ready:" :: String) <> PP.pretty (length ready)
+              , PP.indent 2 (ppKeys ready)
+              , PP.pretty ("pending:" :: String) <> PP.pretty (length pendingPairs)
+              , PP.indent 2 (ppPairs pendingPairs)
+              , PP.pretty ("running:" :: String) <> PP.pretty (length (map fst pendingPairs))
+              , PP.indent 2 (ppKeys (toListKeySet dirties))
+              , PP.pretty ("blocked:" :: String) <> PP.pretty (length (toListKeySet blocked))
+              , PP.indent 2 (ppKeys (toListKeySet blocked))
+              ]
+          ]
+    pure $ renderString (PP.layoutPretty PP.defaultLayoutOptions doc)
+
 
 
 
@@ -445,6 +489,10 @@ instance Exception AsyncParentKill where
 
 shutDatabase ::Set (Async ()) -> Database -> IO ()
 shutDatabase preserve db@Database{..} = uninterruptibleMask $ \unmask -> do
+    -- Dump scheduler state on shutdown for diagnostics
+    let dumpPath = "scheduler.dump"
+    dump <- dumpSchedulerState databaseScheduler
+    writeFile dumpPath dump
     -- wait for all threads to finish
     asyncs <- readTVarIO databaseThreads
     step <- readTVarIO databaseStep

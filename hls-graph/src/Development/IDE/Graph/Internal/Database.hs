@@ -31,8 +31,7 @@ import           Data.IORef.Extra
 import           Data.Maybe
 import           Data.Traversable                         (for)
 import           Data.Tuple.Extra
-import           Debug.Trace                              (traceEvent,
-                                                           traceEventIO)
+import           Debug.Trace                              (traceEvent)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules
@@ -45,14 +44,12 @@ import qualified StmContainers.Map                        as SMap
 import           System.Time.Extra                        (duration)
 import           UnliftIO                                 (Async, MVar,
                                                            atomically,
-                                                           isAsyncException,
                                                            newEmptyMVar,
                                                            putMVar, readMVar)
 
 #if MIN_VERSION_base(4,19,0)
 import           Data.Functor                             (unzip)
-import           Development.IDE.Graph.Internal.Scheduler (cleanHook,
-                                                           decreaseMyReverseDepsPendingCount,
+import           Development.IDE.Graph.Internal.Scheduler (decreaseMyReverseDepsPendingCount,
                                                            insertBlockedKey,
                                                            popOutDirtykeysDB,
                                                            readReadyQueue,
@@ -182,8 +179,8 @@ builderOne parentKey db stack kid = do
 data FirstTime = FirstTime | NotFirstTime
 
 builderOne' :: FirstTime -> Key -> Database -> Stack -> Key -> IO BuildContinue
-builderOne' firstTime parentKey db@Database {..} stack kid = do
-  traceEvent ("builderOne: " ++ show kid) return ()
+builderOne' firstTime parentKey db@Database {..} stack key = do
+  traceEvent ("builderOne: " ++ show key) return ()
   barrier <- newEmptyMVar
   -- join is used to register the async
   join $ atomicallyNamed "builder" $ do
@@ -191,32 +188,33 @@ builderOne' firstTime parentKey db@Database {..} stack kid = do
     case firstTime of
         FirstTime -> do
             dbNotLocked db
-            insertdatabaseRuntimeDep kid parentKey db
+            insertdatabaseRuntimeDep key parentKey db
         NotFirstTime -> return ()
-    status <- SMap.lookup kid databaseValues
+    status <- SMap.lookup key databaseValues
     current <- readTVar databaseStep
 
     case (viewToRun current . keyStatus) =<< status of
       Nothing -> do
-        insertBlockedKey parentKey db
-        SMap.focus (updateStatus $ Running current Nothing barrier) kid databaseValues
-        let register = spawnRefresh db stack kid barrier Nothing refresh
-                        $ atomicallyNamed "builderOne rollback" $ SMap.delete kid databaseValues
+        insertBlockedKey parentKey key db
+        SMap.focus (updateStatus $ Running current Nothing barrier) key databaseValues
+        let register = spawnRefresh db stack key barrier Nothing refresh
+        -- if register is killed, will mark the key dirty again
+        -- see incDatabase
         return $ register >> return (BCContinue $ readMVar barrier)
       Just (Dirty _) -> do
-        insertBlockedKey parentKey db
+        insertBlockedKey parentKey key db
         case firstTime of
             FirstTime -> pure . pure $ BCContinue $ do
-                    br <- builderOne' NotFirstTime parentKey db stack kid
+                    br <- builderOne' NotFirstTime parentKey db stack key
                     case br of
                         BCContinue ioR -> ioR
                         BCStop k r     -> pure $ Right (k, r)
             NotFirstTime -> retry
-      Just (Clean r) -> pure . pure $ BCStop kid r
+      Just (Clean r) -> pure . pure $ BCStop key r
       Just (Running _step _s wait)
-        | memberStack kid stack -> throw $ StackException stack
+        | memberStack key stack -> throw $ StackException stack
         | otherwise -> do
-            insertBlockedKey parentKey db
+            insertBlockedKey parentKey key db
             pure . pure $ BCContinue $ readMVar wait
 
 -- Original spawnRefresh implementation moved below to use the abstraction
@@ -276,35 +274,18 @@ upsweep1 db stack = go
     where
         go = do
             k <- atomically $ readReadyQueue db
-            upsweep db stack (do
-                traceEventIO ("upsweep1 key done" ++ show k)
-                -- atomically (modifyTVar' runnings (deleteKeySet k))) k
-                atomically $ cleanHook k db
-                ) k
-            -- -- trace event
-            -- runningCount <- lengthKeySet <$> readTVarIO runnings
-            -- traceEventIO ("upsweep running key" ++ show k ++ " running keys count: " ++ show runningCount)
-            -- waitUntilRunningNoMorethan 16
+            upsweep db stack k
             go
-        -- waitUntilRunningNoMorethan n = do
-        --     atomically $ do
-        --         rs <- readTVar runnings
-        --         when (lengthKeySet rs > n) retry
 
 upsweepAction :: Action ()
 upsweepAction = Action $ do
     SAction{..} <- RWS.ask
     let db = actionDatabase
     liftIO $ upsweep1 db actionStack
-        -- we can to upsweep these keys in order one by one,
-    -- let go = do
-    --         ready <- atomically $ readReadyQueue db
-    --         upsweep db actionStack (const $ atomically $ cleanHook ready db) ready
-    -- liftIO $ go
 
 -- do
-upsweep :: Database -> Stack -> IO () -> Key -> IO ()
-upsweep db@Database {..} stack cleanup key = mask $ \restore -> do
+upsweep :: Database -> Stack -> Key -> IO ()
+upsweep db@Database {..} stack key = mask $ \restore -> do
   barrier <- newEmptyMVar
   join $ atomicallyNamed "upsweep" $ do
     dbNotLocked db
@@ -317,11 +298,12 @@ upsweep db@Database {..} stack cleanup key = mask $ \restore -> do
         SMap.focus (updateStatus $ Running current s barrier) key databaseValues
         -- if it is clean, other event update it, so it is fine.
         return $ do
-            spawnRefresh db stack key barrier s (\db stack key s -> restore $ do
-                result <- refresh db stack key s
-                cleanup
-                return result) $ atomicallyNamed "upsweep rollback" $ SMap.focus updateDirty key databaseValues
-      _ -> return cleanup
+            -- this would be killed nad not marked as dirty, since it is the old keys when restart
+            -- we must handle the update dirty ourselfs here
+            (restore $ spawnRefresh db stack key barrier s (\db stack key s -> refresh db stack key s))
+            -- fail to spawn
+            `onException` uninterruptibleMask_ (atomicallyNamed "upsweep rollback" (SMap.focus updateDirty key databaseValues))
+      _ -> return $ return ()
 
 -- refresh :: Database -> Stack -> Key -> Maybe Result -> IO Result
 -- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
@@ -513,20 +495,14 @@ spawnRefresh ::
   MVar (Either SomeException (Key, Result)) ->
   Maybe Result ->
   (Database -> t -> Key -> Maybe Result -> IO Result) ->
-  IO () ->
   IO ()
-spawnRefresh db@Database {..} stack key barrier prevResult refresher rollBack = do
+spawnRefresh db@Database {..} stack key barrier prevResult refresher = do
   Step currentStep <- atomically $ readTVar databaseStep
   spawnAsyncWithDbRegistration
     db
     (return $ DeliverStatus currentStep ("async computation; " ++ show key) key)
     (refresher db stack key prevResult)
-    (\r -> do
-        case r of
-            Left e  -> when (isAsyncException e) rollBack --- IGNORE ---
-            Right _ -> return ()
-        handleResult key barrier r
-    )
+    $ handleResult key barrier
 
 -- Attempt to clear a Dirty parent that ended up with unchanged children during this event.
 -- If the parent is Dirty, and every direct child is either Clean/Exception/Running for a step < eventStep,
