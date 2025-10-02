@@ -322,7 +322,7 @@ dumpSchedulerState SchedulerState{..} = atomically $ do
               , PP.indent 2 (ppKeys ready)
               , PP.pretty ("pending:" :: String) <> PP.pretty (length pendingPairs)
               , PP.indent 2 (ppPairs pendingPairs)
-              , PP.pretty ("running:" :: String) <> PP.pretty (length (map fst pendingPairs))
+              , PP.pretty ("running:" :: String) <> PP.pretty (length (toListKeySet dirties))
               , PP.indent 2 (ppKeys (toListKeySet dirties))
               , PP.pretty ("blocked:" :: String) <> PP.pretty (length (toListKeySet blocked))
               , PP.indent 2 (ppKeys (toListKeySet blocked))
