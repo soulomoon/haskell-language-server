@@ -84,6 +84,7 @@ insertBlockedKey pk k Database {..} = do
     then do
       blockedSet <- readTVar schedulerRunningBlocked
       writeTVar schedulerRunningBlocked $ insertKeySet pk blockedSet
+      writeTVar schedulerRunningDirties $ deleteKeySet pk runnings
     else
       return ()
 
@@ -182,7 +183,7 @@ popOutDirtykeysDB Database{..} = do
 -- and also block if the number of running non-blocked keys exceeds maxThreads
 readReadyQueue :: Database -> STM Key
 readReadyQueue db@Database{..} = do
-    blockedOnThreadLimit db 16
+    blockedOnThreadLimit db 32
     let SchedulerState{..} = databaseScheduler
     r <- readTQueue schedulerRunningReady
     modifyTVar schedulerRunningDirties $ insertKeySet r
@@ -192,9 +193,8 @@ readReadyQueue db@Database{..} = do
 computeRunningNonBlocked :: Database -> STM Int
 computeRunningNonBlocked Database{..} = do
     let SchedulerState{..} = databaseScheduler
-    blockedSetSize <- lengthKeySet <$> readTVar schedulerRunningBlocked
     runningSetSize <- lengthKeySet <$> readTVar schedulerRunningDirties
-    return $ runningSetSize - blockedSetSize
+    return $ runningSetSize
 
 blockedOnThreadLimit :: Database -> Int -> STM ()
 blockedOnThreadLimit db maxThreads = do
