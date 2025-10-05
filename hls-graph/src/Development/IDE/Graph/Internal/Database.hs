@@ -44,6 +44,7 @@ import qualified StmContainers.Map                        as SMap
 import           System.Time.Extra                        (duration)
 import           UnliftIO                                 (Async, MVar,
                                                            atomically,
+                                                           isAsyncException,
                                                            newEmptyMVar,
                                                            putMVar, readMVar)
 
@@ -198,8 +199,7 @@ builderOne' firstTime parentKey db@Database {..} stack key = do
         insertBlockedKey parentKey key db
         SMap.focus (updateStatus $ Running current Nothing barrier) key databaseValues
         let register = spawnRefresh db stack key barrier Nothing refresh
-        -- if register is killed, will mark the key dirty again
-        -- see incDatabase
+                        $ atomicallyNamed "builderOne rollback" $ SMap.delete key databaseValues
         return $ register >> return (BCContinue $ readMVar barrier)
       Just (Dirty _) -> do
         insertBlockedKey parentKey key db
@@ -304,12 +304,10 @@ upsweep db@Database {..} stack key = mask $ \restore -> do
         SMap.focus (updateStatus $ Running current s barrier) key databaseValues
         -- if it is clean, other event update it, so it is fine.
         return $ do
-            -- this would be killed nad not marked as dirty, since it is the old keys when restart
-            -- we must handle the update dirty ourselfs here
-            (restore $ spawnRefresh db stack key barrier s refresh)
-            -- fail to spawn
-            `onException` uninterruptibleMask_ (atomicallyNamed "upsweep rollback" (SMap.focus updateDirty key databaseValues))
-      _ -> return $ return ()
+            spawnRefresh db stack key barrier s (\db stack key s -> restore $ do
+                result <- refresh db stack key s
+                return result) $ atomicallyNamed "upsweep rollback" $ SMap.focus updateDirty key databaseValues
+      _ -> return . pure $ ()
 
 -- refresh :: Database -> Stack -> Key -> Maybe Result -> IO Result
 -- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
@@ -525,14 +523,20 @@ spawnRefresh ::
   MVar (Either SomeException (Key, Result)) ->
   Maybe Result ->
   (Database -> t -> Key -> Maybe Result -> IO Result) ->
+  IO () ->
   IO ()
-spawnRefresh db@Database {..} stack key barrier prevResult refresher = do
+spawnRefresh db@Database {..} stack key barrier prevResult refresher rollBack = do
   Step currentStep <- atomically $ readTVar databaseStep
   spawnAsyncWithDbRegistration
     db
     (return $ DeliverStatus currentStep ("async computation; " ++ show key) key)
     (refresher db stack key prevResult)
-    $ handleResult key barrier
+    (\r -> do
+        case r of
+            Left e  -> when (isAsyncException e) rollBack --- IGNORE ---
+            Right _ -> return ()
+        handleResult key barrier r
+    )
 
 -- Attempt to clear a Dirty parent that ended up with unchanged children during this event.
 -- If the parent is Dirty, and every direct child is either Clean/Exception/Running for a step < eventStep,
