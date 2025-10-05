@@ -467,9 +467,9 @@ instance Exception AsyncParentKill where
 shutDatabase ::Set (Async ()) -> Database -> IO ()
 shutDatabase preserve db@Database{..} = uninterruptibleMask $ \unmask -> do
     -- Dump scheduler state on shutdown for diagnostics
-    let dumpPath = "scheduler.dump"
-    dump <- dumpSchedulerState databaseScheduler
-    writeFile dumpPath dump
+    -- let dumpPath = "scheduler.dump"
+    -- dump <- dumpSchedulerState databaseScheduler
+    -- writeFile dumpPath dump
     -- wait for all threads to finish
     asyncs <- readTVarIO databaseThreads
     step <- readTVarIO databaseStep
