@@ -2158,6 +2158,7 @@ test-suite ghcide-tests
     , implicit-hie:gen-hie
 
   build-depends:
+    , process
     , aeson
     , containers
     , data-default
