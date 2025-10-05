@@ -50,7 +50,8 @@ import           UnliftIO                                 (Async, MVar,
 
 #if MIN_VERSION_base(4,19,0)
 import           Data.Functor                             (unzip)
-import           Development.IDE.Graph.Internal.Scheduler (decreaseMyReverseDepsPendingCount,
+import           Development.IDE.Graph.Internal.Scheduler (cleanHook,
+                                                           decreaseMyReverseDepsPendingCount,
                                                            insertBlockedKey,
                                                            popOutDirtykeysDB,
                                                            readReadyQueue,
@@ -211,18 +212,11 @@ builderOne' firstTime parentKey db@Database {..} stack key = do
                         BCStop k r     -> pure $ Right (k, r)
             NotFirstTime -> retry
       Just (Clean r) -> pure . pure $ BCStop key r
-      Just (Running _step _s _wait)
+      Just (Running _step _s wait)
         | memberStack key stack -> throw $ StackException stack
         | otherwise -> do
             insertBlockedKey parentKey key db
-            case firstTime of
-                FirstTime -> pure . pure $ BCContinue $ do
-                        br <- builderOne' NotFirstTime parentKey db stack key
-                        case br of
-                            BCContinue ioR -> ioR
-                            BCStop k r     -> pure $ Right (k, r)
-                NotFirstTime -> retry
-            -- pure . pure $ BCContinue $ readMVar wait
+            pure . pure $ BCContinue $ readMVar wait
 
 -- Original spawnRefresh implementation moved below to use the abstraction
 handleResult :: (Show a1, MonadIO m) => a1 -> MVar (Either a2 (a1, b)) -> Either a2 b -> m ()
@@ -306,8 +300,9 @@ upsweep db@Database {..} stack key = mask $ \restore -> do
         return $ do
             spawnRefresh db stack key barrier s (\db stack key s -> restore $ do
                 result <- refresh db stack key s
+                atomically $ cleanHook key db
                 return result) $ atomicallyNamed "upsweep rollback" $ SMap.focus updateDirty key databaseValues
-      _ -> return . pure $ ()
+      _ -> return $ atomically $ cleanHook key db
 
 -- refresh :: Database -> Stack -> Key -> Maybe Result -> IO Result
 -- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined

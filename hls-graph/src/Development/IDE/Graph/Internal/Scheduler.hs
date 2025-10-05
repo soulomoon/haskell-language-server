@@ -136,7 +136,6 @@ cleanHook k db = do
 decreaseMyReverseDepsPendingCount :: Key -> Database -> STM ()
 decreaseMyReverseDepsPendingCount k db@Database{..} = do
     -- Gather reverse dependents from runtime map and stored reverse deps
-    cleanHook k db
     mStored  <- SMap.lookup k databaseValues
     mRuntime <- SMap.lookup k databaseRRuntimeDep
     let rdepsStored  = maybe mempty keyReverseDeps mStored
@@ -172,10 +171,11 @@ popOutDirtykeysDB Database{..} = do
     _ <- writeTVar schedulerRunningDirties mempty
 
     -- 5. Also clear blocked subset for consistency
+    blockedDirities <- readTVar schedulerRunningBlocked
     _ <- writeTVar schedulerRunningBlocked mempty
 
     -- Union all into a single KeySet to return
-    let resultSet = fromListKeySet toProccess `unionKeySet` fromListKeySet readyKeys `unionKeySet` fromListKeySet pendingKeys `unionKeySet` runningDirties
+    let resultSet = fromListKeySet toProccess `unionKeySet` fromListKeySet readyKeys `unionKeySet` fromListKeySet pendingKeys `unionKeySet` runningDirties `unionKeySet` blockedDirities
     pure resultSet
 
 -- read one key from ready queue, and insert it into running dirties
