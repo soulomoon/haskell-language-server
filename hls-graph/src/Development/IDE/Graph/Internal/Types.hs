@@ -396,31 +396,8 @@ deleteDatabaseRuntimeDep k db = do
                 SMap.focus (Focus.alter (fmap (deleteKeySet k))) d (databaseRRuntimeDep db)
 
 
--- compute the transitive reverse dependencies of a set of keys
--- using databaseRuntimeDep in the Database
--- compute the transitive reverse dependencies of a set of keys
--- using databaseRuntimeDep in the Database
-computeTransitiveReverseDeps :: Database -> KeySet -> STM KeySet
-computeTransitiveReverseDeps db seeds = do
---   rev <- computeReverseRuntimeMap d
-  let -- BFS worklist starting from all seed keys.
-      -- visited contains everything we've already enqueued (including seeds).
-      go :: KeySet -> [Key] -> STM KeySet
-      go visited []       = pure visited
-      go visited (k:todo) = do
-        mDeps <- SMap.lookup k (databaseRRuntimeDep db)
-        case mDeps of
-          Nothing     -> go visited todo
-          Just direct ->
-            -- new keys = direct dependents not seen before
-            let newKs    = filter (\x -> not (memberKeySet x visited)) (toListKeySet direct)
-                visited' = foldr insertKeySet visited newKs
-            in go visited' (newKs ++ todo)
-
-  -- Start with seeds already marked visited to prevent self-revisit.
-  go seeds (toListKeySet seeds)
-
-
+-- record runtime reverse deps for each key,
+-- if it is root key, also reverse deps so when the root key is done, we can clean up the reverse deps.
 insertdatabaseRuntimeDep :: Key -> Key -> Database -> STM ()
 insertdatabaseRuntimeDep k pk db = do
     SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k (databaseRRuntimeDep db)

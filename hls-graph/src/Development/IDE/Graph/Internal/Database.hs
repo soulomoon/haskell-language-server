@@ -110,7 +110,7 @@ incDatabase db Nothing = do
         SMap.focus updateDirty k (databaseValues db)
     return $ mempty
 
-computeToPreserve :: Database -> KeySet -> STM ([(Key, Async ())], KeySet)
+computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], KeySet)
 computeToPreserve db dirtySet = do
   -- All keys that depend (directly or transitively) on any dirty key
   affected <- computeTransitiveReverseDeps db dirtySet
@@ -118,9 +118,9 @@ computeToPreserve db dirtySet = do
 --   let allAffected = upSweepDirties `unionKeySet` affected
   let allAffected = affected
   threads <- readTVar $ databaseThreads db
-  let isNonAffected (k, _async) = k /= newKey "root" && k `notMemberKeySet` allAffected
-  let unaffected = filter isNonAffected $ first deliverKey <$> threads
-  pure (unaffected, fromListKeySet $ fst <$> unaffected)
+  let isNonAffected (k, _async) = (deliverKey k) /= newKey "root" && (deliverKey k) `notMemberKeySet` allAffected
+  let unaffected = filter isNonAffected $ threads
+  pure (unaffected, fromListKeySet $ deliverKey . fst <$> unaffected)
 
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
@@ -211,14 +211,20 @@ builderOne' firstTime parentKey db@Database {..} stack key = do
                         BCStop k r     -> pure $ Right (k, r)
             NotFirstTime -> retry
       Just (Clean r) -> pure . pure $ BCStop key r
-      Just (Running _step _s wait)
+      Just (Running _step _s _wait)
         | memberStack key stack -> throw $ StackException stack
         | otherwise -> do
             insertBlockedKey parentKey key db
-            pure . pure $ BCContinue $ readMVar wait
+            case firstTime of
+                FirstTime -> pure . pure $ BCContinue $ do
+                        br <- builderOne' NotFirstTime parentKey db stack key
+                        case br of
+                            BCContinue ioR -> ioR
+                            BCStop k r     -> pure $ Right (k, r)
+                NotFirstTime -> retry
+            -- pure . pure $ BCContinue $ readMVar wait
 
 -- Original spawnRefresh implementation moved below to use the abstraction
-
 handleResult :: (Show a1, MonadIO m) => a1 -> MVar (Either a2 (a1, b)) -> Either a2 b -> m ()
 handleResult k barrier eResult = do
     case eResult of
@@ -300,7 +306,7 @@ upsweep db@Database {..} stack key = mask $ \restore -> do
         return $ do
             -- this would be killed nad not marked as dirty, since it is the old keys when restart
             -- we must handle the update dirty ourselfs here
-            (restore $ spawnRefresh db stack key barrier s (\db stack key s -> refresh db stack key s))
+            (restore $ spawnRefresh db stack key barrier s refresh)
             -- fail to spawn
             `onException` uninterruptibleMask_ (atomicallyNamed "upsweep rollback" (SMap.focus updateDirty key databaseValues))
       _ -> return $ return ()
@@ -407,6 +413,30 @@ updateReverseDeps myId db prev new = do
         -- Therefore, run individual transactions for each update
         -- in order to avoid contention
         doOne f id = SMap.focus (alterRDeps f) id (databaseValues db)
+
+-- compute the transitive reverse dependencies of a set of keys
+-- using databaseRuntimeDep in the Database
+-- compute the transitive reverse dependencies of a set of keys
+-- using databaseRuntimeDep in the Database
+computeTransitiveReverseDeps :: Database -> KeySet -> STM KeySet
+computeTransitiveReverseDeps db seeds = do
+--   rev <- computeReverseRuntimeMap d
+  let -- BFS worklist starting from all seed keys.
+      -- visited contains everything we've already enqueued (including seeds).
+      go :: KeySet -> [Key] -> STM KeySet
+      go visited []       = pure visited
+      go visited (k:todo) = do
+        mDeps <- getRunTimeRDeps db k
+        case mDeps of
+          Nothing     -> go visited todo
+          Just direct ->
+            -- new keys = direct dependents not seen before
+            let newKs    = filter (\x -> not (memberKeySet x visited)) (toListKeySet direct)
+                visited' = foldr insertKeySet visited newKs
+            in go visited' (newKs ++ todo)
+
+  -- Start with seeds already marked visited to prevent self-revisit.
+  go seeds (toListKeySet seeds)
 
 getReverseDependencies :: Database -> Key -> STM (Maybe KeySet)
 getReverseDependencies db = (fmap.fmap) keyReverseDeps  . flip SMap.lookup (databaseValues db)

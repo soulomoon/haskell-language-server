@@ -183,7 +183,7 @@ popOutDirtykeysDB Database{..} = do
 -- and also block if the number of running non-blocked keys exceeds maxThreads
 readReadyQueue :: Database -> STM Key
 readReadyQueue db@Database{..} = do
-    blockedOnThreadLimit db 32
+    blockedOnThreadLimit db 20
     let SchedulerState{..} = databaseScheduler
     r <- readTQueue schedulerRunningReady
     modifyTVar schedulerRunningDirties $ insertKeySet r

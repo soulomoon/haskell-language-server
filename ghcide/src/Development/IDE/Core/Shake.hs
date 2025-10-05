@@ -203,7 +203,7 @@ import           Data.Foldable                           (foldl')
 data Log
   = LogCreateHieDbExportsMapStart
   | LogCreateHieDbExportsMapFinish !Int
-  | LogBuildSessionRestart !ShakeRestartArgs ![DelayedActionInternal] !KeySet !Seconds !(Maybe FilePath) !Int ![DeliverStatus] !Seconds
+  | LogBuildSessionRestart !ShakeRestartArgs ![DelayedActionInternal] !KeySet !Seconds !(Maybe FilePath) !Int ![DeliverStatus] !Seconds [DeliverStatus]
   | LogBuildSessionRestartTakingTooLong !Seconds
   | LogDelayedAction !(DelayedAction ()) !Seconds
   | LogBuildSessionFinish !Step !(Either SomeException [Either SomeException ()])
@@ -247,7 +247,7 @@ instance Pretty Log where
       "Initializing exports map from hiedb"
     LogCreateHieDbExportsMapFinish exportsMapSize ->
       "Done initializing exports map from hiedb. Size:" <+> pretty exportsMapSize
-    LogBuildSessionRestart restartArgs actionQueue keyBackLog abortDuration shakeProfilePath step delivers prepare ->
+    LogBuildSessionRestart restartArgs actionQueue keyBackLog abortDuration shakeProfilePath step delivers prepare unaffectted ->
       vcat
         [ "Restarting build session due to" <+> pretty (sraReason restartArgs)
         , "Restarts num:" <+> pretty (sraCount $ restartArgs)
@@ -258,6 +258,7 @@ instance Pretty Log where
         , "Current step:" <+> pretty (show step)
         , "Aborting previous build session took" <+> pretty (showDuration abortDuration) <+> pretty shakeProfilePath
         , "prepare new session took" <+> pretty (showDuration prepare)
+        , "Unaffected keys:" <+> pretty unaffectted
         ]
     LogBuildSessionRestartTakingTooLong seconds ->
         "Build restart is taking too long (" <> pretty (showDuration seconds) <> ")"
@@ -936,10 +937,10 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         newDirtyKeys <- sraBetweenSessions shakeRestartArgs
         -- reverseMap <- shakedatabaseRuntimeDep shakeDb
         -- logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys [] reverseMap
-        (stopTime, affected) <- duration $ do
-            (preservekvs, affected) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
+        (stopTime, (preservekvs, unaffected)) <- duration $ do
+            (preservekvs, unaffected) <- shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
             logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
-            return (affected)
+            return (map fst preservekvs, unaffected)
         survivedDelivers <- shakePeekAsyncsDelivers shakeDb
         -- it is every important to update the dirty keys after we enter the critical section
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
@@ -951,15 +952,15 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         -- this log is required by tests
         step <- shakeGetBuildStep shakeDb
 
-        let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime res step survivedDelivers x
-        return (shakeRestartArgs, newDirtyKeys, affected, logRestart)
+        let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime res step survivedDelivers x $ preservekvs
+        return (shakeRestartArgs, newDirtyKeys, fromListKeySet $ map deliverKey survivedDelivers, logRestart)
     )
     -- It is crucial to be masked here, otherwise we can get killed
     -- between spawning the new thread and updating shakeSession.
     -- See https://github.com/haskell/ghcide/issues/79
-    ( \(ShakeRestartArgs {..}, newDirtyKeys, affected, logRestart) ->
+    ( \(ShakeRestartArgs {..}, newDirtyKeys, unaffected, logRestart) ->
         do
-          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason (fromListKeySet newDirtyKeys, affected) logRestart
+          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason (fromListKeySet newDirtyKeys, unaffected) logRestart
           `finally` for_ sraWaitMVars (`putMVar` ())
     )
   where

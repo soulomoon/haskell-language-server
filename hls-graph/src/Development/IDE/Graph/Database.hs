@@ -97,10 +97,7 @@ shakeRunDatabaseForKeysSep keysChanged (ShakeDatabase _ as1 db) acts isTesting =
     preserves <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase1 db keysChanged
     (_, act) <- instantiateDelayedAction (mkDelayedAction "upsweep" Debug $ upsweepAction)
     reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress (databaseActionQueue db)
-    reenqueuedExceptPreserves <-
-        if isTesting
-        then return $ reenqueued
-        else return $ filter (\d -> (newDirectKey $ fromJust $ hashUnique <$> uniqueID d) `notMemberKeySet` preserves) reenqueued
+    let reenqueuedExceptPreserves = filter (\d -> (newDirectKey $ fromJust $ hashUnique <$> uniqueID d) `notMemberKeySet` preserves) reenqueued
     let ignoreResultActs = (getAction act) : (liftIO $ prepareToRunKeysRealTime db) : as1 ++ map runOne reenqueuedExceptPreserves
     return $ do
         -- prepareToRunKeys db upsweepKeys
@@ -129,7 +126,7 @@ mkDelayedAction s p = DelayedAction Nothing s (toEnum (fromEnum p))
 
 
 
-shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(Key, Async ())], KeySet)
+shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(DeliverStatus, Async ())], KeySet)
 shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
 
 -- | Compute the transitive closure of the given keys over reverse dependencies
