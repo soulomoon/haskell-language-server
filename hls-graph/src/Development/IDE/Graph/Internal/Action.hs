@@ -15,12 +15,16 @@ module Development.IDE.Graph.Internal.Action
 , getKeysAndVisitedAge
 , isAsyncException
 , pumpActionThread
+, pumpActionThreadReRun
+, sequenceRun
+, seqRunActions
 ) where
 
 import           Control.Concurrent.Async
 import           Control.Concurrent.STM.Stats            (atomicallyNamed)
 import           Control.DeepSeq                         (force)
 import           Control.Exception
+import           Control.Monad                           (void)
 import           Control.Monad.IO.Class
 import           Control.Monad.RWS                       (MonadReader (ask),
                                                           asks)
@@ -76,6 +80,20 @@ parallel xs = do
 --     runOne d = do
 --       getAction d
 --       liftIO $ atomically $ doneQueue d actionQueue
+
+-- pumpActionThread1 :: ShakeDatabase -> Action ()
+pumpActionThreadReRun :: ShakeDatabase -> DelayedAction () -> Action ()
+pumpActionThreadReRun (ShakeDatabase _ _ db) d = do
+        a <- ask
+        s <- atomically $ getDataBaseStepInt db
+        liftIO $ runInThreadStmInNewThreads db
+            (return $ DeliverStatus s (actionName d) key)
+            (ignoreState a $ runOne d) (const $ return ())
+  where
+    key = (newDirectKey $ fromJust $ hashUnique <$> uniqueID d)
+    runOne d = setActionKey key $ do
+            _ <- getAction d
+            liftIO $ atomically $ doneQueue d (databaseActionQueue db)
 
 pumpActionThread :: ShakeDatabase -> (String -> IO ()) -> Action b
 pumpActionThread sdb@(ShakeDatabase _ _ db) logMsg = do
@@ -176,6 +194,17 @@ runActions :: Key -> Database -> [Action a] -> IO [Either SomeException a]
 runActions pk db xs = do
     deps <- newIORef mempty
     runActionMonad (parallel xs) $ SAction pk db deps emptyStack
+
+seqRunActions :: Key -> Database -> [Action a] -> IO ()
+seqRunActions pk db xs = do
+    deps <- newIORef mempty
+    runActionMonad (sequenceRun xs) $ SAction pk db deps emptyStack
+
+sequenceRun :: [Action a] -> Action ()
+sequenceRun [] = return ()
+sequenceRun (x:xs) = do
+    void x
+    sequenceRun xs
 
 -- | Returns the set of dirty keys annotated with their age (in # of builds)
 getDirtySet  :: Action [(Key, Int)]
