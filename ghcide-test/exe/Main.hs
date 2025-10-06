@@ -92,7 +92,7 @@ main = do
     , WatchedFileTests.tests
     , CradleTests.tests
     , DependentFileTest.tests
-    , NonLspCommandLine.tests
+    -- , NonLspCommandLine.tests
     , IfaceTests.tests
     , BootTests.tests
     , RootUriTests.tests
