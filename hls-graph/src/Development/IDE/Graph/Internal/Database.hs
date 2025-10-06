@@ -459,9 +459,15 @@ transitiveDirtyListBottomUp database seeds = do
   void $ State.runStateT (traverse_ go seeds) mempty
   readIORef acc
 
--- the lefts are keys that are no longer affected, we can try to mark them clean
--- the rights are new affected keys, we need to mark them dirty
--- Optimized version using Pearce-Kelly maintained topological order
+-- | Compute transitively dirty keys in bottom-up dependency order
+-- 
+-- The lefts are keys that are no longer affected, we can try to mark them clean.
+-- The rights are new affected keys, we need to mark them dirty.
+-- 
+-- Optimized version using Pearce-Kelly maintained topological order:
+-- Instead of sorting after DFS traversal, we use the pre-maintained topological
+-- order to return keys in correct bottom-up order (dependencies before dependents).
+-- This reduces the time complexity from O(V log V) sorting to O(V) filtering.
 transitiveDirtyListBottomUpDiff :: Foldable t => Database -> t Key -> [Key] -> STM ([Key], [Key], KeySet)
 transitiveDirtyListBottomUpDiff database@Database{..} seeds allOldKeys = do
   let SchedulerState{..} = databaseScheduler
@@ -480,6 +486,7 @@ transitiveDirtyListBottomUpDiff database@Database{..} seeds allOldKeys = do
   seen <- snd <$> State.runStateT (do traverse_ go1 seeds) mempty
   -- Use the maintained topological order to sort the affected keys
   -- This provides bottom-up order (dependencies before dependents)
+  -- Performance: O(V) instead of O(V log V) due to pre-maintained order
   newKeys <- getAffectedKeysInOrder schedulerTopoOrder seen
   let oldKeys = filter (`notMemberKeySet` seen) allOldKeys
   return (oldKeys, newKeys, seen)
