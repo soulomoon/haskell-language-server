@@ -63,6 +63,7 @@ library
     Development.IDE.Graph.Internal.Rules
     Development.IDE.Graph.Internal.Types
     Development.IDE.Graph.Internal.Scheduler
+    Development.IDE.Graph.Internal.TopoSort
     Development.IDE.Graph.KeyMap
     Development.IDE.Graph.KeySet
     Development.IDE.Graph.Rule

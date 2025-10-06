@@ -37,6 +37,9 @@ import           Debug.Trace                              (traceEvent)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules
+import           Development.IDE.Graph.Internal.TopoSort  (emptyTopoOrder,
+                                                           addEdge,
+                                                           getAffectedKeysInOrder)
 import           Development.IDE.Graph.Internal.Types
 import           Development.IDE.Graph.Internal.Types     ()
 import           Development.IDE.WorkerThread             (DeliverStatus (..))
@@ -83,6 +86,7 @@ newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra datab
     schedulerUpsweepQueue <- newTQueueIO
     schedulerAllDirties <- newTVarIO mempty
     schedulerAllKeysInOrder <- newTVarIO []
+    schedulerTopoOrder <- emptyTopoOrder
     let databaseScheduler = SchedulerState{..}
     pure Database{..}
 
@@ -391,18 +395,23 @@ updateReverseDeps
     -> KeySet -- ^ Current direct dependencies of Id
     -> STM ()
 -- mask to ensure that all the reverse dependencies are updated
-updateReverseDeps myId db prev new = do
+updateReverseDeps myId db@Database{..} prev new = do
+    let SchedulerState{..} = databaseScheduler
+    -- Update reverse dependency edges
     forM_ (toListKeySet $ prev `differenceKeySet` new) $ \d ->
          doOne (deleteKeySet myId) d
-    forM_ (toListKeySet new) $
-        doOne (insertKeySet myId)
+    forM_ (toListKeySet new) $ \d -> do
+        doOne (insertKeySet myId) d
+        -- Maintain topological order using Pearce-Kelly:
+        -- myId depends on d, so d must come before myId in topo order
+        addEdge schedulerTopoOrder (getRunTimeRDeps db) myId d
     where
         alterRDeps f =
             Focus.adjust (onKeyReverseDeps f)
         -- updating all the reverse deps atomically is not needed.
         -- Therefore, run individual transactions for each update
         -- in order to avoid contention
-        doOne f id = SMap.focus (alterRDeps f) id (databaseValues db)
+        doOne f id = SMap.focus (alterRDeps f) id databaseValues
 
 -- compute the transitive reverse dependencies of a set of keys
 
@@ -452,8 +461,10 @@ transitiveDirtyListBottomUp database seeds = do
 
 -- the lefts are keys that are no longer affected, we can try to mark them clean
 -- the rights are new affected keys, we need to mark them dirty
+-- Optimized version using Pearce-Kelly maintained topological order
 transitiveDirtyListBottomUpDiff :: Foldable t => Database -> t Key -> [Key] -> STM ([Key], [Key], KeySet)
-transitiveDirtyListBottomUpDiff database seeds allOldKeys = do
+transitiveDirtyListBottomUpDiff database@Database{..} seeds allOldKeys = do
+  let SchedulerState{..} = databaseScheduler
   acc <- newTVar []
   let go1 x = do
         seen <- State.get
@@ -467,7 +478,9 @@ transitiveDirtyListBottomUpDiff database seeds allOldKeys = do
             lift $ modifyTVar acc (x :)
   -- traverse all seeds
   seen <- snd <$> State.runStateT (do traverse_ go1 seeds) mempty
-  newKeys <- readTVar acc
+  -- Use the maintained topological order to sort the affected keys
+  -- This provides bottom-up order (dependencies before dependents)
+  newKeys <- getAffectedKeysInOrder schedulerTopoOrder seen
   let oldKeys = filter (`notMemberKeySet` seen) allOldKeys
   return (oldKeys, newKeys, seen)
 

@@ -278,6 +278,13 @@ raedAllLeftsDBQue q = do
     mapM_ (writeTaskQueue q . Right) allRight
     return allLeft
 
+-- | Topological ordering structure for Pearce-Kelly algorithm
+-- Maps each Key to its topological order number (smaller = earlier in order)
+data TopoOrder = TopoOrder
+    { topoOrderMap     :: !(TVar (Map.HashMap Key Int))
+    , topoNextOrderNum :: !(TVar Int)
+    }
+
 -- Encapsulated scheduler state, previously scattered on Database
 data SchedulerState = SchedulerState
     { schedulerUpsweepQueue   :: TQueue Key
@@ -293,6 +300,8 @@ data SchedulerState = SchedulerState
     -- ^ Keys that are pending because they are waiting for dependencies to complete
     , schedulerAllDirties     :: TVar KeySet
     , schedulerAllKeysInOrder :: TVar [Key]
+    , schedulerTopoOrder      :: !TopoOrder
+    -- ^ Incremental topological order maintained using Pearce-Kelly algorithm
     }
 
 -- dump scheduler state
