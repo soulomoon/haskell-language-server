@@ -18,28 +18,21 @@ module Development.IDE.Graph.Internal.Scheduler
 
 import           Control.Concurrent.STM               (STM, atomically, check,
                                                        flushTQueue, modifyTVar,
-                                                       readTQueue, readTVar,
-                                                       writeTQueue, writeTVar)
-import           Control.Monad                        (forM, forM_)
+                                                       modifyTVar', readTQueue,
+                                                       readTVar, writeTQueue,
+                                                       writeTVar)
+import           Control.Monad                        (forM, forM_, void)
 import           Data.Maybe                           (fromMaybe)
-import qualified ListT
 import qualified StmContainers.Map                    as SMap
 
-import           Development.IDE.Graph.Internal.Key   (Key, KeySet,
-                                                       deleteKeySet,
-                                                       fromListKeySet,
-                                                       insertKeySet,
-                                                       lengthKeySet,
-                                                       memberKeySet, newKey,
-                                                       notMemberKeySet,
-                                                       toListKeySet,
-                                                       unionKeySet)
+import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Types (Database (..),
                                                        KeyDetails (..),
                                                        Result (..),
                                                        SchedulerState (..),
                                                        Status (..), getResult,
                                                        getResultDepsDefault)
+import qualified StmContainers.Set                    as SSet
 
 -- prepare to run a key in databaseDirtyTargets
 -- we first peek if all the deps are clean
@@ -79,12 +72,13 @@ prepareToRunKey k Database {..} = do
 insertBlockedKey :: Key -> Key -> Database -> STM ()
 insertBlockedKey pk k Database {..} = do
   let SchedulerState {..} = databaseScheduler
-  runnings <- readTVar schedulerRunningDirties
-  if pk `memberKeySet` runnings && k `notMemberKeySet` runnings
+  isPkRunnings <- SSet.lookup pk schedulerRunningDirties
+  isKRunnings  <- SSet.lookup k schedulerRunningDirties
+--   if pk `memberKeySet` runnings && k `notMemberKeySet` runnings
+  if isPkRunnings && not isKRunnings
     then do
-      blockedSet <- readTVar schedulerRunningBlocked
-      writeTVar schedulerRunningBlocked $ insertKeySet pk blockedSet
-      writeTVar schedulerRunningDirties $ deleteKeySet pk runnings
+        SSet.insert pk schedulerRunningBlocked
+        SSet.delete pk schedulerRunningDirties
     else
       return ()
 
@@ -126,10 +120,9 @@ cleanHook :: Key -> Database -> STM ()
 cleanHook k db = do
     -- remove itself from running dirties and blocked sets
     let SchedulerState{..} = databaseScheduler db
-    runningSet <- readTVar schedulerRunningDirties
-    writeTVar schedulerRunningDirties $ deleteKeySet k runningSet
-    blockedSet <- readTVar schedulerRunningBlocked
-    writeTVar schedulerRunningBlocked $ deleteKeySet k blockedSet
+    SSet.delete k schedulerRunningDirties
+    SSet.delete k schedulerRunningBlocked
+    modifyTVar schedulerAllDirties $ deleteKeySet k
 
 -- When a key becomes clean, decrement pending counters of its reverse dependents
 -- gathered from both runtime and stored reverse maps.
@@ -148,6 +141,7 @@ writeUpsweepQueue :: [Key] -> Database -> STM ()
 writeUpsweepQueue ks Database{..} = do
     let SchedulerState{..} = databaseScheduler
     forM_ ks $ \k -> writeTQueue schedulerUpsweepQueue k
+    modifyTVar' schedulerAllDirties $ \s -> foldr insertKeySet s ks
 
 -- gather all dirty keys that is not finished, to reschedule after restart
 -- includes keys in databaseDirtyTargets, databaseRunningReady, databaseRunningPending, databaseRunningDirties
@@ -156,27 +150,26 @@ popOutDirtykeysDB :: Database -> STM KeySet
 popOutDirtykeysDB Database{..} = do
     let SchedulerState{..} = databaseScheduler
     -- 1. upsweep queue: drain all (atomic flush)
-    toProccess <- flushTQueue schedulerUpsweepQueue
+    void $ flushTQueue schedulerUpsweepQueue
 
     -- 2. Ready queue: drain all (atomic flush)
-    readyKeys <- flushTQueue schedulerRunningReady
+    void $ flushTQueue schedulerRunningReady
 
     -- 3. Pending map: collect keys and clear
-    pendingPairs <- ListT.toList (SMap.listT schedulerRunningPending)
-    let pendingKeys = map fst pendingPairs
     SMap.reset schedulerRunningPending
 
     -- 4. Running dirties set: read and clear
-    runningDirties <- readTVar schedulerRunningDirties
-    _ <- writeTVar schedulerRunningDirties mempty
+    -- runningDirties <- readTVar schedulerRunningDirties
+    SSet.reset schedulerRunningDirties
 
     -- 5. Also clear blocked subset for consistency
-    blockedDirities <- readTVar schedulerRunningBlocked
-    _ <- writeTVar schedulerRunningBlocked mempty
+    SSet.reset schedulerRunningBlocked
 
+    -- 6. All dirties set: read and clear
+    reenqueue <- readTVar schedulerAllDirties
+    _ <- writeTVar schedulerAllDirties mempty
     -- Union all into a single KeySet to return
-    let resultSet = fromListKeySet toProccess `unionKeySet` fromListKeySet readyKeys `unionKeySet` fromListKeySet pendingKeys `unionKeySet` runningDirties `unionKeySet` blockedDirities
-    pure resultSet
+    pure reenqueue
 
 -- read one key from ready queue, and insert it into running dirties
 -- this function will block if there is no key in ready queue
@@ -186,14 +179,14 @@ readReadyQueue db@Database{..} = do
     blockedOnThreadLimit db 20
     let SchedulerState{..} = databaseScheduler
     r <- readTQueue schedulerRunningReady
-    modifyTVar schedulerRunningDirties $ insertKeySet r
+    SSet.insert r schedulerRunningDirties
     return r
 
 
 computeRunningNonBlocked :: Database -> STM Int
 computeRunningNonBlocked Database{..} = do
     let SchedulerState{..} = databaseScheduler
-    runningSetSize <- lengthKeySet <$> readTVar schedulerRunningDirties
+    runningSetSize <- SSet.size schedulerRunningBlocked
     return $ runningSetSize
 
 blockedOnThreadLimit :: Database -> Int -> STM ()

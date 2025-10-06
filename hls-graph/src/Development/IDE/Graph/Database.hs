@@ -16,16 +16,14 @@ module Development.IDE.Graph.Database(
     shakeComputeToPreserve,
     -- shakedatabaseRuntimeDep,
     shakePeekAsyncsDelivers,
-    upsweepAction,
-    shakeGetTransitiveDirtyListBottomUp) where
+    upsweepAction) where
 import           Control.Concurrent.Async                 (Async)
 import           Control.Concurrent.Extra                 (Barrier, newBarrier,
                                                            signalBarrier,
                                                            waitBarrierMaybe)
 import           Control.Concurrent.STM.Stats             (atomically,
                                                            atomicallyNamed,
-                                                           readTVar, readTVarIO,
-                                                           writeTVar)
+                                                           readTVarIO)
 import           Control.Exception                        (SomeException, try)
 import           Control.Monad                            (join, unless, void)
 import           Control.Monad.IO.Class                   (liftIO)
@@ -83,7 +81,7 @@ unvoid = fmap undefined
 -- seperate incrementing the step from running the build.
 -- Also immediately enqueues upsweep actions for the newly dirty keys.
 shakeRunDatabaseForKeysSep
-    :: Maybe (KeySet, KeySet) -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
+    :: Maybe (([Key],[Key]),KeySet) -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
     -> ShakeDatabase
     -> [Action a]
     -> Bool
@@ -120,16 +118,8 @@ instantiateDelayedAction (DelayedAction _ s p a) = do
 mkDelayedAction :: String -> Logger.Priority -> Action a -> DelayedAction a
 mkDelayedAction s p = DelayedAction Nothing s (toEnum (fromEnum p))
 
-
-
-shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(DeliverStatus, Async ())], KeySet)
+-- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(DeliverStatus, Async ())], ([Key], [Key]))
 shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
-
--- | Compute the transitive closure of the given keys over reverse dependencies
--- and return them in bottom-up order (children before parents).
-shakeGetTransitiveDirtyListBottomUp :: ShakeDatabase -> [Key] -> IO [Key]
-shakeGetTransitiveDirtyListBottomUp (ShakeDatabase _ _ db) seeds =
-    transitiveDirtyListBottomUp db seeds
 
 -- fds make it possible to do al ot of jobs
 shakeRunDatabaseForKeys
@@ -140,7 +130,7 @@ shakeRunDatabaseForKeys
     -> IO [Either SomeException a]
 shakeRunDatabaseForKeys Nothing sdb as2 = join $ shakeRunDatabaseForKeysSep Nothing sdb as2 True
 shakeRunDatabaseForKeys (Just x) sdb as2 =
-    let y = fromListKeySet x in join $ shakeRunDatabaseForKeysSep (Just (y, y)) sdb as2 True
+    let y = fromListKeySet x in join $ shakeRunDatabaseForKeysSep (Just (([], toListKeySet y), y)) sdb as2 True
 
 
 shakePeekAsyncsDelivers :: ShakeDatabase -> IO [DeliverStatus]

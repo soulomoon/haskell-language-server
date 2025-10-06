@@ -14,10 +14,12 @@ module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabas
 import           Prelude                                  hiding (unzip)
 
 import           Control.Concurrent.STM.Stats             (STM, atomicallyNamed,
+                                                           modifyTVar,
                                                            modifyTVar',
                                                            newTQueueIO,
                                                            newTVarIO, readTVar,
-                                                           readTVarIO, retry)
+                                                           readTVarIO, retry,
+                                                           writeTVar)
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class                   (MonadIO (liftIO))
@@ -46,16 +48,20 @@ import           UnliftIO                                 (Async, MVar,
                                                            atomically,
                                                            isAsyncException,
                                                            newEmptyMVar,
-                                                           putMVar, readMVar)
+                                                           newTVar, putMVar,
+                                                           readMVar)
 
-#if MIN_VERSION_base(4,19,0)
-import           Data.Functor                             (unzip)
+import           Data.Either                              (partitionEithers)
 import           Development.IDE.Graph.Internal.Scheduler (cleanHook,
                                                            decreaseMyReverseDepsPendingCount,
                                                            insertBlockedKey,
                                                            popOutDirtykeysDB,
                                                            readReadyQueue,
                                                            writeUpsweepQueue)
+import qualified StmContainers.Set                        as SSet
+
+#if MIN_VERSION_base(4,19,0)
+import           Data.Functor                             (unzip)
 #else
 import           Data.List.NonEmpty                       (unzip)
 #endif
@@ -70,37 +76,29 @@ newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra datab
     databaseRRuntimeDep <- atomically SMap.new
     databaseRuntimeDepRoot <- atomically SMap.new
     -- Initialize scheduler state
-    schedulerRunningDirties <- newTVarIO mempty
-    schedulerRunningBlocked  <- newTVarIO mempty
+    schedulerRunningDirties <- SSet.newIO
+    schedulerRunningBlocked  <- SSet.newIO
     schedulerRunningReady    <- newTQueueIO
     schedulerRunningPending <- atomically SMap.new
     schedulerUpsweepQueue <- newTQueueIO
+    schedulerAllDirties <- newTVarIO mempty
     let databaseScheduler = SchedulerState{..}
     pure Database{..}
 
 -- incDatabase1 :: Database -> Maybe (KeySet, KeySet) -> IO [Key]
-incDatabase1 :: Database -> Maybe (KeySet, KeySet) -> IO KeySet
+incDatabase1 :: Database -> Maybe (([Key], [Key]), KeySet) -> IO KeySet
 incDatabase1 db (Just (kk, preserves)) = incDatabase db (Just (kk, preserves ))
 incDatabase1 db Nothing                = incDatabase db Nothing
 
 -- | Increment the step and mark dirty.
 --   Assumes that the database is not running a build
 -- only some keys are dirty
-incDatabase :: Database -> Maybe (KeySet, KeySet) -> IO KeySet
-incDatabase db (Just (kk, preserves)) = do
-    oldUpSweepDirties <- atomically $ popOutDirtykeysDB db
+incDatabase :: Database -> Maybe (([Key], [Key]), KeySet) -> IO KeySet
+incDatabase db (Just ((oldkeys, newKeys), preserves)) = do
     atomicallyNamed "incDatabase" $ modifyTVar'  (databaseStep db) $ \(Step i) -> Step $ i + 1
-    -- transitiveDirtyKeys <- transitiveDirtyListBottomUp db (toListKeySet $ kk <> transitiveDirtyKeysNew <> upSweepDirties)
-    transitiveDirtyKeys <- transitiveDirtyListBottomUpDiff db (toListKeySet kk) (toListKeySet oldUpSweepDirties)
-    -- let transitiveDirtyKeys = toListKeySet transitiveDirtyKeysOld
-    results <- traceEvent ("upsweep all dirties " ++ show transitiveDirtyKeys) $ for transitiveDirtyKeys $ \k ->
-        -- Updating all the keys atomically is not necessary
-        -- since we assume that no build is mutating the db.
-        -- Therefore run one transaction per key to minimise contention.
-        case k of
-            Left oldKey -> return oldKey
-            Right newKey -> atomicallyNamed "incDatabase" $ SMap.focus updateDirty newKey (databaseValues db) >> return newKey
-    atomically $ writeUpsweepQueue (filter (not . isRootKey) results) db
+    forM_ newKeys $ \newKey -> atomically $ SMap.focus updateDirty newKey (databaseValues db)
+    atomically $ writeUpsweepQueue (filter (not . isRootKey) oldkeys) db
+    atomically $ writeUpsweepQueue (filter (not . isRootKey) newKeys) db
     return $ preserves
 
 -- all keys are dirty
@@ -112,17 +110,16 @@ incDatabase db Nothing = do
         SMap.focus updateDirty k (databaseValues db)
     return $ mempty
 
-computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], KeySet)
+-- computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], ([Key], [Key]))
+computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], ([Key], [Key]), Int)
 computeToPreserve db dirtySet = do
   -- All keys that depend (directly or transitively) on any dirty key
-  affected <- computeTransitiveReverseDeps db dirtySet
---   upSweepDirties <- popOutDirtykeysDB db
---   let allAffected = upSweepDirties `unionKeySet` affected
-  let allAffected = affected
+  oldUpSweepDirties <- popOutDirtykeysDB db
+  (oldKeys, newKeys, affected) <- transitiveDirtyListBottomUpDiff db (toListKeySet dirtySet) (toListKeySet oldUpSweepDirties)
   threads <- readTVar $ databaseThreads db
-  let isNonAffected (k, _async) = (deliverKey k) /= newKey "root" && (deliverKey k) `notMemberKeySet` allAffected
+  let isNonAffected (k, _async) = (deliverKey k) /= newKey "root" && (deliverKey k) `notMemberKeySet` affected
   let unaffected = filter isNonAffected $ threads
-  pure (unaffected, fromListKeySet $ deliverKey . fst <$> unaffected)
+  pure (unaffected, (oldKeys, newKeys), length newKeys)
 
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
@@ -408,42 +405,12 @@ updateReverseDeps myId db prev new = do
         doOne f id = SMap.focus (alterRDeps f) id (databaseValues db)
 
 -- compute the transitive reverse dependencies of a set of keys
--- using databaseRuntimeDep in the Database
--- compute the transitive reverse dependencies of a set of keys
--- using databaseRuntimeDep in the Database
-computeTransitiveReverseDeps :: Database -> KeySet -> STM KeySet
-computeTransitiveReverseDeps db seeds = do
---   rev <- computeReverseRuntimeMap d
-  let -- BFS worklist starting from all seed keys.
-      -- visited contains everything we've already enqueued (including seeds).
-      go :: KeySet -> [Key] -> STM KeySet
-      go visited []       = pure visited
-      go visited (k:todo) = do
-        mDeps <- getRunTimeRDeps db k
-        case mDeps of
-          Nothing     -> go visited todo
-          Just direct ->
-            -- new keys = direct dependents not seen before
-            let newKs    = filter (\x -> not (memberKeySet x visited)) (toListKeySet direct)
-                visited' = foldr insertKeySet visited newKs
-            in go visited' (newKs ++ todo)
-
-  -- Start with seeds already marked visited to prevent self-revisit.
-  go seeds (toListKeySet seeds)
-
-getReverseDependencies :: Database -> Key -> STM (Maybe KeySet)
-getReverseDependencies db = (fmap.fmap) keyReverseDeps  . flip SMap.lookup (databaseValues db)
 
 -- non-root
 getRunTimeRDeps :: Database -> Key -> STM (Maybe KeySet)
 getRunTimeRDeps db k = do
     r <- SMap.lookup k (databaseRRuntimeDep db)
-    oldDeps <- getReverseDependencies db k
-    let merged = do
-                r1 <- r
-                od <- oldDeps
-                return $ r1 <> od
-    return $ (deleteKeySet (newKey "root") <$> merged)
+    return $ (deleteKeySet (newKey "root") <$> r)
 
 
 
@@ -482,30 +449,32 @@ transitiveDirtyListBottomUp database seeds = do
 
 -- the lefts are keys that are no longer affected, we can try to mark them clean
 -- the rights are new affected keys, we need to mark them dirty
-transitiveDirtyListBottomUpDiff :: Database -> [Key] -> [Key] -> IO [Either Key Key]
+transitiveDirtyListBottomUpDiff :: Foldable t => Database -> t Key -> [Key] -> STM ([Key], [Key], KeySet)
 transitiveDirtyListBottomUpDiff database seeds lastSeeds = do
-  acc <- newIORef []
+  acc <- newTVar []
   let go1 x = do
         seen <- State.get
         if x `memberKeySet` seen
           then pure ()
           else do
             State.put (insertKeySet x seen)
-            mnext <- lift $ atomically $ getRunTimeRDeps database x
+            mnext <- lift $ getRunTimeRDeps database x
             traverse_ go1 (maybe mempty toListKeySet mnext)
-            lift $ modifyIORef' acc (Right x :)
+            lift $ modifyTVar acc (Right x :)
   let go2 x = do
         seen <- State.get
         if x `memberKeySet` seen
           then pure ()
           else do
             State.put (insertKeySet x seen)
-            mnext <- lift $ atomically $ getRunTimeRDeps database x
+            mnext <- lift $ getRunTimeRDeps database x
             traverse_ go2 (maybe mempty toListKeySet mnext)
-            lift $ modifyIORef' acc (Left x :)
+            lift $ modifyTVar acc (Left x :)
   -- traverse all seeds
-  void $ State.runStateT (do traverse_ go1 seeds; traverse_ go2 lastSeeds) mempty
-  readIORef acc
+  seen <- snd <$> State.runStateT (do traverse_ go1 seeds; traverse_ go2 lastSeeds) mempty
+  r <- readTVar acc
+  let (oldKeys, newKeys) = partitionEithers $ r
+  return (oldKeys, newKeys, seen)
 
 
 -- | Original spawnRefresh using the general pattern

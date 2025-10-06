@@ -54,6 +54,7 @@ import qualified Prettyprinter                      as PP
 import           Prettyprinter.Render.String        (renderString)
 import qualified StmContainers.Map                  as SMap
 import           StmContainers.Map                  (Map)
+import qualified StmContainers.Set                  as SSet
 import           System.Time.Extra                  (Seconds, sleep)
 import           UnliftIO                           (Async (asyncThreadId),
                                                      MVar, MonadUnliftIO, async,
@@ -277,21 +278,20 @@ raedAllLeftsDBQue q = do
     mapM_ (writeTaskQueue q . Right) allRight
     return allLeft
 
-
-
-
 -- Encapsulated scheduler state, previously scattered on Database
 data SchedulerState = SchedulerState
     { schedulerUpsweepQueue   :: TQueue Key
     -- ^ Keys that need to be upswept (i.e., re-evaluated because they are dirty)
-    , schedulerRunningDirties :: TVar KeySet
+    -- , schedulerRunningDirties :: TVar KeySet
+    , schedulerRunningDirties :: SSet.Set Key
     -- ^ Keys that are currently running
-    , schedulerRunningBlocked :: TVar KeySet
+    , schedulerRunningBlocked :: SSet.Set Key
     -- ^ Keys that are blocked because one of their dependencies is running
     , schedulerRunningReady   :: TQueue Key
     -- ^ Keys that are ready to run
     , schedulerRunningPending :: SMap.Map Key Int
     -- ^ Keys that are pending because they are waiting for dependencies to complete
+    , schedulerAllDirties     :: TVar KeySet
     }
 
 -- dump scheduler state
@@ -305,8 +305,8 @@ dumpSchedulerState SchedulerState{..} = atomically $ do
     mapM_ (writeTQueue schedulerRunningReady) ready
 
     -- Snapshot sets and pending map
-    dirties <- readTVar schedulerRunningDirties
-    blocked <- readTVar schedulerRunningBlocked
+    -- dirties <- readTVar schedulerRunningDirties
+    -- blocked <- readTVar schedulerRunningBlocked
     pendingPairs <- ListT.toList (SMap.listT schedulerRunningPending)
 
     let ppKey k    = PP.pretty k
@@ -323,9 +323,9 @@ dumpSchedulerState SchedulerState{..} = atomically $ do
               , PP.pretty ("pending:" :: String) <> PP.pretty (length pendingPairs)
               , PP.indent 2 (ppPairs pendingPairs)
               , PP.pretty ("running:" :: String) <> PP.pretty (length (map fst pendingPairs))
-              , PP.indent 2 (ppKeys (toListKeySet dirties))
-              , PP.pretty ("blocked:" :: String) <> PP.pretty (length (toListKeySet blocked))
-              , PP.indent 2 (ppKeys (toListKeySet blocked))
+            --   , PP.indent 2 (ppKeys (toListKeySet dirties))
+            --   , PP.pretty ("blocked:" :: String) <> PP.pretty (length (toListKeySet blocked))
+            --   , PP.indent 2 (ppKeys (toListKeySet blocked))
               ]
           ]
     pure $ renderString (PP.layoutPretty PP.defaultLayoutOptions doc)
@@ -478,10 +478,10 @@ shutDatabase preserve db@Database{..} = uninterruptibleMask $ \unmask -> do
     -- traceEventIO ("shutDatabase: async entries: " ++ show (map (deliverName . fst) asyncs))
     let remains = filter (\(_, s) -> s `S.member` preserve) asyncs
     let toCancel = filter (\(_, s) -> s `S.notMember` preserve) asyncs
-    traceEventIO ("shutDatabase: remains count: " ++ show (length remains) ++ ", names: " ++ show (map (deliverName . fst) remains))
-    traceEventIO ("shutDatabase: toCancel count: " ++ show (length toCancel) ++ ", names: " ++ show (map (deliverName . fst) toCancel))
     mapM_ (\(_, a) -> throwTo (asyncThreadId a) $ AsyncParentKill tid step) toCancel
     atomically $ modifyTVar' databaseThreads (const remains)
+    traceEventIO ("shutDatabase: remains count: " ++ show (length remains) ++ ", names: " ++ show (map (deliverName . fst) remains))
+    traceEventIO ("shutDatabase: toCancel count: " ++ show (length toCancel) ++ ", names: " ++ show (map (deliverName . fst) toCancel))
     -- Wait until all the asyncs are done
     -- But if it takes more than 10 seconds, log to stderr
     unless (null asyncs) $ do
