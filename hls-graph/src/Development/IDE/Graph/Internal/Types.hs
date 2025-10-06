@@ -404,6 +404,8 @@ insertdatabaseRuntimeDep k pk db = do
     SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k (databaseRRuntimeDep db)
     when (isRootKey pk) $ SMap.focus (Focus.alter (Just . maybe (singletonKeySet k) (insertKeySet k))) pk (databaseRuntimeDepRoot db)
 
+-- inline
+{-# INLINE isRootKey #-}
 isRootKey :: Key -> Bool
 isRootKey (DirectKey _a) = True
 isRootKey _              = False
