@@ -186,7 +186,7 @@ readReadyQueue db@Database{..} = do
 computeRunningNonBlocked :: Database -> STM Int
 computeRunningNonBlocked Database{..} = do
     let SchedulerState{..} = databaseScheduler
-    runningSetSize <- SSet.size schedulerRunningBlocked
+    runningSetSize <- SSet.size schedulerRunningDirties
     return $ runningSetSize
 
 blockedOnThreadLimit :: Database -> Int -> STM ()
