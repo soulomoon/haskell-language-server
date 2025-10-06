@@ -481,8 +481,21 @@ transitiveDirtyListBottomUp database seeds = do
   void $ State.runStateT (traverse_ go seeds) mempty
   readIORef acc
 
--- the lefts are keys that are no longer affected, we can try to mark them clean
--- the rights are new affected keys, we need to mark them dirty
+-- | A concurrent variant of 'transitiveDirtyListBottomUp' that computes the difference
+-- between two sets of affected keys.
+--
+-- Returns:
+-- * Right keys: newly affected keys that need to be marked dirty
+-- * Left keys: previously affected keys that are no longer affected (can be marked clean)
+--
+-- The function traverses the reverse-dependency graph concurrently, processing independent
+-- branches in parallel while maintaining bottom-up ordering (dependencies before dependents).
+-- This improves performance on large dependency graphs by utilizing multiple cores.
+--
+-- Thread-safety is ensured by:
+-- * Using TVar for shared state (visited set and accumulator)
+-- * Atomic check-and-mark for the visited set
+-- * mapConcurrently for parallel traversal of independent branches
 transitiveDirtyListBottomUpDiff :: Database -> [Key] -> [Key] -> IO [Either Key Key]
 transitiveDirtyListBottomUpDiff database seeds lastSeeds = do
   -- Use TVars for thread-safe concurrent access
