@@ -24,8 +24,7 @@ import           Control.Concurrent.Extra                 (Barrier, newBarrier,
                                                            waitBarrierMaybe)
 import           Control.Concurrent.STM.Stats             (atomically,
                                                            atomicallyNamed,
-                                                           readTVar, readTVarIO,
-                                                           writeTVar)
+                                                           readTVarIO)
 import           Control.Exception                        (SomeException, try)
 import           Control.Monad                            (join, unless, void)
 import           Control.Monad.IO.Class                   (liftIO)

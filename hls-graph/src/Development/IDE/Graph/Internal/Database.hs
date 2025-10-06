@@ -17,7 +17,8 @@ import           Control.Concurrent.STM.Stats             (STM, atomicallyNamed,
                                                            modifyTVar',
                                                            newTQueueIO,
                                                            newTVarIO, readTVar,
-                                                           readTVarIO, retry)
+                                                           readTVarIO, retry, writeTVar)
+import           Control.Concurrent.Async                 (mapConcurrently)
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class                   (MonadIO (liftIO))
@@ -484,28 +485,38 @@ transitiveDirtyListBottomUp database seeds = do
 -- the rights are new affected keys, we need to mark them dirty
 transitiveDirtyListBottomUpDiff :: Database -> [Key] -> [Key] -> IO [Either Key Key]
 transitiveDirtyListBottomUpDiff database seeds lastSeeds = do
-  acc <- newIORef []
-  let go1 x = do
-        seen <- State.get
-        if x `memberKeySet` seen
-          then pure ()
-          else do
-            State.put (insertKeySet x seen)
-            mnext <- lift $ atomically $ getRunTimeRDeps database x
-            traverse_ go1 (maybe mempty toListKeySet mnext)
-            lift $ modifyIORef' acc (Right x :)
-  let go2 x = do
-        seen <- State.get
-        if x `memberKeySet` seen
-          then pure ()
-          else do
-            State.put (insertKeySet x seen)
-            mnext <- lift $ atomically $ getRunTimeRDeps database x
-            traverse_ go2 (maybe mempty toListKeySet mnext)
-            lift $ modifyIORef' acc (Left x :)
-  -- traverse all seeds
-  void $ State.runStateT (do traverse_ go1 seeds; traverse_ go2 lastSeeds) mempty
-  readIORef acc
+  -- Use TVars for thread-safe concurrent access
+  accTVar <- newTVarIO []
+  seenTVar <- newTVarIO mempty
+  
+  let -- Process a key and its dependencies concurrently
+      go :: (Key -> Either Key Key) -> Key -> IO ()
+      go wrapper x = do
+        alreadySeen <- atomically $ do
+          seen <- readTVar seenTVar
+          if x `memberKeySet` seen
+            then pure True
+            else do
+              writeTVar seenTVar (insertKeySet x seen)
+              pure False
+        
+        unless alreadySeen $ do
+          -- Fetch dependencies
+          mnext <- atomically $ getRunTimeRDeps database x
+          let deps = maybe [] toListKeySet mnext
+          
+          -- Process dependencies concurrently
+          unless (null deps) $ do
+            void $ mapConcurrently (go wrapper) deps
+          
+          -- Add this key to accumulator after all dependencies are processed
+          atomically $ modifyTVar' accTVar (wrapper x :)
+  
+  -- Process new seeds (Right) and old seeds (Left) concurrently
+  void $ mapConcurrently (go Right) seeds
+  void $ mapConcurrently (go Left) lastSeeds
+  
+  readTVarIO accTVar
 
 
 -- | Original spawnRefresh using the general pattern
