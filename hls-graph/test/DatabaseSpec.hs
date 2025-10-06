@@ -50,10 +50,10 @@ spec = do
         let k = newKey $ Rule @()
         -- ChangedRecomputeSame
         r1@Result{resultChanged=rc1, resultBuilt=rb1} <- compute theDb emptyStack k RunDependenciesChanged Nothing
-        incDatabase theDb Nothing
+        _ <- incDatabase theDb Nothing
         -- ChangedRecomputeSame
         r2@Result{resultChanged=rc2, resultBuilt=rb2} <- compute theDb emptyStack k RunDependenciesChanged (Just r1)
-        incDatabase theDb Nothing
+        _ <- incDatabase theDb Nothing
         -- changed Nothing
         Result{resultChanged=rc3, resultBuilt=rb3} <- compute theDb emptyStack k RunDependenciesSame (Just r2)
         rc1 `shouldBe` Step 0
