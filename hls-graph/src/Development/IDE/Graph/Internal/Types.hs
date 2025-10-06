@@ -292,6 +292,7 @@ data SchedulerState = SchedulerState
     , schedulerRunningPending :: SMap.Map Key Int
     -- ^ Keys that are pending because they are waiting for dependencies to complete
     , schedulerAllDirties     :: TVar KeySet
+    , schedulerAllKeysInOrder :: TVar [Key]
     }
 
 -- dump scheduler state

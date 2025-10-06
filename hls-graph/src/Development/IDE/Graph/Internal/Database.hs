@@ -82,6 +82,7 @@ newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra datab
     schedulerRunningPending <- atomically SMap.new
     schedulerUpsweepQueue <- newTQueueIO
     schedulerAllDirties <- newTVarIO mempty
+    schedulerAllKeysInOrder <- newTVarIO []
     let databaseScheduler = SchedulerState{..}
     pure Database{..}
 
@@ -97,8 +98,7 @@ incDatabase :: Database -> Maybe (([Key], [Key]), KeySet) -> IO KeySet
 incDatabase db (Just ((oldkeys, newKeys), preserves)) = do
     atomicallyNamed "incDatabase" $ modifyTVar'  (databaseStep db) $ \(Step i) -> Step $ i + 1
     forM_ newKeys $ \newKey -> atomically $ SMap.focus updateDirty newKey (databaseValues db)
-    atomically $ writeUpsweepQueue (filter (not . isRootKey) oldkeys) db
-    atomically $ writeUpsweepQueue (filter (not . isRootKey) newKeys) db
+    atomically $ writeUpsweepQueue (filter (not . isRootKey) $ oldkeys ++ newKeys) db
     return $ preserves
 
 -- all keys are dirty
@@ -115,7 +115,7 @@ computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], ([K
 computeToPreserve db dirtySet = do
   -- All keys that depend (directly or transitively) on any dirty key
   oldUpSweepDirties <- popOutDirtykeysDB db
-  (oldKeys, newKeys, affected) <- transitiveDirtyListBottomUpDiff db (toListKeySet dirtySet) (toListKeySet oldUpSweepDirties)
+  (oldKeys, newKeys, affected) <- transitiveDirtyListBottomUpDiff db (toListKeySet dirtySet) oldUpSweepDirties
   threads <- readTVar $ databaseThreads db
   let isNonAffected (k, _async) = (deliverKey k) /= newKey "root" && (deliverKey k) `notMemberKeySet` affected
   let unaffected = filter isNonAffected $ threads
@@ -407,6 +407,8 @@ updateReverseDeps myId db prev new = do
 -- compute the transitive reverse dependencies of a set of keys
 
 -- non-root
+-- inline
+{-# INLINE getRunTimeRDeps #-}
 getRunTimeRDeps :: Database -> Key -> STM (Maybe KeySet)
 getRunTimeRDeps db k = do
     r <- SMap.lookup k (databaseRRuntimeDep db)
@@ -440,8 +442,9 @@ transitiveDirtyListBottomUp database seeds = do
           then pure ()
           else do
             State.put (insertKeySet x seen)
-            mnext <- lift $ atomically $ getRunTimeRDeps database x
-            traverse_ go (maybe mempty toListKeySet mnext)
+            when (not (isRootKey x)) $ do
+                mnext <- lift $ atomically $ getRunTimeRDeps database x
+                traverse_ go (maybe mempty toListKeySet mnext)
             lift $ modifyIORef' acc (x :)
   -- traverse all seeds
   void $ State.runStateT (traverse_ go seeds) mempty
@@ -450,7 +453,7 @@ transitiveDirtyListBottomUp database seeds = do
 -- the lefts are keys that are no longer affected, we can try to mark them clean
 -- the rights are new affected keys, we need to mark them dirty
 transitiveDirtyListBottomUpDiff :: Foldable t => Database -> t Key -> [Key] -> STM ([Key], [Key], KeySet)
-transitiveDirtyListBottomUpDiff database seeds lastSeeds = do
+transitiveDirtyListBottomUpDiff database seeds allOldKeys = do
   acc <- newTVar []
   let go1 x = do
         seen <- State.get
@@ -458,22 +461,14 @@ transitiveDirtyListBottomUpDiff database seeds lastSeeds = do
           then pure ()
           else do
             State.put (insertKeySet x seen)
-            mnext <- lift $ getRunTimeRDeps database x
-            traverse_ go1 (maybe mempty toListKeySet mnext)
-            lift $ modifyTVar acc (Right x :)
-  let go2 x = do
-        seen <- State.get
-        if x `memberKeySet` seen
-          then pure ()
-          else do
-            State.put (insertKeySet x seen)
-            mnext <- lift $ getRunTimeRDeps database x
-            traverse_ go2 (maybe mempty toListKeySet mnext)
-            lift $ modifyTVar acc (Left x :)
+            when (not (isRootKey x)) $ do
+                mnext <- lift $ getRunTimeRDeps database x
+                traverse_ go1 (maybe mempty toListKeySet mnext)
+            lift $ modifyTVar acc (x :)
+  newKeys <- readTVar acc
   -- traverse all seeds
-  seen <- snd <$> State.runStateT (do traverse_ go1 seeds; traverse_ go2 lastSeeds) mempty
-  r <- readTVar acc
-  let (oldKeys, newKeys) = partitionEithers $ r
+  seen <- snd <$> State.runStateT (do traverse_ go1 seeds) mempty
+  let oldKeys = filter (`notMemberKeySet` seen) allOldKeys
   return (oldKeys, newKeys, seen)
 
 

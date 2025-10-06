@@ -141,12 +141,13 @@ writeUpsweepQueue :: [Key] -> Database -> STM ()
 writeUpsweepQueue ks Database{..} = do
     let SchedulerState{..} = databaseScheduler
     forM_ ks $ \k -> writeTQueue schedulerUpsweepQueue k
-    modifyTVar' schedulerAllDirties $ \s -> foldr insertKeySet s ks
+    writeTVar schedulerAllKeysInOrder ks
+    writeTVar schedulerAllDirties $ fromListKeySet ks
 
 -- gather all dirty keys that is not finished, to reschedule after restart
 -- includes keys in databaseDirtyTargets, databaseRunningReady, databaseRunningPending, databaseRunningDirties
 -- and clears them from the database
-popOutDirtykeysDB :: Database -> STM KeySet
+popOutDirtykeysDB :: Database -> STM [Key]
 popOutDirtykeysDB Database{..} = do
     let SchedulerState{..} = databaseScheduler
     -- 1. upsweep queue: drain all (atomic flush)
@@ -168,8 +169,9 @@ popOutDirtykeysDB Database{..} = do
     -- 6. All dirties set: read and clear
     reenqueue <- readTVar schedulerAllDirties
     _ <- writeTVar schedulerAllDirties mempty
-    -- Union all into a single KeySet to return
-    pure reenqueue
+    allKeys <- readTVar schedulerAllKeysInOrder
+    _ <- writeTVar schedulerAllKeysInOrder mempty
+    pure $ filter (`memberKeySet` reenqueue) allKeys
 
 -- read one key from ready queue, and insert it into running dirties
 -- this function will block if there is no key in ready queue
