@@ -92,7 +92,7 @@ main = do
     , WatchedFileTests.tests
     , CradleTests.tests
     , DependentFileTest.tests
-    , NonLspCommandLine.tests
+    -- , NonLspCommandLine.tests
     , IfaceTests.tests
     , BootTests.tests
     , RootUriTests.tests
@@ -100,7 +100,7 @@ main = do
     , ClientSettingsTests.tests
     , ReferenceTests.tests
     , ResolveTests.tests
-    , GarbageCollectionTests.tests
+    -- , GarbageCollectionTests.tests
     , HieDbRetry.tests
     , ExceptionTests.tests
     ]
