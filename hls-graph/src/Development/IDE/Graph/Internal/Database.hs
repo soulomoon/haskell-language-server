@@ -465,9 +465,9 @@ transitiveDirtyListBottomUpDiff database seeds allOldKeys = do
                 mnext <- lift $ getRunTimeRDeps database x
                 traverse_ go1 (maybe mempty toListKeySet mnext)
             lift $ modifyTVar acc (x :)
-  newKeys <- readTVar acc
   -- traverse all seeds
   seen <- snd <$> State.runStateT (do traverse_ go1 seeds) mempty
+  newKeys <- readTVar acc
   let oldKeys = filter (`notMemberKeySet` seen) allOldKeys
   return (oldKeys, newKeys, seen)
 
