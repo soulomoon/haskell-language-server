@@ -281,7 +281,7 @@ raedAllLeftsDBQue q = do
 -- | Topological ordering structure for Pearce-Kelly algorithm
 -- Maps each Key to its topological order number (smaller = earlier in order)
 data TopoOrder = TopoOrder
-    { topoOrderMap     :: !(TVar (Map.HashMap Key Int))
+    { topoOrderMap     :: !(SMap.Map Key Int)
     , topoNextOrderNum :: !(TVar Int)
     }
 

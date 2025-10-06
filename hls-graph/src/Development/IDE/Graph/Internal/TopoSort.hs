@@ -13,57 +13,50 @@ module Development.IDE.Graph.Internal.TopoSort
     , addEdge
     , removeKey
     , lookupOrder
-    , getOrderedList
     , getAffectedKeysInOrder
     ) where
 
-import           Control.Concurrent.STM.Stats (STM, modifyTVar', readTVar,
+import           Control.Concurrent.STM.Stats (STM, atomically, readTVar,
                                                writeTVar)
 import           Control.Monad                (when)
-import qualified Data.HashMap.Strict          as Map
 import           Data.List                    (sortOn)
 import           Data.Maybe                   (mapMaybe)
 import           Development.IDE.Graph.Internal.Types (TopoOrder (..))
 import           Development.IDE.Graph.KeySet
+import qualified Focus
+import qualified StmContainers.Map            as SMap
 import           UnliftIO                     (newTVarIO)
 
 -- | Create an empty topological order
 emptyTopoOrder :: IO TopoOrder
 emptyTopoOrder = do
-    topoOrderMap <- newTVarIO Map.empty
+    topoOrderMap <- atomically SMap.new
     topoNextOrderNum <- newTVarIO 0
     return TopoOrder{..}
 
 -- | Look up the order of a key
 lookupOrder :: TopoOrder -> Key -> STM (Maybe Int)
-lookupOrder TopoOrder{..} key = do
-    orderMap <- readTVar topoOrderMap
-    return $ Map.lookup key orderMap
-
--- | Get all keys sorted by their topological order
-getOrderedList :: TopoOrder -> STM [Key]
-getOrderedList TopoOrder{..} = do
-    orderMap <- readTVar topoOrderMap
-    return $ map fst $ sortOn snd $ Map.toList orderMap
+lookupOrder TopoOrder{..} key = SMap.lookup key topoOrderMap
 
 -- | Get affected keys from a KeySet, in topological order
 getAffectedKeysInOrder :: TopoOrder -> KeySet -> STM [Key]
 getAffectedKeysInOrder TopoOrder{..} affected = do
-    orderMap <- readTVar topoOrderMap
     let affectedList = toListKeySet affected
-        withOrders = mapMaybe (\k -> (\o -> (k, o)) <$> Map.lookup k orderMap) affectedList
-    return $ map fst $ sortOn snd withOrders
+    withOrders <- mapM (\k -> do
+        mord <- SMap.lookup k topoOrderMap
+        return $ (\o -> (k, o)) <$> mord) affectedList
+    return $ map fst $ sortOn snd $ mapMaybe id withOrders
 
 -- | Ensure a key has an order assigned
 ensureOrder :: TopoOrder -> Key -> STM Int
 ensureOrder TopoOrder{..} key = do
-    orderMap <- readTVar topoOrderMap
-    case Map.lookup key orderMap of
+    mord <- SMap.lookup key topoOrderMap
+    case mord of
         Just ord -> return ord
         Nothing -> do
             nextOrd <- readTVar topoNextOrderNum
             writeTVar topoNextOrderNum (nextOrd + 1)
-            modifyTVar' topoOrderMap (Map.insert key nextOrd)
+            SMap.insert nextOrd key topoOrderMap
             return nextOrd
 
 -- | Add an edge and maintain topological order using Pearce-Kelly
@@ -79,17 +72,17 @@ addEdge topo@TopoOrder{..} getRDeps from to = do
         -- Forward search: find all keys that transitively depend on 'from'
         -- These need to be shifted to maintain topological order
         affected <- forwardReach topo getRDeps from
-        orderMap <- readTVar topoOrderMap
-        let affectedWithOrders = mapMaybe (\k -> (\o -> (k, o)) <$> Map.lookup k orderMap) affected
+        affectedWithOrders <- mapM (\k -> do
+            mord <- SMap.lookup k topoOrderMap
+            return $ (\o -> (k, o)) <$> mord) affected
+        let affectedPairs = mapMaybe id affectedWithOrders
         -- Only reorder if we have affected keys
-        when (not $ null affectedWithOrders) $ do
-            let minAffected = minimum $ map snd affectedWithOrders
+        when (not $ null affectedPairs) $ do
+            let minAffected = minimum $ map snd affectedPairs
             -- Shift affected keys to come after 'to'
             when (minAffected <= toOrd) $ do
                 let shift = toOrd - minAffected + 1
-                orderMap' <- readTVar topoOrderMap
-                let newMap = foldr (\k m -> Map.adjust (+ shift) k m) orderMap' affected
-                writeTVar topoOrderMap newMap
+                mapM_ (\k -> SMap.focus (Focus.adjust (+ shift)) k topoOrderMap) affected
 
 -- | Forward reachability: find all keys that transitively depend on a given key
 -- Uses DFS through reverse dependencies
@@ -107,5 +100,4 @@ forwardReach _topo getRDeps start = go [start] mempty []
 
 -- | Remove a key from the topological order
 removeKey :: TopoOrder -> Key -> STM ()
-removeKey TopoOrder{..} key = do
-    modifyTVar' topoOrderMap (Map.delete key)
+removeKey TopoOrder{..} key = SMap.delete key topoOrderMap
