@@ -63,23 +63,6 @@ parallel xs = do
             -- if we are already in the rerun mode, nothing we do is going to impact our state
             runActionInDb "parallel" xs
         deps -> error $ "parallel not supported when we have precise dependencies: " ++ show deps
-            -- (newDeps, res) <- liftIO $ unzip <$> runActionInDb usingState xs
-            -- liftIO $ writeIORef (actionDeps a) $ mconcat $ deps : newDeps
-            -- return ()
-
--- pumpActionThread :: ShakeDatabase -> (String -> IO ()) -> Action b
--- pumpActionThread sdb@(ShakeDatabase _ _ _ actionQueue) logMsg = do
---   a <- ask
---   d <- liftIO $ atomicallyNamed "action queue - pop" $ do
---     d <- popQueue actionQueue
---     runInDataBase1 (actionName d) (actionDatabase a) (ignoreState a $ runOne d) (const $ return ())
---     return d
---   liftIO $ logMsg ("pump executed: " ++ actionName d)
---   pumpActionThread sdb logMsg
---   where
---     runOne d = do
---       getAction d
---       liftIO $ atomically $ doneQueue d actionQueue
 
 -- pumpActionThread1 :: ShakeDatabase -> Action ()
 pumpActionThreadReRun :: ShakeDatabase -> DelayedAction () -> Action ()
@@ -87,7 +70,7 @@ pumpActionThreadReRun (ShakeDatabase _ _ db) d = do
         a <- ask
         s <- atomically $ getDataBaseStepInt db
         liftIO $ runInThreadStmInNewThreads db
-            (return $ DeliverStatus s (actionName d) key)
+            (DeliverStatus s (actionName d) key)
             (ignoreState a $ runOne d) (const $ return ())
   where
     key = (newDirectKey $ fromJust $ hashUnique <$> uniqueID d)
@@ -103,7 +86,7 @@ pumpActionThread sdb@(ShakeDatabase _ _ db) logMsg = do
         s <- atomically $ getDataBaseStepInt db
         liftIO $ runInThreadStmInNewThreads db
             -- (return $ DeliverStatus s (actionName d) (newKey "root"))
-            (return $ DeliverStatus s (actionName d) (newDirectKey $ fromJust $ hashUnique <$> uniqueID d))
+            (DeliverStatus s (actionName d) (newDirectKey $ fromJust $ hashUnique <$> uniqueID d))
             (ignoreState a $ runOne d) (const $ return ())
         liftIO $ logMsg ("pump executed: " ++ actionName d)
         pumpActionThread sdb logMsg
@@ -123,7 +106,7 @@ runActionInDb title acts = do
           liftIO $
             runInThreadStmInNewThreads
               (actionDatabase a)
-              (return $ DeliverStatus s title (newKey "root"))
+              (DeliverStatus s title (newKey "root"))
               act
               (atomically . putTMVar barrier)
           return $ barrier

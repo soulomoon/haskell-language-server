@@ -430,10 +430,9 @@ databaseGetActionQueueLength db = do
 -- 4. Exception safety with rollback on registration failure
 -- @ inline
 {-# INLINE spawnAsyncWithDbRegistration #-}
-spawnAsyncWithDbRegistration :: Database -> IO DeliverStatus -> IO a1 -> (Either SomeException a1 -> IO ()) -> IO ()
-spawnAsyncWithDbRegistration db@Database{..} mkdeliver asyncBody handler = do
+spawnAsyncWithDbRegistration :: Database -> DeliverStatus -> IO a1 -> (Either SomeException a1 -> IO ()) -> (forall a. IO a -> IO a) -> IO ()
+spawnAsyncWithDbRegistration db@Database{..} deliver asyncBody handler restore = do
     startBarrier <- newEmptyTMVarIO
-    deliver <- mkdeliver
     -- 1. we need to make sure the thread is registered before we actually start
     -- 2. we should not start in between the restart
     -- 3. if it is killed before we start, we need to cancel the async
@@ -442,18 +441,17 @@ spawnAsyncWithDbRegistration db@Database{..} mkdeliver asyncBody handler = do
                     modifyTVar' databaseThreads ((deliver, a):)
                     -- make sure we only start after the restart
                     putTMVar startBarrier ()
-    uninterruptibleMask $ \restore -> do
-        a <- async (handler =<< (restore $ atomically (readTMVar startBarrier) >> (Right <$> asyncBody)) `catch` \e@(SomeException _) -> return (Left e))
-        (restore $ atomically $ register a)
-            `catch` \e@(SomeException _) -> do
-                    cancelWith a e
-                    throw e
+    a <- async (handler =<< ((restore $ atomically (readTMVar startBarrier) >> (Right <$> asyncBody)) `catch` \e@(SomeException _) -> return (Left e)))
+    (restore $ atomically $ register a)
+        `catch` \e@(SomeException _) -> do
+                cancelWith a e
+                throw e
 
 -- inline
 {-# INLINE runInThreadStmInNewThreads #-}
-runInThreadStmInNewThreads :: Database -> IO DeliverStatus -> IO a -> (Either SomeException a -> IO ()) -> IO ()
-runInThreadStmInNewThreads db mkDeliver act handler =
-        spawnAsyncWithDbRegistration db mkDeliver act handler
+runInThreadStmInNewThreads :: Database -> DeliverStatus -> IO a -> (Either SomeException a -> IO ()) -> IO ()
+runInThreadStmInNewThreads db deliver act handler = uninterruptibleMask $ \restore ->
+        spawnAsyncWithDbRegistration db deliver act handler restore
 
 getDataBaseStepInt :: Database -> STM Int
 getDataBaseStepInt db = do

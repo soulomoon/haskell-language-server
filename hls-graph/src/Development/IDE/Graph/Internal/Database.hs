@@ -9,26 +9,22 @@
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TypeFamilies       #-}
 
-module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..), computeToPreserve, transitiveDirtyListBottomUp, getRunTimeRDeps, spawnAsyncWithDbRegistration, upsweepAction, incDatabase1) where
+module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..), computeToPreserve, getRunTimeRDeps, spawnAsyncWithDbRegistration, upsweepAction, incDatabase1) where
 
 import           Prelude                                  hiding (unzip)
 
 import           Control.Concurrent.STM.Stats             (STM, atomicallyNamed,
-                                                           modifyTVar,
                                                            modifyTVar',
                                                            newTQueueIO,
                                                            newTVarIO, readTVar,
-                                                           readTVarIO, retry,
-                                                           writeTVar)
+                                                           readTVarIO, retry)
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class                   (MonadIO (liftIO))
 import qualified Control.Monad.RWS                        as RWS
-import           Control.Monad.Trans.Class                (lift)
 import           Control.Monad.Trans.Reader
-import qualified Control.Monad.Trans.State.Strict         as State
 import           Data.Dynamic
-import           Data.Foldable                            (traverse_)
+import           Data.Foldable                            (foldrM)
 import           Data.IORef.Extra
 import           Data.Maybe
 import           Data.Traversable                         (for)
@@ -48,10 +44,8 @@ import           UnliftIO                                 (Async, MVar,
                                                            atomically,
                                                            isAsyncException,
                                                            newEmptyMVar,
-                                                           newTVar, putMVar,
-                                                           readMVar)
+                                                           putMVar, readMVar)
 
-import           Data.Either                              (partitionEithers)
 import           Development.IDE.Graph.Internal.Scheduler (cleanHook,
                                                            decreaseMyReverseDepsPendingCount,
                                                            insertBlockedKey,
@@ -59,6 +53,7 @@ import           Development.IDE.Graph.Internal.Scheduler (cleanHook,
                                                            readReadyQueue,
                                                            writeUpsweepQueue)
 import qualified StmContainers.Set                        as SSet
+import qualified UnliftIO.Exception                       as UE
 
 #if MIN_VERSION_base(4,19,0)
 import           Data.Functor                             (unzip)
@@ -178,11 +173,11 @@ builderOne parentKey db stack kid = do
 data FirstTime = FirstTime | NotFirstTime
 
 builderOne' :: FirstTime -> Key -> Database -> Stack -> Key -> IO BuildContinue
-builderOne' firstTime parentKey db@Database {..} stack key = do
+builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleMask $ \restore -> do
   traceEvent ("builderOne: " ++ show key) return ()
   barrier <- newEmptyMVar
   -- join is used to register the async
-  join $ atomicallyNamed "builder" $ do
+  join $ restore $ atomicallyNamed "builder" $ do
     -- Spawn the id if needed
     case firstTime of
         FirstTime -> do
@@ -197,7 +192,9 @@ builderOne' firstTime parentKey db@Database {..} stack key = do
         insertBlockedKey parentKey key db
         SMap.focus (updateStatus $ Running current Nothing barrier) key databaseValues
         let register = spawnRefresh db stack key barrier Nothing refresh
-                        $ atomicallyNamed "builderOne rollback" $ SMap.delete key databaseValues
+                        -- somehow it is important to use restore here
+                        (atomicallyNamed "builderOne rollback" $ SMap.delete key databaseValues) restore
+                        -- (return ()) restore
         return $ register >> return (BCContinue $ readMVar barrier)
       Just (Dirty _) -> do
         insertBlockedKey parentKey key db
@@ -282,9 +279,9 @@ upsweepAction = Action $ do
 
 -- do
 upsweep :: Database -> Stack -> Key -> IO ()
-upsweep db@Database {..} stack key = mask $ \restore -> do
+upsweep db@Database {..} stack key = UE.uninterruptibleMask $ \k -> do
   barrier <- newEmptyMVar
-  join $ atomicallyNamed "upsweep" $ do
+  join $ k $ atomicallyNamed "upsweep" $ do
     dbNotLocked db
     -- insertdatabaseRuntimeDep childtKey key db
     status <- SMap.lookup key databaseValues
@@ -295,10 +292,10 @@ upsweep db@Database {..} stack key = mask $ \restore -> do
         SMap.focus (updateStatus $ Running current s barrier) key databaseValues
         -- if it is clean, other event update it, so it is fine.
         return $ do
-            spawnRefresh db stack key barrier s (\db stack key s -> restore $ do
+            spawnRefresh db stack key barrier s (\db stack key s -> do
                 result <- refresh db stack key s
                 atomically $ cleanHook key db
-                return result) $ atomicallyNamed "upsweep rollback" $ SMap.focus updateDirty key databaseValues
+                return result) (atomicallyNamed "upsweep rollback" $ SMap.focus updateDirty key databaseValues) k
       _ -> return $ atomically $ cleanHook key db
 
 -- refresh :: Database -> Stack -> Key -> Maybe Result -> IO Result
@@ -414,62 +411,33 @@ getRunTimeRDeps db k = do
     r <- SMap.lookup k (databaseRRuntimeDep db)
     return $ (deleteKeySet (newKey "root") <$> r)
 
-
-
--- Legacy helper (no longer used): compute transitive dirty set
--- transitiveDirtySet :: Foldable t => Database -> t Key -> IO KeySet
--- transitiveDirtySet database = flip State.execStateT mempty . traverse_ loop
---   where
---     loop x = do
---         seen <- State.get
---         if x `memberKeySet` seen then pure () else do
---             State.put (insertKeySet x seen)
---             next <- lift $ atomically $ getReverseDependencies database x
---             traverse_ loop (maybe mempty toListKeySet next)
-
--- | A variant of 'transitiveDirtySet' that returns the affected keys
--- in a bottom-up dependency order (children before parents).
---
 -- Edges in the reverse-dependency graph go from a child to its parents.
 -- We perform a DFS and, after exploring all outgoing edges, cons the node onto
 -- the accumulator. This yields children-before-parents order directly.
-transitiveDirtyListBottomUp :: Database -> [Key] -> IO [Key]
-transitiveDirtyListBottomUp database seeds = do
-  acc <- newIORef ([] :: [Key])
-  let go x = do
-        seen <- State.get
-        if x `memberKeySet` seen
-          then pure ()
-          else do
-            State.put (insertKeySet x seen)
-            when (not (isRootKey x)) $ do
-                mnext <- lift $ atomically $ getRunTimeRDeps database x
-                traverse_ go (maybe mempty toListKeySet mnext)
-            lift $ modifyIORef' acc (x :)
-  -- traverse all seeds
-  void $ State.runStateT (traverse_ go seeds) mempty
-  readIORef acc
 
 -- the lefts are keys that are no longer affected, we can try to mark them clean
 -- the rights are new affected keys, we need to mark them dirty
 transitiveDirtyListBottomUpDiff :: Foldable t => Database -> t Key -> [Key] -> STM ([Key], [Key], KeySet)
 transitiveDirtyListBottomUpDiff database seeds allOldKeys = do
-  acc <- newTVar []
-  let go1 x = do
-        seen <- State.get
-        if x `memberKeySet` seen
-          then pure ()
-          else do
-            State.put (insertKeySet x seen)
-            when (not (isRootKey x)) $ do
-                mnext <- lift $ getRunTimeRDeps database x
-                traverse_ go1 (maybe mempty toListKeySet mnext)
-            lift $ modifyTVar acc (x :)
-  -- traverse all seeds
-  seen <- snd <$> State.runStateT (do traverse_ go1 seeds) mempty
-  newKeys <- readTVar acc
+  (newKeys, seen) <- transitiveDirtyListBottomUpDFS database seeds
   let oldKeys = filter (`notMemberKeySet` seen) allOldKeys
   return (oldKeys, newKeys, seen)
+
+transitiveDirtyListBottomUpDFS :: Foldable t => Database -> t Key -> STM ([Key], KeySet)
+transitiveDirtyListBottomUpDFS database seeds = do
+  let go1 :: Key -> ([Key], KeySet) -> STM ([Key], KeySet)
+      go1 x acc@(dirties, seen) = do
+        if x `memberKeySet` seen
+          then pure acc
+          else do
+            (newDirties, newSeen) <- if (not (isRootKey x)) then do
+                mnext <- getRunTimeRDeps database x
+                -- traverse_ go1 (maybe mempty toListKeySet mnext)
+                foldrM go1 (dirties, insertKeySet x seen) (maybe mempty toListKeySet mnext)
+                else return acc
+            return (x:newDirties, newSeen)
+  -- traverse all seeds
+  foldrM go1 ([], mempty) (seeds)
 
 
 -- | Original spawnRefresh using the general pattern
@@ -483,19 +451,20 @@ spawnRefresh ::
   Maybe Result ->
   (Database -> t -> Key -> Maybe Result -> IO Result) ->
   IO () ->
+  (forall a. IO a -> IO a) ->
   IO ()
-spawnRefresh db@Database {..} stack key barrier prevResult refresher rollBack = do
+spawnRefresh db@Database {..} stack key barrier prevResult refresher rollBack restore = do
   Step currentStep <- atomically $ readTVar databaseStep
   spawnAsyncWithDbRegistration
     db
-    (return $ DeliverStatus currentStep ("async computation; " ++ show key) key)
+    (DeliverStatus currentStep ("async computation; " ++ show key) key)
     (refresher db stack key prevResult)
     (\r -> do
         case r of
             Left e  -> when (isAsyncException e) rollBack --- IGNORE ---
             Right _ -> return ()
         handleResult key barrier r
-    )
+    ) restore
 
 -- Attempt to clear a Dirty parent that ended up with unchanged children during this event.
 -- If the parent is Dirty, and every direct child is either Clean/Exception/Running for a step < eventStep,
