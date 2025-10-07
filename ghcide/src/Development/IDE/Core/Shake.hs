@@ -206,7 +206,7 @@ import           Data.Foldable                            (foldl')
 data Log
   = LogCreateHieDbExportsMapStart
   | LogCreateHieDbExportsMapFinish !Int
-  | LogBuildSessionRestart !ShakeRestartArgs ![DelayedActionInternal] !KeySet !Seconds !Seconds !Int !(Maybe FilePath) !Int ![DeliverStatus] !Seconds [DeliverStatus]
+  | LogBuildSessionRestart !ShakeRestartArgs ![DelayedActionInternal] !KeySet !Seconds !Seconds !Int !(Maybe FilePath) !Int ![DeliverStatus] !Seconds
   | LogBuildSessionRestartTakingTooLong !Seconds
   | LogDelayedAction !(DelayedAction ()) !Seconds
   | LogBuildSessionFinish !Step !(Either SomeException [Either SomeException ()])
@@ -250,7 +250,7 @@ instance Pretty Log where
       "Initializing exports map from hiedb"
     LogCreateHieDbExportsMapFinish exportsMapSize ->
       "Done initializing exports map from hiedb. Size:" <+> pretty exportsMapSize
-    LogBuildSessionRestart restartArgs actionQueue keyBackLog abortDuration computeToPreserveTime lookupNums shakeProfilePath step delivers prepare unaffectted ->
+    LogBuildSessionRestart restartArgs actionQueue keyBackLog abortDuration computeToPreserveTime lookupNums shakeProfilePath step delivers prepare ->
       vcat
         [ "Restarting build session due to" <+> pretty (sraReason restartArgs)
         , "Restarts num:" <+> pretty (sraCount $ restartArgs)
@@ -262,7 +262,6 @@ instance Pretty Log where
         , "Aborting previous build session took" <+> pretty (showDuration abortDuration) <+> "(" <> pretty (showDuration computeToPreserveTime) <+> "to compute preserved keys," <+> pretty lookupNums <+> "lookups)"
                     <+> pretty shakeProfilePath
         , "prepare new session took" <+> pretty (showDuration prepare)
-        , "Unaffected keys:" <+> pretty unaffectted
         ]
     LogBuildSessionRestartTakingTooLong seconds ->
         "Build restart is taking too long (" <> pretty (showDuration seconds) <> ")"
@@ -596,7 +595,7 @@ type IdeRule k v =
 -- | A live Shake session with the ability to enqueue Actions for running.
 --   Keeps the 'ShakeDatabase' open, so at most one 'ShakeSession' per database.
 newtype ShakeSession = ShakeSession
-  { cancelShakeSession :: Set (Async ()) -> IO ()
+  { cancelShakeSession :: KeySet -> IO ()
     -- ^ Closes the Shake session
   }
 
@@ -941,10 +940,10 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         newDirtyKeys <- sraBetweenSessions shakeRestartArgs
         -- reverseMap <- shakedatabaseRuntimeDep shakeDb
         -- logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys [] reverseMap
-        (stopTime, (preservekvs, toUpSweepKeys, computePreserveTime, lookupsNum)) <- duration $ do
-            (computePreserveTime,(preservekvs, toUpSweepKeys, lookupsNum)) <- duration $ shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
-            logErrorAfter 10 $ cancelShakeSession runner $ S.fromList $ map snd preservekvs
-            return (map fst preservekvs, toUpSweepKeys, computePreserveTime, lookupsNum)
+        (stopTime, (toUpSweepKeys, computePreserveTime, lookupsNum)) <- duration $ do
+            (computePreserveTime,(dirties, toUpSweepKeys, lookupsNum)) <- duration $ shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
+            logErrorAfter 10 $ cancelShakeSession runner dirties
+            return (toUpSweepKeys, computePreserveTime, lookupsNum)
         survivedDelivers <- shakePeekAsyncsDelivers shakeDb
         -- it is every important to update the dirty keys after we enter the critical section
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
@@ -956,7 +955,8 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         -- this log is required by tests
         step <- shakeGetBuildStep shakeDb
 
-        let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime computePreserveTime lookupsNum  res step survivedDelivers x $ preservekvs
+        -- let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime computePreserveTime lookupsNum  res step survivedDelivers x $ preservekvs
+        let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime computePreserveTime lookupsNum  res step survivedDelivers x
         return (shakeRestartArgs, toUpSweepKeys, fromListKeySet $ map deliverKey survivedDelivers, logRestart)
     )
     -- It is crucial to be masked here, otherwise we can get killed
@@ -1040,12 +1040,13 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
     --  Cancelling is required to flush the Shake database when either
     --  the filesystem or the Ghc configuration have changed
 
-    let cancelShakeSession :: Set (Async ()) -> IO ()
-        cancelShakeSession preserve = do
+    let
+        -- cancelShakeSession :: Set (Async ()) -> IO ()
+        cancelShakeSession dirties = do
             logWith recorder Info $ LogShakeText ("Starting shake cancellation: " <> " (" <> T.pack (show reason) <> ")")
             tid <- myThreadId
-            cancelWith workThread $ AsyncParentKill tid step
-            shakeShutDatabase preserve shakeDb
+            cancelWith workThread $ AsyncParentKill tid step [newKey ("root" :: String)]
+            shakeShutDatabase dirties shakeDb
 
     -- should wait until the step has increased
     pure (ShakeSession{..})

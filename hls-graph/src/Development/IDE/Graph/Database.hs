@@ -48,8 +48,8 @@ import           Development.IDE.WorkerThread             (DeliverStatus)
 -- Placeholder to be the 'extra' if the user doesn't set it
 data NonExportedType = NonExportedType
 
-shakeShutDatabase :: Set (Async ()) -> ShakeDatabase -> IO ()
-shakeShutDatabase preserve (ShakeDatabase _ _ db) = shutDatabase preserve db
+shakeShutDatabase :: KeySet -> ShakeDatabase -> IO ()
+shakeShutDatabase dirties (ShakeDatabase _ _ db) = shutDatabase dirties db
 
 shakeNewDatabase :: (String -> IO ()) -> DBQue -> ActionQueue -> ShakeOptions -> Rules () -> IO ShakeDatabase
 shakeNewDatabase l que aq opts rules = do
@@ -118,7 +118,7 @@ instantiateDelayedAction (DelayedAction _ s p a) = do
 mkDelayedAction :: String -> Logger.Priority -> Action a -> DelayedAction a
 mkDelayedAction s p = DelayedAction Nothing s (toEnum (fromEnum p))
 
--- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO ([(DeliverStatus, Async ())], ([Key], [Key]))
+shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO (KeySet, ([Key], [Key]), Int)
 shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
 
 -- fds make it possible to do al ot of jobs

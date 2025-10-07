@@ -32,11 +32,9 @@ import           Data.IORef
 import           Data.List                          (intercalate)
 import           Data.Maybe                         (fromMaybe, isJust,
                                                      isNothing)
-import           Data.Set                           (Set)
-import qualified Data.Set                           as S
 import           Data.Typeable
 import           Data.Unique                        (Unique)
-import           Debug.Trace                        (traceEventIO)
+import           Debug.Trace                        (traceEvent, traceEventIO)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.WorkerThread       (DeliverStatus (..),
@@ -401,7 +399,7 @@ deleteDatabaseRuntimeDep k db = do
 -- if it is root key, also reverse deps so when the root key is done, we can clean up the reverse deps.
 insertdatabaseRuntimeDep :: Key -> Key -> Database -> STM ()
 insertdatabaseRuntimeDep k pk db = do
-    SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k (databaseRRuntimeDep db)
+    traceEvent (show pk ++ " depend on " ++ show k) $ SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k (databaseRRuntimeDep db)
     when (isRootKey pk) $ SMap.focus (Focus.alter (Just . maybe (singletonKeySet k) (insertKeySet k))) pk (databaseRuntimeDepRoot db)
 
 -- inline
@@ -458,15 +456,15 @@ getDataBaseStepInt db = do
     Step s <- readTVar $ databaseStep db
     return s
 
-data AsyncParentKill = AsyncParentKill ThreadId Step
+data AsyncParentKill = AsyncParentKill ThreadId Step [Key]
     deriving (Show, Eq)
 
 instance Exception AsyncParentKill where
   toException = asyncExceptionToException
   fromException = asyncExceptionFromException
 
-shutDatabase ::Set (Async ()) -> Database -> IO ()
-shutDatabase preserve db@Database{..} = uninterruptibleMask $ \unmask -> do
+shutDatabase ::KeySet -> Database -> IO ()
+shutDatabase dirties db@Database{..} = uninterruptibleMask $ \unmask -> do
     -- Dump scheduler state on shutdown for diagnostics
     -- let dumpPath = "scheduler.dump"
     -- dump <- dumpSchedulerState databaseScheduler
@@ -477,12 +475,13 @@ shutDatabase preserve db@Database{..} = uninterruptibleMask $ \unmask -> do
     tid <- myThreadId
     -- traceEventIO ("shutDatabase: cancelling " ++ show (length asyncs) ++ " asyncs, step " ++ show step)
     -- traceEventIO ("shutDatabase: async entries: " ++ show (map (deliverName . fst) asyncs))
-    let remains = filter (\(_, s) -> s `S.member` preserve) asyncs
-    let toCancel = filter (\(_, s) -> s `S.notMember` preserve) asyncs
-    mapM_ (\(_, a) -> throwTo (asyncThreadId a) $ AsyncParentKill tid step) toCancel
-    atomically $ modifyTVar' databaseThreads (const remains)
-    traceEventIO ("shutDatabase: remains count: " ++ show (length remains) ++ ", names: " ++ show (map (deliverName . fst) remains))
-    traceEventIO ("shutDatabase: toCancel count: " ++ show (length toCancel) ++ ", names: " ++ show (map (deliverName . fst) toCancel))
+    -- let remains = filter (\(_, s) -> s `S.member` preserve) asyncs
+    let rootKey = newKey "root"
+    let toCancel = filter (\(k, _) -> deliverKey k `memberKeySet` dirties || deliverKey k == rootKey) asyncs
+    mapM_ (\(k, a) -> throwTo (asyncThreadId a) $ AsyncParentKill tid step [deliverKey k, newKey "shutDatabase"]) toCancel
+    -- atomically $ modifyTVar' databaseThreads (const remains)
+    -- traceEventIO ("shutDatabase: remains count: " ++ show (length remains) ++ ", names: " ++ show (map (deliverName . fst) remains))
+    -- traceEventIO ("shutDatabase: toCancel count: " ++ show (length toCancel) ++ ", names: " ++ show (map (deliverName . fst) toCancel))
     -- Wait until all the asyncs are done
     -- But if it takes more than 10 seconds, log to stderr
     unless (null asyncs) $ do

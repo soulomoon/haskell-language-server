@@ -21,7 +21,7 @@ import           Control.Concurrent.STM               (STM, atomically, check,
                                                        modifyTVar', readTQueue,
                                                        readTVar, writeTQueue,
                                                        writeTVar)
-import           Control.Monad                        (forM, forM_, void)
+import           Control.Monad                        (forM, forM_, void, when)
 import           Data.Maybe                           (fromMaybe)
 import qualified StmContainers.Map                    as SMap
 
@@ -74,13 +74,9 @@ insertBlockedKey pk k Database {..} = do
   let SchedulerState {..} = databaseScheduler
   isPkRunnings <- SSet.lookup pk schedulerRunningDirties
   isKRunnings  <- SSet.lookup k schedulerRunningDirties
---   if pk `memberKeySet` runnings && k `notMemberKeySet` runnings
-  if isPkRunnings && not isKRunnings
-    then do
+  when (isPkRunnings && not isKRunnings) $ do
         SSet.insert pk schedulerRunningBlocked
         SSet.delete pk schedulerRunningDirties
-    else
-      return ()
 
 -- take out all databaseDirtyTargets and prepare them to run
 prepareToRunKeys :: Foldable t => Database -> t Key -> IO ()
@@ -129,11 +125,12 @@ cleanHook k db = do
 decreaseMyReverseDepsPendingCount :: Key -> Database -> STM ()
 decreaseMyReverseDepsPendingCount k db@Database{..} = do
     -- Gather reverse dependents from runtime map and stored reverse deps
-    mStored  <- SMap.lookup k databaseValues
+    -- mStored  <- SMap.lookup k databaseValues
     mRuntime <- SMap.lookup k databaseRRuntimeDep
-    let rdepsStored  = maybe mempty keyReverseDeps mStored
+    let
+        -- rdepsStored  = maybe mempty keyReverseDeps mStored
         rdepsRuntime = fromMaybe mempty mRuntime
-        parents = deleteKeySet (newKey "root") (rdepsStored <> rdepsRuntime)
+        parents = deleteKeySet (newKey "root") rdepsRuntime
     -- For each parent, decrement its pending count; enqueue if it hits zero
     forM_ (toListKeySet parents) $ \p -> decreasePendingCount p db
 

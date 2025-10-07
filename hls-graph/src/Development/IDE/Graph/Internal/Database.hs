@@ -29,7 +29,8 @@ import           Data.IORef.Extra
 import           Data.Maybe
 import           Data.Traversable                         (for)
 import           Data.Tuple.Extra
-import           Debug.Trace                              (traceEvent)
+import           Debug.Trace                              (traceEvent,
+                                                           traceEventIO)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules
@@ -91,9 +92,9 @@ incDatabase1 db Nothing                = incDatabase db Nothing
 -- only some keys are dirty
 incDatabase :: Database -> Maybe (([Key], [Key]), KeySet) -> IO KeySet
 incDatabase db (Just ((oldkeys, newKeys), preserves)) = do
-    atomicallyNamed "incDatabase" $ modifyTVar'  (databaseStep db) $ \(Step i) -> Step $ i + 1
+    atomicallyNamed "incDatabase" $ modifyTVar' (databaseStep db) $ \(Step i) -> Step $ i + 1
     forM_ newKeys $ \newKey -> atomically $ SMap.focus updateDirty newKey (databaseValues db)
-    atomically $ writeUpsweepQueue (filter (not . isRootKey) $ oldkeys ++ newKeys) db
+    atomically $ writeUpsweepQueue (oldkeys ++ newKeys) db
     return $ preserves
 
 -- all keys are dirty
@@ -106,15 +107,18 @@ incDatabase db Nothing = do
     return $ mempty
 
 -- computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], ([Key], [Key]))
-computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], ([Key], [Key]), Int)
+-- computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], ([Key], [Key]), Int)
+computeToPreserve :: Database -> KeySet -> STM (KeySet, ([Key], [Key]), Int)
 computeToPreserve db dirtySet = do
   -- All keys that depend (directly or transitively) on any dirty key
+  traceEvent ("markDirty base " ++ show dirtySet) $ return ()
   oldUpSweepDirties <- popOutDirtykeysDB db
   (oldKeys, newKeys, affected) <- transitiveDirtyListBottomUpDiff db (toListKeySet dirtySet) oldUpSweepDirties
-  threads <- readTVar $ databaseThreads db
-  let isNonAffected (k, _async) = (deliverKey k) /= newKey "root" && (deliverKey k) `notMemberKeySet` affected
-  let unaffected = filter isNonAffected $ threads
-  pure (unaffected, (oldKeys, newKeys), length newKeys)
+  traceEvent ("markDirty all " ++ show affected) $ return ()
+--   threads <- readTVar $ databaseThreads db
+--   let isNonAffected (k, _async) = (deliverKey k) /= newKey "root" && (deliverKey k) `notMemberKeySet` affected
+--   let unaffected = filter isNonAffected threads
+  pure (affected, (oldKeys, newKeys), length newKeys)
 
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
@@ -168,8 +172,6 @@ builderOne parentKey db stack kid = do
     r <- builderOne' FirstTime parentKey db stack kid
     return (kid, r)
 
-
-
 data FirstTime = FirstTime | NotFirstTime
 
 builderOne' :: FirstTime -> Key -> Database -> Stack -> Key -> IO BuildContinue
@@ -192,9 +194,14 @@ builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleM
         insertBlockedKey parentKey key db
         SMap.focus (updateStatus $ Running current Nothing barrier) key databaseValues
         let register = spawnRefresh db stack key barrier Nothing refresh
-                        -- somehow it is important to use restore here
-                        (atomicallyNamed "builderOne rollback" $ SMap.delete key databaseValues) restore
-                        -- (return ()) restore
+                        -- why it is important to use rollback here
+
+                        {- Note [Rollback is required if killed before registration]
+                        It is important to use rollback here because a key might be killed before it is registered, even though it is not one of the dirty keys.
+                        In this case, it would skip being marked as dirty. Therefore, we have to roll back here if it is killed, to ensure consistency.
+                        -}
+                        (\_ -> atomicallyNamed "builderOne rollback" $ SMap.delete key databaseValues)
+                        restore
         return $ register >> return (BCContinue $ readMVar barrier)
       Just (Dirty _) -> do
         insertBlockedKey parentKey key db
@@ -213,10 +220,13 @@ builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleM
             pure . pure $ BCContinue $ readMVar wait
 
 -- Original spawnRefresh implementation moved below to use the abstraction
-handleResult :: (Show a1, MonadIO m) => a1 -> MVar (Either a2 (a1, b)) -> Either a2 b -> m ()
+-- handleResult :: (Show a1, MonadIO m) => a1 -> MVar (Either a2 (a1, b)) -> Either a2 b -> m ()
+handleResult :: MonadIO m => Key -> MVar (Either SomeException (Key, b)) -> Either SomeException b -> m ()
 handleResult k barrier eResult = do
     case eResult of
         Right r -> putMVar barrier (Right (k, r))
+        -- accumulate the async kill info for debugging
+        Left e | Just (AsyncParentKill tid s ks) <- fromException e  -> putMVar barrier (Left (toException $ AsyncParentKill tid s (k:ks)))
         Left e  -> putMVar barrier (Left e)
 
 -- | isDirty
@@ -246,25 +256,17 @@ refreshDeps visited db stack key result = \case
 
 -- propogate up the changes
 
--- When an change event happens,
+-- When an key change event happens,
 -- we mark transitively all the keys that depend on the changed key as dirty.
 -- then when we upsweep, we just fire and set it as clean
 
 -- the same event or new event might reach the same key multiple times,
--- but we only need to process it once.
--- so when upsweep, we keep a eventStep, when the eventStep is older than the newest visit step of the key
--- we just stop the key and stop propogating further.
+-- but we only need to process it once. So we only process when it is dirty.
 
--- if we allow downsweep, it might see two diffrent state of the same key by peeking at
--- a key the event have not reached yet, and a key the event have reached.
--- this might cause inconsistency.
--- so we simply wait for the upsweep to finish before allowing to peek at the key.
--- But if it is not there at all, we compute it. Since upsweep only propogate when a key changed,
-
--- a version of upsweep that only freshes the key in order and use semophore to limit the concurrency
--- it is simpler and should be more efficient in the case of many keys to upsweep
-upsweep1 :: Database -> Stack -> IO ()
-upsweep1 db stack = go
+-- a version of upsweep that only freshes the key in topo order and limit the concurrency
+-- it is simpler and should be more efficient when too many keys need to be upswept
+upsweepAll :: Database -> Stack -> IO ()
+upsweepAll db stack = go
     where
         go = do
             k <- atomically $ readReadyQueue db
@@ -275,15 +277,13 @@ upsweepAction :: Action ()
 upsweepAction = Action $ do
     SAction{..} <- RWS.ask
     let db = actionDatabase
-    liftIO $ upsweep1 db actionStack
+    liftIO $ upsweepAll db actionStack
 
--- do
 upsweep :: Database -> Stack -> Key -> IO ()
 upsweep db@Database {..} stack key = UE.uninterruptibleMask $ \k -> do
   barrier <- newEmptyMVar
   join $ k $ atomicallyNamed "upsweep" $ do
     dbNotLocked db
-    -- insertdatabaseRuntimeDep childtKey key db
     status <- SMap.lookup key databaseValues
     current <- readTVar databaseStep
     case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
@@ -291,11 +291,15 @@ upsweep db@Database {..} stack key = UE.uninterruptibleMask $ \k -> do
       (Dirty s) -> do
         SMap.focus (updateStatus $ Running current s barrier) key databaseValues
         -- if it is clean, other event update it, so it is fine.
-        return $ do
+        return $
             spawnRefresh db stack key barrier s (\db stack key s -> do
                 result <- refresh db stack key s
                 atomically $ cleanHook key db
-                return result) (atomicallyNamed "upsweep rollback" $ SMap.focus updateDirty key databaseValues) k
+                return result)
+                -- see Note [Rollback is required if killed before registration]
+                (const $ atomicallyNamed "upsweep rollback" $ SMap.focus updateDirty key databaseValues)
+                -- (traceEventIO $ "markDirty should " ++ show key)
+                k
       _ -> return $ atomically $ cleanHook key db
 
 -- refresh :: Database -> Stack -> Key -> Maybe Result -> IO Result
@@ -430,15 +434,17 @@ transitiveDirtyListBottomUpDFS database seeds = do
         if x `memberKeySet` seen
           then pure acc
           else do
-            (newDirties, newSeen) <- if (not (isRootKey x)) then do
+            let newAcc = (dirties, insertKeySet x seen)
+            if (not (isRootKey x)) then do
                 mnext <- getRunTimeRDeps database x
-                -- traverse_ go1 (maybe mempty toListKeySet mnext)
-                foldrM go1 (dirties, insertKeySet x seen) (maybe mempty toListKeySet mnext)
-                else return acc
-            return (x:newDirties, newSeen)
+                (newDirties, newSeen) <- foldrM go1 newAcc (maybe mempty toListKeySet mnext)
+                return (x:newDirties, newSeen)
+                -- if it is root key, we do not add it to the dirty list
+                -- since root key is not up for upsweep
+                -- but it would be in the seen list, so we would kill dirty root key async
+                else return newAcc
   -- traverse all seeds
   foldrM go1 ([], mempty) (seeds)
-
 
 -- | Original spawnRefresh using the general pattern
 -- inline
@@ -450,7 +456,7 @@ spawnRefresh ::
   MVar (Either SomeException (Key, Result)) ->
   Maybe Result ->
   (Database -> t -> Key -> Maybe Result -> IO Result) ->
-  IO () ->
+  (SomeException -> IO ()) ->
   (forall a. IO a -> IO a) ->
   IO ()
 spawnRefresh db@Database {..} stack key barrier prevResult refresher rollBack restore = do
@@ -461,7 +467,7 @@ spawnRefresh db@Database {..} stack key barrier prevResult refresher rollBack re
     (refresher db stack key prevResult)
     (\r -> do
         case r of
-            Left e  -> when (isAsyncException e) rollBack --- IGNORE ---
+            Left e  -> when (isAsyncException e) (rollBack e) --- IGNORE ---
             Right _ -> return ()
         handleResult key barrier r
     ) restore
