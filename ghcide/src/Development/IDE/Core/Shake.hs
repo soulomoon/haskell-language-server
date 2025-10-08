@@ -155,6 +155,8 @@ import           Development.IDE.Graph.Internal.Database  (AsyncParentKill (Asyn
                                                            computeToPreserve)
 import           Development.IDE.Graph.Internal.Scheduler
 import           Development.IDE.Graph.Internal.Types     (DBQue, Step (..),
+                                                           dumpSchedulerState,
+                                                           getShakeSchedulerState,
                                                            getShakeStep,
                                                            shakeDataBaseQueue,
                                                            withShakeDatabaseValuesLock)
@@ -836,6 +838,9 @@ shakeSessionInit recorder IdeState{..} = do
 shakeShut :: IdeState -> IO ()
 shakeShut IdeState{..} = do
     runner <- tryReadMVar shakeSession
+    -- let dumpPath = "scheduler.dump"
+    -- dump <- dumpSchedulerState =<< getShakeSchedulerState shakeDb
+    -- writeFile dumpPath dump
     -- Shake gets unhappy if you try to close when there is a running
     -- request so we first abort that.
     for_ runner (flip cancelShakeSession mempty)

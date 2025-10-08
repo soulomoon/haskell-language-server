@@ -94,7 +94,8 @@ incDatabase :: Database -> Maybe (([Key], [Key]), KeySet) -> IO KeySet
 incDatabase db (Just ((oldkeys, newKeys), preserves)) = do
     atomicallyNamed "incDatabase" $ modifyTVar' (databaseStep db) $ \(Step i) -> Step $ i + 1
     forM_ newKeys $ \newKey -> atomically $ SMap.focus updateDirty newKey (databaseValues db)
-    atomically $ writeUpsweepQueue (oldkeys ++ newKeys) db
+    -- only upsweep the keys that are not preserved
+    atomically $ writeUpsweepQueue (filter  (`notMemberKeySet` preserves) oldkeys ++ newKeys) db
     return $ preserves
 
 -- all keys are dirty
@@ -114,7 +115,8 @@ computeToPreserve db dirtySet = do
   traceEvent ("markDirty base " ++ show dirtySet) $ return ()
   oldUpSweepDirties <- popOutDirtykeysDB db
   (oldKeys, newKeys, affected) <- transitiveDirtyListBottomUpDiff db (toListKeySet dirtySet) oldUpSweepDirties
-  traceEvent ("markDirty all " ++ show affected) $ return ()
+  traceEvent ("oldKeys " ++ show oldKeys) $ return ()
+  traceEvent ("newKeys " ++ show newKeys) $ return ()
 --   threads <- readTVar $ databaseThreads db
 --   let isNonAffected (k, _async) = (deliverKey k) /= newKey "root" && (deliverKey k) `notMemberKeySet` affected
 --   let unaffected = filter isNonAffected threads
@@ -180,10 +182,10 @@ builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleM
   barrier <- newEmptyMVar
   -- join is used to register the async
   join $ restore $ atomicallyNamed "builder" $ do
+    dbNotLocked db
     -- Spawn the id if needed
     case firstTime of
         FirstTime -> do
-            dbNotLocked db
             insertdatabaseRuntimeDep key parentKey db
         NotFirstTime -> return ()
     status <- SMap.lookup key databaseValues
@@ -191,7 +193,7 @@ builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleM
 
     case (viewToRun current . keyStatus) =<< status of
       Nothing -> do
-        insertBlockedKey parentKey key db
+        insertBlockedKey "Nothing" parentKey key db
         SMap.focus (updateStatus $ Running current Nothing barrier) key databaseValues
         let register = spawnRefresh db stack key barrier Nothing refresh
                         -- why it is important to use rollback here
@@ -204,7 +206,7 @@ builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleM
                         restore
         return $ register >> return (BCContinue $ readMVar barrier)
       Just (Dirty _) -> do
-        insertBlockedKey parentKey key db
+        insertBlockedKey "dirty" parentKey key db
         case firstTime of
             FirstTime -> pure . pure $ BCContinue $ do
                     br <- builderOne' NotFirstTime parentKey db stack key
@@ -216,7 +218,7 @@ builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleM
       Just (Running _step _s wait)
         | memberStack key stack -> throw $ StackException stack
         | otherwise -> do
-            insertBlockedKey parentKey key db
+            insertBlockedKey "running" parentKey key db
             pure . pure $ BCContinue $ readMVar wait
 
 -- Original spawnRefresh implementation moved below to use the abstraction
@@ -286,21 +288,25 @@ upsweep db@Database {..} stack key = UE.uninterruptibleMask $ \k -> do
     dbNotLocked db
     status <- SMap.lookup key databaseValues
     current <- readTVar databaseStep
-    case viewDirty current $ maybe (Dirty Nothing) keyStatus status of
+    case keyStatus <$> status of
       -- if it is still dirty, we update it and propogate further
-      (Dirty s) -> do
+      Just (Dirty s) -> do
         SMap.focus (updateStatus $ Running current s barrier) key databaseValues
         -- if it is clean, other event update it, so it is fine.
         return $
             spawnRefresh db stack key barrier s (\db stack key s -> do
                 result <- refresh db stack key s
-                atomically $ cleanHook key db
+                -- todo, maybe just put this to refresh
+                -- atomically $ cleanHook key db
                 return result)
                 -- see Note [Rollback is required if killed before registration]
                 (const $ atomicallyNamed "upsweep rollback" $ SMap.focus updateDirty key databaseValues)
                 -- (traceEventIO $ "markDirty should " ++ show key)
                 k
-      _ -> return $ atomically $ cleanHook key db
+      Just (Clean _) -> return $ atomically $ cleanHook key db
+    --   leave it for downsweep
+      Nothing -> return $ atomically $ cleanHook key db
+      _ -> return . return $ ()
 
 -- refresh :: Database -> Stack -> Key -> Maybe Result -> IO Result
 -- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
@@ -314,7 +320,6 @@ compute :: Database -> Stack -> Key -> RunMode -> Maybe Result -> IO Result
 -- compute _ st k _ _ | traceShow ("compute", st, k) False = undefined
 compute db@Database{..} stack key mode result = do
     let act = runRule databaseRules key (fmap resultData result) mode
-    -- todo, it does not consider preserving, since a refresh is not added to deps
     deps <- liftIO $ newIORef UnknownDeps
     curStep <- liftIO $ readTVarIO databaseStep
     dataBaseLogger $ "Computing key: " ++ show key ++ " at step " ++ show curStep
@@ -351,6 +356,7 @@ compute db@Database{..} stack key mode result = do
             _ -> pure ()
         runHook
         decreaseMyReverseDepsPendingCount key db
+        cleanHook key db
         -- todo
         -- it might be overridden by error if another kills this thread
         SMap.focus (updateStatus $ Clean res) key databaseValues

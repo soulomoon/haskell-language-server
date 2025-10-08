@@ -228,6 +228,8 @@ data ShakeDatabase = ShakeDatabase !Int [Action ()] Database
 newtype Step = Step Int
     deriving newtype (Eq,Ord,Hashable,Show,Num,Enum,Real,Integral)
 
+getShakeSchedulerState :: ShakeDatabase -> IO SchedulerState
+getShakeSchedulerState (ShakeDatabase _ _ db) = return $ databaseScheduler db
 
 getShakeStep :: MonadIO m => ShakeDatabase -> m Step
 getShakeStep (ShakeDatabase _ _ db) = do
@@ -292,6 +294,8 @@ data SchedulerState = SchedulerState
     , schedulerAllDirties     :: TVar KeySet
     , schedulerAllKeysInOrder :: TVar [Key]
     }
+-- invariants:
+-- schedulerRunningDirties and schedulerRunningBlocked are disjoint.
 
 -- dump scheduler state
 dumpSchedulerState :: SchedulerState -> IO String
@@ -304,8 +308,8 @@ dumpSchedulerState SchedulerState{..} = atomically $ do
     mapM_ (writeTQueue schedulerRunningReady) ready
 
     -- Snapshot sets and pending map
-    -- dirties <- readTVar schedulerRunningDirties
-    -- blocked <- readTVar schedulerRunningBlocked
+    dirties <- ListT.toList $ SSet.listT schedulerRunningDirties
+    blocked <- ListT.toList $ SSet.listT schedulerRunningBlocked
     pendingPairs <- ListT.toList (SMap.listT schedulerRunningPending)
 
     let ppKey k    = PP.pretty k
@@ -321,10 +325,10 @@ dumpSchedulerState SchedulerState{..} = atomically $ do
               , PP.indent 2 (ppKeys ready)
               , PP.pretty ("pending:" :: String) <> PP.pretty (length pendingPairs)
               , PP.indent 2 (ppPairs pendingPairs)
-              , PP.pretty ("running:" :: String) <> PP.pretty (length (map fst pendingPairs))
-            --   , PP.indent 2 (ppKeys (toListKeySet dirties))
-            --   , PP.pretty ("blocked:" :: String) <> PP.pretty (length (toListKeySet blocked))
-            --   , PP.indent 2 (ppKeys (toListKeySet blocked))
+              , PP.pretty ("running:" :: String) <> PP.pretty (length dirties)
+              , PP.indent 2 (ppKeys (dirties))
+              , PP.pretty ("blocked:" :: String) <> PP.pretty (length blocked)
+              , PP.indent 2 (ppKeys (blocked))
               ]
           ]
     pure $ renderString (PP.layoutPretty PP.defaultLayoutOptions doc)
@@ -512,10 +516,8 @@ getDatabaseValues = atomically
                   . SMap.listT
                   . databaseValues
 
--- todo if stage1 runtime as dirty since it is not yet submitted to the task queue
 data Status
     = Clean !Result
-    -- todo
     -- dirty should say why it is dirty,
     -- it should and only should be clean,
     -- once all the event has been processed,

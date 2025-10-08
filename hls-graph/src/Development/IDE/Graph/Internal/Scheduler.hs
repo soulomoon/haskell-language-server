@@ -25,12 +25,14 @@ import           Control.Monad                        (forM, forM_, void, when)
 import           Data.Maybe                           (fromMaybe)
 import qualified StmContainers.Map                    as SMap
 
+import           Debug.Trace                          (traceEvent)
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Types (Database (..),
                                                        KeyDetails (..),
                                                        Result (..),
                                                        SchedulerState (..),
-                                                       Status (..), getResult,
+                                                       Status (..), dbNotLocked,
+                                                       getResult,
                                                        getResultDepsDefault)
 import qualified StmContainers.Set                    as SSet
 
@@ -69,14 +71,18 @@ prepareToRunKey k Database {..} = do
 -- for key in the ready queue, if the parent key is running and the child key is not running,
 -- it must be blocked on some new dependency
 -- we insert the parent key into blocked set, and only clean it when its build succeedsb
-insertBlockedKey :: Key -> Key -> Database -> STM ()
-insertBlockedKey pk k Database {..} = do
+insertBlockedKey :: String -> Key -> Key -> Database -> STM ()
+insertBlockedKey reason pk k Database {..} = do
   let SchedulerState {..} = databaseScheduler
-  isPkRunnings <- SSet.lookup pk schedulerRunningDirties
-  isKRunnings  <- SSet.lookup k schedulerRunningDirties
-  when (isPkRunnings && not isKRunnings) $ do
-        SSet.insert pk schedulerRunningBlocked
+--   isPkRunnings <- SSet.lookup pk schedulerRunningDirties
+--   isKRunnings  <- SSet.lookup k schedulerRunningDirties
+  dirties <- readTVar schedulerAllDirties
+  -- todo it might be blocked before we insert it into running
+  -- and missing the insertion into blocked set
+--   when (pk `memberKeySet` dirties) $ do
+  when (pk `memberKeySet` dirties) $ do
         SSet.delete pk schedulerRunningDirties
+        SSet.insert pk schedulerRunningBlocked
 
 -- take out all databaseDirtyTargets and prepare them to run
 prepareToRunKeys :: Foldable t => Database -> t Key -> IO ()
@@ -175,10 +181,16 @@ popOutDirtykeysDB Database{..} = do
 -- and also block if the number of running non-blocked keys exceeds maxThreads
 readReadyQueue :: Database -> STM Key
 readReadyQueue db@Database{..} = do
+    dbNotLocked db
     blockedOnThreadLimit db 20
     let SchedulerState{..} = databaseScheduler
     r <- readTQueue schedulerRunningReady
-    SSet.insert r schedulerRunningDirties
+    -- is might blocked because it is already running by downsweep.
+    isBlocked <- SSet.lookup r schedulerRunningBlocked
+    if isBlocked
+      then pure ()
+      else SSet.insert r schedulerRunningDirties
+    -- SSet.insert r schedulerRunningDirties
     return r
 
 

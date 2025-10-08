@@ -33,6 +33,7 @@ import           Development.IDE.Types.Location
 import           GHC.Generics
 import           HieDb.Types                          (HieDb)
 import qualified StmContainers.Map                    as STM
+import           System.FilePath                      (takeBaseName)
 import           Type.Reflection                      (SomeTypeRep (SomeTypeRep),
                                                        eqTypeRep, pattern App,
                                                        type (:~~:) (HRefl),
@@ -102,7 +103,7 @@ newtype Q k = Q (k, NormalizedFilePath)
     deriving newtype (Eq, Hashable, NFData)
 
 instance Show k => Show (Q k) where
-    show (Q (k, file)) = show k ++ "; " ++ fromNormalizedFilePath file
+    show (Q (k, file)) = show k ++ "; " ++ takeBaseName (fromNormalizedFilePath file)
 
 -- | Invariant: the @v@ must be in normal form (fully evaluated).
 --   Otherwise we keep repeatedly 'rnf'ing values taken from the Shake database
