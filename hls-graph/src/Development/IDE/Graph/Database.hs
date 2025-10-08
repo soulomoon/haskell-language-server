@@ -15,34 +15,26 @@ module Development.IDE.Graph.Database(
     shakeGetActionQueueLength,
     shakeComputeToPreserve,
     -- shakedatabaseRuntimeDep,
-    shakePeekAsyncsDelivers,
-    upsweepAction) where
-import           Control.Concurrent.Async                 (Async)
-import           Control.Concurrent.Extra                 (Barrier, newBarrier,
-                                                           signalBarrier,
-                                                           waitBarrierMaybe)
-import           Control.Concurrent.STM.Stats             (atomically,
-                                                           atomicallyNamed,
-                                                           readTVarIO)
-import           Control.Exception                        (SomeException, try)
-import           Control.Monad                            (join, unless, void)
-import           Control.Monad.IO.Class                   (liftIO)
+    shakePeekAsyncsDelivers
+    ) where
+import           Control.Concurrent.STM.Stats            (atomically,
+                                                          atomicallyNamed,
+                                                          readTVarIO)
+import           Control.Exception                       (SomeException)
+import           Control.Monad                           (join)
 import           Data.Dynamic
 import           Data.Maybe
-import           Data.Set                                 (Set)
 import           Data.Unique
-import           Debug.Trace                              (traceEvent)
-import           Development.IDE.Graph.Classes            ()
+import           Debug.Trace                             (traceEvent)
+import           Development.IDE.Graph.Classes           ()
 import           Development.IDE.Graph.Internal.Action
 import           Development.IDE.Graph.Internal.Database
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Options
-import           Development.IDE.Graph.Internal.Profile   (writeProfile)
+import           Development.IDE.Graph.Internal.Profile  (writeProfile)
 import           Development.IDE.Graph.Internal.Rules
-import           Development.IDE.Graph.Internal.Scheduler
 import           Development.IDE.Graph.Internal.Types
-import qualified Development.IDE.Graph.Internal.Types     as Logger
-import           Development.IDE.WorkerThread             (DeliverStatus)
+import           Development.IDE.WorkerThread            (DeliverStatus)
 
 
 -- Placeholder to be the 'extra' if the user doesn't set it
@@ -81,7 +73,7 @@ unvoid = fmap undefined
 -- seperate incrementing the step from running the build.
 -- Also immediately enqueues upsweep actions for the newly dirty keys.
 shakeRunDatabaseForKeysSep
-    :: Maybe (([Key],[Key]),KeySet) -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
+    :: Maybe (KeySet, KeySet) -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
     -> ShakeDatabase
     -> [Action a]
     -> Bool
@@ -89,36 +81,13 @@ shakeRunDatabaseForKeysSep
 shakeRunDatabaseForKeysSep keysChanged sdb@(ShakeDatabase _ as1 db) acts isTesting = do
     -- we can to upsweep these keys in order one by one,
     preserves <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase1 db keysChanged
-    (_, act) <- instantiateDelayedAction (mkDelayedAction "upsweep" Debug $ upsweepAction)
     reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress (databaseActionQueue db)
     let reenqueuedExceptPreserves = filter (\d -> (newDirectKey $ fromJust $ hashUnique <$> uniqueID d) `notMemberKeySet` preserves) reenqueued
-    let ignoreResultActs = (getAction act) : (liftIO $ prepareToRunKeysRealTime db) : as1
     return $ do
         seqRunActions (newKey "root") db $ map (pumpActionThreadReRun sdb) reenqueuedExceptPreserves
-        drop (length ignoreResultActs) <$> runActions (newKey "root") db (map unvoid ignoreResultActs ++ acts)
+        drop (length as1) <$> runActions (newKey "root") db (map unvoid as1 ++ acts)
 
-instantiateDelayedAction
-    :: DelayedAction a
-    -> IO (Barrier (Either SomeException a), DelayedActionInternal)
-instantiateDelayedAction (DelayedAction _ s p a) = do
-  u <- newUnique
-  b <- newBarrier
-  let a' = do
-        -- work gets reenqueued when the Shake session is restarted
-        -- it can happen that a work item finished just as it was reenqueued
-        -- in that case, skipping the work is fine
-        alreadyDone <- liftIO $ isJust <$> waitBarrierMaybe b
-        unless alreadyDone $ do
-          x <- actionCatch @SomeException (Right <$> a) (pure . Left)
-          -- ignore exceptions if the barrier has been filled concurrently
-          liftIO $ void $ try @SomeException $ signalBarrier b x
-      d' = DelayedAction (Just u) s p a'
-  return (b, d')
-
-mkDelayedAction :: String -> Logger.Priority -> Action a -> DelayedAction a
-mkDelayedAction s p = DelayedAction Nothing s (toEnum (fromEnum p))
-
-shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO (KeySet, ([Key], [Key]), Int)
+-- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO (KeySet, ([Key], [Key]), Int)
 shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
 
 -- fds make it possible to do al ot of jobs
@@ -130,7 +99,7 @@ shakeRunDatabaseForKeys
     -> IO [Either SomeException a]
 shakeRunDatabaseForKeys Nothing sdb as2 = join $ shakeRunDatabaseForKeysSep Nothing sdb as2 True
 shakeRunDatabaseForKeys (Just x) sdb as2 =
-    let y = fromListKeySet x in join $ shakeRunDatabaseForKeysSep (Just (([], toListKeySet y), y)) sdb as2 True
+    let y = fromListKeySet x in join $ shakeRunDatabaseForKeysSep (Just (mempty, y)) sdb as2 True
 
 
 shakePeekAsyncsDelivers :: ShakeDatabase -> IO [DeliverStatus]

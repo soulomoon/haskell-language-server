@@ -2,18 +2,19 @@
 {-# LANGUAGE RecordWildCards #-}
 
 module Development.IDE.Graph.Internal.Scheduler
-  ( prepareToRunKey
-  , prepareToRunKeys
-  , decreasePendingCount
-  , decreaseMyReverseDepsPendingCount
-  , popOutDirtykeysDB
-  , readReadyQueue
-  , computeRunningNonBlocked
-  , cleanHook
-  , blockedOnThreadLimit
-  , insertBlockedKey
-  , prepareToRunKeysRealTime
-  , writeUpsweepQueue
+  (
+--      prepareToRunKey
+--   , prepareToRunKeys
+--   , decreasePendingCount
+--   , decreaseMyReverseDepsPendingCount
+--   , popOutDirtykeysDB
+--   , readReadyQueue
+--   , computeRunningNonBlocked
+--   , cleanHook
+--   , blockedOnThreadLimit
+--   , insertBlockedKey
+--   , prepareToRunKeysRealTime
+--   , writeUpsweepQueue
   ) where
 
 import           Control.Concurrent.STM               (STM, atomically, check,

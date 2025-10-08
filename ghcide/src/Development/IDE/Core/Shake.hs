@@ -831,7 +831,7 @@ shakeSessionInit recorder IdeState{..} = do
     -- Take a snapshot of the VFS - it should be empty as we've received no notifications
     -- till now, but it can't hurt to be in sync with the `lsp` library.
     vfs <- vfsSnapshot (lspEnv shakeExtras)
-    initSession <- newSession recorder shakeExtras (VFSModified vfs) shakeDb [] "shakeSessionInit" mempty (const $ return ())
+    initSession <- newSession recorder shakeExtras (VFSModified vfs) shakeDb [] "shakeSessionInit" mempty mempty (const $ return ())
     putMVar shakeSession initSession
     logWith recorder Debug LogSessionInitialised
 
@@ -945,10 +945,10 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         newDirtyKeys <- sraBetweenSessions shakeRestartArgs
         -- reverseMap <- shakedatabaseRuntimeDep shakeDb
         -- logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys [] reverseMap
-        (stopTime, (toUpSweepKeys, computePreserveTime, lookupsNum)) <- duration $ do
-            (computePreserveTime,(dirties, toUpSweepKeys, lookupsNum)) <- duration $ shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
+        (stopTime, (computePreserveTime,  dirties)) <- duration $ do
+            (computePreserveTime, dirties) <- duration $ shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
             logErrorAfter 10 $ cancelShakeSession runner dirties
-            return (toUpSweepKeys, computePreserveTime, lookupsNum)
+            return (computePreserveTime, dirties)
         survivedDelivers <- shakePeekAsyncsDelivers shakeDb
         -- it is every important to update the dirty keys after we enter the critical section
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
@@ -961,15 +961,15 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         step <- shakeGetBuildStep shakeDb
 
         -- let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime computePreserveTime lookupsNum  res step survivedDelivers x $ preservekvs
-        let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime computePreserveTime lookupsNum  res step survivedDelivers x
-        return (shakeRestartArgs, toUpSweepKeys, fromListKeySet $ map deliverKey survivedDelivers, logRestart)
+        let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime computePreserveTime (lengthKeySet dirties) res step survivedDelivers x
+        return (shakeRestartArgs, fromListKeySet $ map deliverKey survivedDelivers, dirties, logRestart)
     )
     -- It is crucial to be masked here, otherwise we can get killed
     -- between spawning the new thread and updating shakeSession.
     -- See https://github.com/haskell/ghcide/issues/79
-    ( \(ShakeRestartArgs {..}, toUpSweepKeys, unaffected, logRestart) ->
+    ( \(ShakeRestartArgs {..}, unaffected, dirties, logRestart) ->
         do
-          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason (toUpSweepKeys, unaffected) logRestart
+          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason unaffected dirties logRestart
           `finally` for_ sraWaitMVars (`putMVar` ())
     )
   where
@@ -1016,10 +1016,11 @@ newSession
     -> ShakeDatabase
     -> [DelayedActionInternal]
     -> String
-    -> (([Key], [Key]), KeySet)
+    -> KeySet
+    -> KeySet
     -> (Seconds  -> IO ())
     -> IO ShakeSession
-newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKeys logrestart = do
+newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason preserves dirties logrestart = do
 
     -- Take a new VFS snapshot
     case vfsMod of
@@ -1031,7 +1032,7 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
     let pumpLogger msg = logWith recorder Debug $ LogShakeText (T.pack msg)
     -- Use graph-level helper that runs the pump thread and enqueues upsweep actions
     let IdeTesting isTesting = ideTesting
-    (seconds, startDatabase) <- duration $ shakeRunDatabaseForKeysSep (Just newDirtyKeys) shakeDb (pumpActionThread shakeDb pumpLogger: map getAction acts) isTesting
+    (seconds, startDatabase) <- duration $ shakeRunDatabaseForKeysSep (Just (preserves, dirties)) shakeDb (pumpActionThread shakeDb pumpLogger: map getAction acts) isTesting
     logrestart seconds
     -- Capture step AFTER scheduling so logging reflects new build number inside workRun
     step <- getShakeStep shakeDb
