@@ -4,15 +4,28 @@ module Development.IDE.Graph.Database(
     shakeNewDatabase,
     shakeRunDatabase,
     shakeRunDatabaseForKeys,
+    shakeRunDatabaseForKeysSep,
     shakeProfileDatabase,
     shakeGetBuildStep,
     shakeGetDatabaseKeys,
     shakeGetDirtySet,
     shakeGetCleanKeys
-    ,shakeGetBuildEdges) where
-import           Control.Concurrent.STM.Stats            (readTVarIO)
+    ,shakeGetBuildEdges,
+    shakeShutDatabase,
+    shakeGetActionQueueLength,
+    shakeComputeToPreserve,
+    -- shakedatabaseRuntimeDep,
+    shakePeekAsyncsDelivers
+    ) where
+import           Control.Concurrent.STM.Stats            (atomically,
+                                                          atomicallyNamed,
+                                                          readTVarIO)
+import           Control.Exception                       (SomeException)
+import           Control.Monad                           (join)
 import           Data.Dynamic
 import           Data.Maybe
+import           Data.Unique
+import           Debug.Trace                             (traceEvent)
 import           Development.IDE.Graph.Classes           ()
 import           Development.IDE.Graph.Internal.Action
 import           Development.IDE.Graph.Internal.Database
@@ -21,20 +34,24 @@ import           Development.IDE.Graph.Internal.Options
 import           Development.IDE.Graph.Internal.Profile  (writeProfile)
 import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
+import           Development.IDE.WorkerThread            (DeliverStatus)
 
 
 -- Placeholder to be the 'extra' if the user doesn't set it
 data NonExportedType = NonExportedType
 
-shakeNewDatabase :: ShakeOptions -> Rules () -> IO ShakeDatabase
-shakeNewDatabase opts rules = do
+shakeShutDatabase :: KeySet -> ShakeDatabase -> IO ()
+shakeShutDatabase dirties (ShakeDatabase _ _ db) = shutDatabase dirties db
+
+shakeNewDatabase :: (String -> IO ()) -> DBQue -> ActionQueue -> ShakeOptions -> Rules () -> IO ShakeDatabase
+shakeNewDatabase l que aq opts rules = do
     let extra = fromMaybe (toDyn NonExportedType) $ shakeExtra opts
     (theRules, actions) <- runRules extra rules
-    db <- newDatabase extra theRules
+    db <- newDatabase l que aq extra theRules
     pure $ ShakeDatabase (length actions) actions db
 
-shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [a]
-shakeRunDatabase = shakeRunDatabaseForKeys Nothing
+shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [Either SomeException a]
+shakeRunDatabase s xs = shakeRunDatabaseForKeys Nothing s xs
 
 -- | Returns the set of dirty keys annotated with their age (in # of builds)
 shakeGetDirtySet :: ShakeDatabase -> IO [(Key, Int)]
@@ -52,19 +69,45 @@ unvoid :: Functor m => m () -> m a
 unvoid = fmap undefined
 
 -- | Assumes that the database is not running a build
+-- The nested IO is to
+-- seperate incrementing the step from running the build.
+-- Also immediately enqueues upsweep actions for the newly dirty keys.
+shakeRunDatabaseForKeysSep
+    :: Maybe (KeySet, KeySet) -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
+    -> ShakeDatabase
+    -> [Action a]
+    -> Bool
+    -> IO (IO [Either SomeException a])
+shakeRunDatabaseForKeysSep keysChanged sdb@(ShakeDatabase _ as1 db) acts isTesting = do
+    -- we can to upsweep these keys in order one by one,
+    preserves <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase1 db keysChanged
+    reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress (databaseActionQueue db)
+    let reenqueuedExceptPreserves = filter (\d -> (newDirectKey $ fromJust $ hashUnique <$> uniqueID d) `notMemberKeySet` preserves) reenqueued
+    return $ do
+        seqRunActions (newKey "root") db $ map (pumpActionThreadReRun sdb) reenqueuedExceptPreserves
+        drop (length as1) <$> runActions (newKey "root") db (map unvoid as1 ++ acts)
+
+-- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO (KeySet, ([Key], [Key]), Int)
+shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
+
+-- fds make it possible to do al ot of jobs
 shakeRunDatabaseForKeys
     :: Maybe [Key]
       -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
     -> ShakeDatabase
     -> [Action a]
-    -> IO [a]
-shakeRunDatabaseForKeys keysChanged (ShakeDatabase lenAs1 as1 db) as2 = do
-    incDatabase db keysChanged
-    fmap (drop lenAs1) $ runActions db $ map unvoid as1 ++ as2
+    -> IO [Either SomeException a]
+shakeRunDatabaseForKeys Nothing sdb as2 = join $ shakeRunDatabaseForKeysSep Nothing sdb as2 True
+shakeRunDatabaseForKeys (Just x) sdb as2 =
+    let y = fromListKeySet x in join $ shakeRunDatabaseForKeysSep (Just (mempty, y)) sdb as2 True
+
+
+shakePeekAsyncsDelivers :: ShakeDatabase -> IO [DeliverStatus]
+shakePeekAsyncsDelivers (ShakeDatabase _ _ db) = peekAsyncsDelivers db
 
 -- | Given a 'ShakeDatabase', write an HTML profile to the given file about the latest run.
 shakeProfileDatabase :: ShakeDatabase -> FilePath -> IO ()
-shakeProfileDatabase (ShakeDatabase _ _ s) file = writeProfile file s
+shakeProfileDatabase (ShakeDatabase _ _ db) file = writeProfile file db
 
 -- | Returns the clean keys in the database
 shakeGetCleanKeys :: ShakeDatabase -> IO [(Key, Result )]
@@ -83,3 +126,7 @@ shakeGetBuildEdges (ShakeDatabase _ _ db) = do
 --   annotated with how long ago (in # builds) they were visited
 shakeGetDatabaseKeys :: ShakeDatabase -> IO [(Key, Int)]
 shakeGetDatabaseKeys (ShakeDatabase _ _ db) = getKeysAndVisitAge db
+
+shakeGetActionQueueLength :: ShakeDatabase -> IO Int
+shakeGetActionQueueLength (ShakeDatabase _ _ db) = do
+    fromIntegral <$> atomically (countQueue (databaseActionQueue db))
