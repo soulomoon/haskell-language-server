@@ -441,7 +441,7 @@ cacheTransitiveDirtyListBottomUpDFSWithRootKey db@Database{..} seeds = do
   --   we should put pump root keys back to seen
 --   for each new key, get its root keys and put them back to seen
   foldrM (\k acc -> do
-            mroot <- SMap.lookup k databaseRuntimeDepRoot
+            mroot <- SMap.lookup k databaseRRuntimeDepRoot
             case mroot of
                 Just roots -> return $ foldr insertKeySet acc (toListKeySet roots)
                 Nothing    -> return acc
