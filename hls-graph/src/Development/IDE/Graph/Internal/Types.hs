@@ -342,7 +342,9 @@ data Database = Database {
     databaseThreads        :: TVar [(DeliverStatus, Async ())],
 
     databaseRuntimeDepRoot :: SMap.Map Key KeySet,
+    databaseRRuntimeDepRoot :: SMap.Map Key KeySet,
     databaseRRuntimeDep    :: SMap.Map Key KeySet,
+    databaseTransitiveRRuntimeDepCache :: SMap.Map KeySet ([Key], KeySet),
     -- it is used to compute the transitive reverse deps, so
     -- if not in any of the transitive reverse deps of a dirty node, it is clean
     -- we can skip clean the threads.
@@ -396,15 +398,28 @@ deleteDatabaseRuntimeDep k db = do
             SMap.delete k (databaseRuntimeDepRoot db)
             -- also remove k from all its reverse deps
             forM_ (toListKeySet deps) $ \d -> do
-                SMap.focus (Focus.alter (fmap (deleteKeySet k))) d (databaseRRuntimeDep db)
+                SMap.focus (Focus.alter (fmap (deleteKeySet k))) d (databaseRRuntimeDepRoot db)
 
 
 -- record runtime reverse deps for each key,
 -- if it is root key, also reverse deps so when the root key is done, we can clean up the reverse deps.
 insertdatabaseRuntimeDep :: Key -> Key -> Database -> STM ()
 insertdatabaseRuntimeDep k pk db = do
-    traceEvent (show pk ++ " depend on " ++ show k) $ SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k (databaseRRuntimeDep db)
-    when (isRootKey pk) $ SMap.focus (Focus.alter (Just . maybe (singletonKeySet k) (insertKeySet k))) pk (databaseRuntimeDepRoot db)
+    if isRootKey pk || isRootKey k
+        then do
+            SMap.focus (Focus.alter (Just . maybe (singletonKeySet k) (insertKeySet k))) pk (databaseRuntimeDepRoot db)
+            SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k (databaseRRuntimeDepRoot db)
+        else do
+            -- databaseRRuntimeDep only incremental, so no need to keep a reverse one
+            -- Also I want to know if the database changed
+            -- if changed we need to reset databaseTransitiveRRuntimeDepCache
+            SMap.lookup k (databaseRRuntimeDep db) >>= \case
+                Nothing -> do
+                    SMap.insert (singletonKeySet pk) k (databaseRRuntimeDep db)
+                    SMap.reset (databaseTransitiveRRuntimeDepCache db)
+                Just s -> when (pk `notMemberKeySet` s) $ do
+                    SMap.insert (insertKeySet pk s) k (databaseRRuntimeDep db)
+                    SMap.reset (databaseTransitiveRRuntimeDepCache db)
 
 -- inline
 {-# INLINE isRootKey #-}

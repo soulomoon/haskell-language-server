@@ -136,7 +136,7 @@ renderKey (lookupKeyValue -> (KeyValue _ t)) = t
 renderKey (lookupKeyValue -> (DirectKeyValue i)) = T.pack ("DirectKeyValue " ++ show i)
 
 newtype KeySet = KeySet IntSet
-  deriving newtype (Eq, Ord, Semigroup, Monoid, NFData)
+  deriving newtype (Eq, Ord, Semigroup, Monoid, NFData, Hashable)
 
 instance Pretty KeySet where
   pretty (KeySet is) = pretty (coerce (IS.toList is) :: [Key])

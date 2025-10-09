@@ -198,7 +198,7 @@ computeRunningNonBlocked :: Database -> STM Int
 computeRunningNonBlocked Database{..} = do
     let SchedulerState{..} = databaseScheduler
     runningSetSize <- SSet.size schedulerRunningDirties
-    return $ runningSetSize
+    return runningSetSize
 
 blockedOnThreadLimit :: Database -> Int -> STM ()
 blockedOnThreadLimit db maxThreads = do
