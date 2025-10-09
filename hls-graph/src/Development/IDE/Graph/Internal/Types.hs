@@ -34,7 +34,7 @@ import           Data.Maybe                         (fromMaybe, isJust,
                                                      isNothing)
 import           Data.Typeable
 import           Data.Unique                        (Unique)
-import           Debug.Trace                        (traceEvent, traceEventIO)
+import           Debug.Trace                        (traceEventIO)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.WorkerThread       (DeliverStatus (..),
@@ -337,37 +337,37 @@ dumpSchedulerState SchedulerState{..} = atomically $ do
 
 
 data Database = Database {
-    databaseExtra          :: Dynamic,
+    databaseExtra                      :: Dynamic,
 
-    databaseThreads        :: TVar [(DeliverStatus, Async ())],
+    databaseThreads                    :: TVar [(DeliverStatus, Async ())],
 
-    databaseRuntimeDepRoot :: SMap.Map Key KeySet,
-    databaseRRuntimeDepRoot :: SMap.Map Key KeySet,
-    databaseRRuntimeDep    :: SMap.Map Key KeySet,
+    databaseRuntimeDepRoot             :: SMap.Map Key KeySet,
+    databaseRRuntimeDepRoot            :: SMap.Map Key KeySet,
+    databaseRRuntimeDep                :: SMap.Map Key KeySet,
     databaseTransitiveRRuntimeDepCache :: SMap.Map KeySet ([Key], KeySet),
     -- it is used to compute the transitive reverse deps, so
     -- if not in any of the transitive reverse deps of a dirty node, it is clean
     -- we can skip clean the threads.
     -- this is update right before we query the database for the key result.
-    dataBaseLogger         :: String -> IO (),
+    dataBaseLogger                     :: String -> IO (),
 
-    databaseQueue          :: DBQue,
+    databaseQueue                      :: DBQue,
     -- The action queue and
-    databaseActionQueue    :: ActionQueue,
+    databaseActionQueue                :: ActionQueue,
 
     -- All scheduling-related state is grouped under a standalone scheduler
     -- to improve encapsulation and make refactors simpler.
     -- unpack this field
-    databaseScheduler      :: {-# UNPACK #-} !SchedulerState,
+    databaseScheduler                  :: {-# UNPACK #-} !SchedulerState,
 
 
-    databaseRules          :: TheRules,
-    databaseStep           :: !(TVar Step),
+    databaseRules                      :: TheRules,
+    databaseStep                       :: !(TVar Step),
 
-    databaseValuesLock     :: !(TVar Bool),
+    databaseValuesLock                 :: !(TVar Bool),
     -- when we restart a build, we set this to False to block any other
     -- threads from reading databaseValues
-    databaseValues         :: !(Map Key KeyDetails)
+    databaseValues                     :: !(Map Key KeyDetails)
 
     }
 
@@ -394,7 +394,6 @@ deleteDatabaseRuntimeDep k db = do
     case result of
         Nothing -> return ()
         Just deps -> do
-            -- also remove from reverse map
             SMap.delete k (databaseRuntimeDepRoot db)
             -- also remove k from all its reverse deps
             forM_ (toListKeySet deps) $ \d -> do

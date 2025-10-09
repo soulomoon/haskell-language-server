@@ -17,7 +17,6 @@ module Development.IDE.Graph.Database(
     -- shakedatabaseRuntimeDep,
     shakePeekAsyncsDelivers,
     upsweepAction) where
-import           Control.Concurrent.Async                 (Async)
 import           Control.Concurrent.Extra                 (Barrier, newBarrier,
                                                            signalBarrier,
                                                            waitBarrierMaybe)
@@ -29,7 +28,6 @@ import           Control.Monad                            (join, unless, void)
 import           Control.Monad.IO.Class                   (liftIO)
 import           Data.Dynamic
 import           Data.Maybe
-import           Data.Set                                 (Set)
 import           Data.Unique
 import           Debug.Trace                              (traceEvent)
 import           Development.IDE.Graph.Classes            ()
@@ -84,9 +82,8 @@ shakeRunDatabaseForKeysSep
     :: Maybe (([Key],[Key]),KeySet) -- ^ Set of keys changed since last run. 'Nothing' means everything has changed
     -> ShakeDatabase
     -> [Action a]
-    -> Bool
     -> IO (IO [Either SomeException a])
-shakeRunDatabaseForKeysSep keysChanged sdb@(ShakeDatabase _ as1 db) acts isTesting = do
+shakeRunDatabaseForKeysSep keysChanged sdb@(ShakeDatabase _ as1 db) acts = do
     -- we can to upsweep these keys in order one by one,
     preserves <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase1 db keysChanged
     (_, act) <- instantiateDelayedAction (mkDelayedAction "upsweep" Debug $ upsweepAction)
@@ -128,9 +125,9 @@ shakeRunDatabaseForKeys
     -> ShakeDatabase
     -> [Action a]
     -> IO [Either SomeException a]
-shakeRunDatabaseForKeys Nothing sdb as2 = join $ shakeRunDatabaseForKeysSep Nothing sdb as2 True
+shakeRunDatabaseForKeys Nothing sdb as2 = join $ shakeRunDatabaseForKeysSep Nothing sdb as2
 shakeRunDatabaseForKeys (Just x) sdb as2 =
-    let y = fromListKeySet x in join $ shakeRunDatabaseForKeysSep (Just (([], toListKeySet y), y)) sdb as2 True
+    let y = fromListKeySet x in join $ shakeRunDatabaseForKeysSep (Just (([], toListKeySet y), y)) sdb as2
 
 
 shakePeekAsyncsDelivers :: ShakeDatabase -> IO [DeliverStatus]
