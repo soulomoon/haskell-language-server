@@ -172,7 +172,7 @@ tests = testGroup "diagnostics"
   , testCase "add missing module (non workspace)" $
     runSessionWithTestConfig def
         { testPluginDescriptor = dummyPlugin
-        , testConfigCaps = lspTestCapsNoFileWatches
+        -- , testConfigCaps = lspTestCapsNoFileWatches
         , testDirLocation = Right (mkIdeTestFs [])
         }
     $ \tmpDir -> do
