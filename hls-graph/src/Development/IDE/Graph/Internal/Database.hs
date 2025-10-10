@@ -29,8 +29,7 @@ import           Data.IORef.Extra
 import           Data.Maybe
 import           Data.Traversable                         (for)
 import           Data.Tuple.Extra
-import           Debug.Trace                              (traceEvent,
-                                                           traceEventIO)
+import           Debug.Trace                              (traceEvent)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules
@@ -63,7 +62,7 @@ import           Data.List.NonEmpty                       (unzip)
 #endif
 
 
-newDatabase :: (String -> IO ()) ->  DBQue -> ActionQueue -> Dynamic -> TheRules -> IO Database
+newDatabase :: (String -> IO ()) -> DBQue -> ActionQueue -> Dynamic -> TheRules -> IO Database
 newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra databaseRules = do
     databaseStep <- newTVarIO $ Step 0
     databaseThreads <- newTVarIO []
@@ -111,7 +110,7 @@ incDatabase db Nothing = do
 
 -- computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], ([Key], [Key]))
 -- computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], ([Key], [Key]), Int)
-computeToPreserve :: Database -> KeySet -> STM (KeySet, ([Key], [Key]), Int)
+-- computeToPreserve :: Database -> KeySet -> STM (KeySet, ([Key], [Key]), Int)
 computeToPreserve db dirtySet = do
   -- All keys that depend (directly or transitively) on any dirty key
   traceEvent ("markDirty base " ++ show dirtySet) $ return ()
@@ -122,7 +121,7 @@ computeToPreserve db dirtySet = do
 --   threads <- readTVar $ databaseThreads db
 --   let isNonAffected (k, _async) = (deliverKey k) /= newKey "root" && (deliverKey k) `notMemberKeySet` affected
 --   let unaffected = filter isNonAffected threads
-  pure (affected, (oldKeys, newKeys), length newKeys)
+  pure (affected, (oldKeys, newKeys), length newKeys, oldUpSweepDirties)
 
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->

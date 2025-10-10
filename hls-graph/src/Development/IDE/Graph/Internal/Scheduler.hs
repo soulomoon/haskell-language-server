@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase      #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ViewPatterns    #-}
 
 module Development.IDE.Graph.Internal.Scheduler
   ( prepareToRunKey
@@ -14,6 +15,8 @@ module Development.IDE.Graph.Internal.Scheduler
   , insertBlockedKey
   , prepareToRunKeysRealTime
   , writeUpsweepQueue
+  , reportRemainDirties
+  , reportTotalCount
   ) where
 
 import           Control.Concurrent.STM               (STM, atomically, check,
@@ -29,12 +32,21 @@ import           Debug.Trace                          (traceEvent)
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Types (Database (..),
                                                        KeyDetails (..),
-                                                       Result (..),
+                                                       Result (..), RunChanged,
                                                        SchedulerState (..),
                                                        Status (..), dbNotLocked,
                                                        getResult,
                                                        getResultDepsDefault)
 import qualified StmContainers.Set                    as SSet
+
+
+reportRemainDirties :: Database -> STM Int
+reportRemainDirties (databaseScheduler -> SchedulerState{..}) =
+    lengthKeySet <$> readTVar schedulerAllDirties
+
+reportTotalCount :: Database -> STM Int
+reportTotalCount (databaseScheduler -> SchedulerState{..}) =
+    length <$> readTVar schedulerAllKeysInOrder
 
 -- prepare to run a key in databaseDirtyTargets
 -- we first peek if all the deps are clean
@@ -62,6 +74,7 @@ prepareToRunKey k Database {..} = do
   let SchedulerState {..} = databaseScheduler
   if pendingCount == 0
     then do
+      -- we need to know hat happens in the last time to determinie if something changed
       writeTQueue schedulerRunningReady k
       SMap.delete k schedulerRunningPending
     else do

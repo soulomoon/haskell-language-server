@@ -115,7 +115,7 @@ instantiateDelayedAction (DelayedAction _ s p a) = do
 mkDelayedAction :: String -> Logger.Priority -> Action a -> DelayedAction a
 mkDelayedAction s p = DelayedAction Nothing s (toEnum (fromEnum p))
 
-shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO (KeySet, ([Key], [Key]), Int)
+-- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO (KeySet, ([Key], [Key]), Int)
 shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
 
 -- fds make it possible to do al ot of jobs

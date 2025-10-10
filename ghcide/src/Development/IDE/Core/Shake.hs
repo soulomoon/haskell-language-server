@@ -79,129 +79,135 @@ module Development.IDE.Core.Shake(
     ) where
 
 import           Control.Concurrent.Async
-import           Control.Concurrent.STM
-import           Control.Concurrent.STM.Stats            (atomicallyNamed)
+import           Control.Concurrent.STM                   hiding (atomically)
+import           Control.Concurrent.STM.Stats             (atomicallyNamed)
 import           Control.Concurrent.Strict
 import           Control.DeepSeq
-import           Control.Exception.Extra                 hiding (bracket_)
-import           Control.Lens                            ((%~), (&), (?~))
+import           Control.Exception.Extra                  hiding (bracket_)
+import           Control.Lens                             ((%~), (&), (?~))
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
 import           Control.Monad.Reader
 import           Control.Monad.Trans.Maybe
-import           Data.Aeson                              (Result (Success),
-                                                          toJSON)
-import qualified Data.Aeson.Types                        as A
-import qualified Data.ByteString.Char8                   as BS
-import           Data.Coerce                             (coerce)
+import           Data.Aeson                               (Result (Success),
+                                                           toJSON)
+import qualified Data.Aeson.Types                         as A
+import qualified Data.ByteString.Char8                    as BS
+import           Data.Coerce                              (coerce)
 import           Data.Default
 import           Data.Dynamic
-import           Data.EnumMap.Strict                     (EnumMap)
-import qualified Data.EnumMap.Strict                     as EM
-import           Data.Foldable                           (find, for_)
-import           Data.Functor                            ((<&>))
+import           Data.EnumMap.Strict                      (EnumMap)
+import qualified Data.EnumMap.Strict                      as EM
+import           Data.Foldable                            (find, for_)
+import           Data.Functor                             ((<&>))
 import           Data.Functor.Identity
 import           Data.Hashable
-import qualified Data.HashMap.Strict                     as HMap
-import           Data.HashSet                            (HashSet)
-import qualified Data.HashSet                            as HSet
-import           Data.List.Extra                         (partition, takeEnd)
-import qualified Data.Map.Strict                         as Map
+import qualified Data.HashMap.Strict                      as HMap
+import           Data.HashSet                             (HashSet)
+import qualified Data.HashSet                             as HSet
+import           Data.List.Extra                          (partition, takeEnd)
+import qualified Data.Map.Strict                          as Map
 import           Data.Maybe
-import qualified Data.SortedList                         as SL
-import           Data.String                             (fromString)
-import qualified Data.Text                               as T
+import qualified Data.SortedList                          as SL
+import           Data.String                              (fromString)
+import qualified Data.Text                                as T
 import           Data.Time
 import           Data.Traversable
 import           Data.Tuple.Extra
 import           Data.Typeable
 import           Data.Unique
-import           Data.Vector                             (Vector)
-import qualified Data.Vector                             as Vector
+import           Data.Vector                              (Vector)
+import qualified Data.Vector                              as Vector
 import           Development.IDE.Core.Debouncer
-import           Development.IDE.Core.FileUtils          (getModTime)
+import           Development.IDE.Core.FileUtils           (getModTime)
 import           Development.IDE.Core.PositionMapping
 import           Development.IDE.Core.ProgressReporting
 import           Development.IDE.Core.RuleTypes
-import           Development.IDE.Types.Options           as Options
-import qualified Language.LSP.Protocol.Message           as LSP
-import qualified Language.LSP.Server                     as LSP
+import           Development.IDE.Types.Options            as Options
+import qualified Language.LSP.Protocol.Message            as LSP
+import qualified Language.LSP.Server                      as LSP
 
-import           Data.Either                             (isRight, lefts)
-import           Data.Int                                (Int64)
+import           Data.Either                              (isRight, lefts)
+import           Data.Int                                 (Int64)
 import           Development.IDE.Core.Tracing
-import           Development.IDE.GHC.Compat              (NameCache,
-                                                          NameCacheUpdater,
-                                                          initNameCache,
-                                                          knownKeyNames)
-import           Development.IDE.GHC.Orphans             ()
-import           Development.IDE.Graph                   hiding (ShakeValue,
-                                                          action)
-import qualified Development.IDE.Graph                   as Shake
-import           Development.IDE.Graph.Database          (ShakeDatabase,
-                                                          shakeComputeToPreserve,
-                                                          shakeGetActionQueueLength,
-                                                          shakeGetBuildStep,
-                                                          shakeGetDatabaseKeys,
-                                                          shakeNewDatabase,
-                                                          shakePeekAsyncsDelivers,
-                                                          shakeProfileDatabase,
-                                                          shakeRunDatabaseForKeysSep,
-                                                          shakeShutDatabase)
-import           Development.IDE.Graph.Internal.Action   (pumpActionThread)
-import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
-import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
-                                                          getShakeStep,
-                                                          shakeDataBaseQueue,
-                                                          withShakeDatabaseValuesLock)
+import           Development.IDE.GHC.Compat               (NameCache,
+                                                           NameCacheUpdater,
+                                                           initNameCache,
+                                                           knownKeyNames)
+import           Development.IDE.GHC.Orphans              ()
+import           Development.IDE.Graph                    hiding (ShakeValue,
+                                                           action)
+import qualified Development.IDE.Graph                    as Shake
+import           Development.IDE.Graph.Database           (ShakeDatabase,
+                                                           shakeComputeToPreserve,
+                                                           shakeGetActionQueueLength,
+                                                           shakeGetBuildStep,
+                                                           shakeGetDatabaseKeys,
+                                                           shakeNewDatabase,
+                                                           shakePeekAsyncsDelivers,
+                                                           shakeProfileDatabase,
+                                                           shakeRunDatabaseForKeysSep,
+                                                           shakeShutDatabase)
+import           Development.IDE.Graph.Internal.Action    (pumpActionThread)
+import           Development.IDE.Graph.Internal.Database  (AsyncParentKill (AsyncParentKill))
+import           Development.IDE.Graph.Internal.Scheduler (reportRemainDirties,
+                                                           reportTotalCount)
+import           Development.IDE.Graph.Internal.Types     (DBQue,
+                                                           ShakeDatabase (ShakeDatabase),
+                                                           Step (..),
+                                                           getShakeStep,
+                                                           shakeDataBaseQueue,
+                                                           withShakeDatabaseValuesLock)
 import           Development.IDE.Graph.Rule
-import           Development.IDE.Types.Action            (ActionQueue,
-                                                          DelayedAction (..),
-                                                          DelayedActionInternal,
-                                                          abortQueue, newQueue,
-                                                          peekInProgress,
-                                                          pushQueue)
+import           Development.IDE.Types.Action             (ActionQueue,
+                                                           DelayedAction (..),
+                                                           DelayedActionInternal,
+                                                           abortQueue, newQueue,
+                                                           peekInProgress,
+                                                           pushQueue)
 import           Development.IDE.Types.Diagnostics
-import           Development.IDE.Types.Exports           hiding (exportsMapSize)
-import qualified Development.IDE.Types.Exports           as ExportsMap
+import           Development.IDE.Types.Exports            hiding
+                                                          (exportsMapSize)
+import qualified Development.IDE.Types.Exports            as ExportsMap
 import           Development.IDE.Types.KnownTargets
 import           Development.IDE.Types.Location
-import           Development.IDE.Types.Monitoring        (Monitoring (..))
+import           Development.IDE.Types.Monitoring         (Monitoring (..))
 import           Development.IDE.Types.Shake
 import           Development.IDE.WorkerThread
 import qualified Focus
 import           GHC.Fingerprint
-import           GHC.Stack                               (HasCallStack)
-import           GHC.TypeLits                            (KnownSymbol)
+import           GHC.Stack                                (HasCallStack)
+import           GHC.TypeLits                             (KnownSymbol)
 import           HieDb.Types
-import           Ide.Logger                              hiding (Priority)
-import qualified Ide.Logger                              as Logger
+import           Ide.Logger                               hiding (Priority)
+import qualified Ide.Logger                               as Logger
 import           Ide.Plugin.Config
-import qualified Ide.PluginUtils                         as HLS
+import qualified Ide.PluginUtils                          as HLS
 import           Ide.Types
-import qualified Language.LSP.Protocol.Lens              as L
+import qualified Language.LSP.Protocol.Lens               as L
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Protocol.Types
-import qualified Language.LSP.Protocol.Types             as LSP
-import           Language.LSP.VFS                        hiding (start)
+import qualified Language.LSP.Protocol.Types              as LSP
+import           Language.LSP.VFS                         hiding (start)
 import qualified ListT
-import           OpenTelemetry.Eventlog                  hiding (addEvent)
-import qualified Prettyprinter                           as Pretty
-import qualified StmContainers.Map                       as STM
-import           System.FilePath                         hiding (makeRelative)
-import           System.IO.Unsafe                        (unsafePerformIO)
+import           OpenTelemetry.Eventlog                   hiding (addEvent)
+import qualified Prettyprinter                            as Pretty
+import qualified StmContainers.Map                        as STM
+import           System.FilePath                          hiding (makeRelative)
+import           System.IO.Unsafe                         (unsafePerformIO)
 import           System.Time.Extra
-import           UnliftIO                                (MonadUnliftIO (withRunInIO))
+import           UnliftIO                                 (MonadUnliftIO (withRunInIO),
+                                                           atomically)
 
 #if !MIN_VERSION_ghc(9,9,0)
-import           Data.Foldable                           (foldl')
+import           Data.Foldable                            (foldl')
 #endif
 
 
 data Log
   = LogCreateHieDbExportsMapStart
   | LogCreateHieDbExportsMapFinish !Int
-  | LogBuildSessionRestart !ShakeRestartArgs ![DelayedActionInternal] !KeySet !Seconds !Seconds !Int !(Maybe FilePath) !Int ![DeliverStatus] !Seconds
+  | LogBuildSessionRestart !ShakeRestartArgs ![DelayedActionInternal] !KeySet !Seconds !Seconds !Int !(Maybe FilePath) !Int ![DeliverStatus] !Seconds ![Key]
   | LogBuildSessionRestartTakingTooLong !Seconds
   | LogDelayedAction !(DelayedAction ()) !Seconds
   | LogBuildSessionFinish !Step !(Either SomeException [Either SomeException ()])
@@ -245,18 +251,19 @@ instance Pretty Log where
       "Initializing exports map from hiedb"
     LogCreateHieDbExportsMapFinish exportsMapSize ->
       "Done initializing exports map from hiedb. Size:" <+> pretty exportsMapSize
-    LogBuildSessionRestart restartArgs actionQueue keyBackLog abortDuration computeToPreserveTime lookupNums shakeProfilePath step delivers prepare ->
+    LogBuildSessionRestart restartArgs actionQueue keyBackLog abortDuration computeToPreserveTime lookupNums shakeProfilePath step delivers prepare oldUpSweepDirties ->
       vcat
         [ "Restarting build session due to" <+> pretty (sraReason restartArgs)
         , "Restarts num:" <+> pretty (sraCount $ restartArgs)
         , "Action Queue:" <+> pretty (map actionName actionQueue)
         -- , "Keys:" <+> pretty (map show $ toListKeySet keyBackLog)
-        , "Keys:" <+> pretty (length $ toListKeySet keyBackLog)
-        , "Deliveries still alive:" <+> pretty delivers
+        -- , "Keys:" <+> pretty (length $ toListKeySet keyBackLog)
+        -- , "Deliveries still alive:" <+> pretty delivers
         , "Current step:" <+> pretty (show step)
         , "Aborting previous build session took" <+> pretty (showDuration abortDuration) <+> "(" <> pretty (showDuration computeToPreserveTime) <+> "to compute preserved keys," <+> pretty lookupNums <+> "lookups)"
                     <+> pretty shakeProfilePath
         , "prepare new session took" <+> pretty (showDuration prepare)
+        -- , "old upsweep dirties:" <+> pretty (oldUpSweepDirties)
         ]
     LogBuildSessionRestartTakingTooLong seconds ->
         "Build restart is taking too long (" <> pretty (showDuration seconds) <> ")"
@@ -751,6 +758,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         indexProgressReporting <- progressReportingNoTrace
             (liftM2 (+) (length <$> readTVar indexPending) (readTVar indexCompleted) )
             (readTVar indexCompleted) lspEnv "Indexing" optProgressStyle
+
         let hiedbWriter = HieDbWriter{..}
         exportsMap <- newTVarIO mempty
         -- lazily initialize the exports map with the contents of the hiedb
@@ -772,13 +780,35 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         -- Take one VFS snapshot at the start
         vfsVar <- newTVarIO =<< vfsSnapshot lspEnv
         pure ShakeExtras{shakeRecorder = recorder, ..}
-    shakeDb  <-
+    shakeDb@(ShakeDatabase _ _ db)  <-
         shakeNewDatabase
             (\logText -> logWith recorder Debug (LogShakeText $ T.pack logText))
             shakeControlQueue
             (actionQueue shakeExtras)
             opts { shakeExtra = newShakeExtra shakeExtras }
             rules
+
+    let upsweepReportMonitoring = Monitoring {
+        registerGauge = \_ _ -> return (),
+        registerCounter = \_ _ -> return (),
+        start = do
+            let done = do
+                    t <- reportTotalCount db
+                    remains <- reportRemainDirties db
+                    return $ t - remains
+            upsweepProgressReporting <- progressReportingNoTrace (reportTotalCount db) done lspEnv "Upsweeping" optProgressStyle
+            async <- async $ forever $ do
+                progressUpdate upsweepProgressReporting ProgressStarted
+                atomically $ do
+                    remains <- reportRemainDirties db
+                    check (remains == 0)
+                progressUpdate upsweepProgressReporting ProgressCompleted
+
+            return $ do
+                cancel async
+                progressUpdate upsweepProgressReporting ProgressCompleted
+    }
+    -- let monitor
     -- queue is already stored in the database at creation
     shakeSession <- newEmptyMVar
     shakeDatabaseProfile <- shakeDatabaseProfileIO shakeProfileDir
@@ -792,7 +822,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
 
 
     -- logMonitoring <- newLogMonitoring recorder
-    let monitoring = argMonitoring
+    let monitoring = argMonitoring <> upsweepReportMonitoring
     -- monitoring
     let readValuesCounter = fromIntegral . countRelevantKeys checkParents <$> getStateKeys shakeExtras
         readDirtyKeys = fromIntegral . countRelevantKeys checkParents . toListKeySet <$> readTVarIO (dirtyKeys shakeExtras)
@@ -938,10 +968,10 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         newDirtyKeys <- sraBetweenSessions shakeRestartArgs
         -- reverseMap <- shakedatabaseRuntimeDep shakeDb
         -- logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys [] reverseMap
-        (stopTime, (toUpSweepKeys, computePreserveTime, lookupsNum)) <- duration $ do
-            (computePreserveTime,(dirties, toUpSweepKeys, lookupsNum)) <- duration $ shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
+        (stopTime, (toUpSweepKeys, computePreserveTime, lookupsNum, oldUpSweepDirties)) <- duration $ do
+            (computePreserveTime,(dirties, toUpSweepKeys, lookupsNum, oldUpSweepDirties)) <- duration $ shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
             logErrorAfter 10 $ cancelShakeSession runner dirties
-            return (toUpSweepKeys, computePreserveTime, lookupsNum)
+            return (toUpSweepKeys, computePreserveTime, lookupsNum, oldUpSweepDirties)
         survivedDelivers <- shakePeekAsyncsDelivers shakeDb
         -- it is every important to update the dirty keys after we enter the critical section
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
@@ -954,7 +984,7 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         step <- shakeGetBuildStep shakeDb
 
         -- let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime computePreserveTime lookupsNum  res step survivedDelivers x $ preservekvs
-        let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime computePreserveTime lookupsNum  res step survivedDelivers x
+        let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime computePreserveTime lookupsNum  res step survivedDelivers x oldUpSweepDirties
         return (shakeRestartArgs, toUpSweepKeys, fromListKeySet $ map deliverKey survivedDelivers, logRestart)
     )
     -- It is crucial to be masked here, otherwise we can get killed
