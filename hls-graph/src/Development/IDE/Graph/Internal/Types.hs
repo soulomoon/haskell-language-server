@@ -280,18 +280,21 @@ raedAllLeftsDBQue q = do
 
 -- Encapsulated scheduler state, previously scattered on Database
 data SchedulerState = SchedulerState
-    { schedulerUpsweepQueue   :: TQueue Key
+    {
+        schedulerUpsweepQueue :: TQueue Key
     -- ^ Keys that need to be upswept (i.e., re-evaluated because they are dirty)
     -- , schedulerRunningDirties :: TVar KeySet
-    , schedulerRunningDirties :: SSet.Set Key
+    -- , schedulerRunningDirties :: SSet.Set Key
     -- ^ Keys that are currently running
-    , schedulerRunningBlocked :: SSet.Set Key
+    -- , schedulerRunningBlocked :: SSet.Set Key
     -- ^ Keys that are blocked because one of their dependencies is running
     , schedulerRunningReady   :: TQueue Key
     -- ^ Keys that are ready to run
     , schedulerRunningPending :: SMap.Map Key Int
     -- ^ Keys that are pending because they are waiting for dependencies to complete
     , schedulerAllDirties     :: TVar KeySet
+    -- todo try to use set from stm-containers
+    -- , schedulerAllDirties     :: SSet.Set KeySet
     , schedulerAllKeysInOrder :: TVar [Key]
     }
 -- invariants:
@@ -304,12 +307,12 @@ dumpSchedulerState SchedulerState{..} = atomically $ do
     ups <- flushTQueue schedulerUpsweepQueue
     mapM_ (writeTQueue schedulerUpsweepQueue) ups
 
-    ready <- flushTQueue schedulerRunningReady
-    mapM_ (writeTQueue schedulerRunningReady) ready
+    -- ready <- flushTQueue schedulerRunningReady
+    -- mapM_ (writeTQueue schedulerRunningReady) ready
 
     -- Snapshot sets and pending map
-    dirties <- ListT.toList $ SSet.listT schedulerRunningDirties
-    blocked <- ListT.toList $ SSet.listT schedulerRunningBlocked
+    -- dirties <- ListT.toList $ SSet.listT schedulerRunningDirties
+    -- blocked <- ListT.toList $ SSet.listT schedulerRunningBlocked
     pendingPairs <- ListT.toList (SMap.listT schedulerRunningPending)
 
     let ppKey k    = PP.pretty k
@@ -321,14 +324,14 @@ dumpSchedulerState SchedulerState{..} = atomically $ do
           , PP.indent 2 $ PP.vsep
               [ PP.pretty ("upsweep:" :: String) <> PP.pretty (length ups)
               , PP.indent 2 (ppKeys ups)
-              , PP.pretty ("ready:" :: String) <> PP.pretty (length ready)
-              , PP.indent 2 (ppKeys ready)
+            --   , PP.pretty ("ready:" :: String) <> PP.pretty (length ready)
+            --   , PP.indent 2 (ppKeys ready)
               , PP.pretty ("pending:" :: String) <> PP.pretty (length pendingPairs)
               , PP.indent 2 (ppPairs pendingPairs)
-              , PP.pretty ("running:" :: String) <> PP.pretty (length dirties)
-              , PP.indent 2 (ppKeys (dirties))
-              , PP.pretty ("blocked:" :: String) <> PP.pretty (length blocked)
-              , PP.indent 2 (ppKeys (blocked))
+            --   , PP.pretty ("running:" :: String) <> PP.pretty (length dirties)
+            --   , PP.indent 2 (ppKeys (dirties))
+            --   , PP.pretty ("blocked:" :: String) <> PP.pretty (length blocked)
+            --   , PP.indent 2 (ppKeys (blocked))
               ]
           ]
     pure $ renderString (PP.layoutPretty PP.defaultLayoutOptions doc)

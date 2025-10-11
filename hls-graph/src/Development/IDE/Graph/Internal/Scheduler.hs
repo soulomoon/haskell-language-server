@@ -87,15 +87,15 @@ prepareToRunKey k Database {..} = do
 insertBlockedKey :: String -> Key -> Key -> Database -> STM ()
 insertBlockedKey reason pk k Database {..} = do
   let SchedulerState {..} = databaseScheduler
+  return ()
 --   isPkRunnings <- SSet.lookup pk schedulerRunningDirties
 --   isKRunnings  <- SSet.lookup k schedulerRunningDirties
-  dirties <- readTVar schedulerAllDirties
+--   dirties <- readTVar schedulerAllDirties
   -- todo it might be blocked before we insert it into running
-  -- and missing the insertion into blocked set
---   when (pk `memberKeySet` dirties) $ do
-  when (pk `memberKeySet` dirties) $ do
-        SSet.delete pk schedulerRunningDirties
-        SSet.insert pk schedulerRunningBlocked
+  -- and missing the insertion into blocked set when it actually runs
+--   when (pk `memberKeySet` dirties && not isKRunnings) $ do
+        -- SSet.delete pk schedulerRunningDirties
+        -- SSet.insert pk schedulerRunningBlocked
 
 -- take out all databaseDirtyTargets and prepare them to run
 prepareToRunKeys :: Foldable t => Database -> t Key -> IO ()
@@ -135,8 +135,8 @@ cleanHook :: Key -> Database -> STM ()
 cleanHook k db = do
     -- remove itself from running dirties and blocked sets
     let SchedulerState{..} = databaseScheduler db
-    SSet.delete k schedulerRunningDirties
-    SSet.delete k schedulerRunningBlocked
+    -- SSet.delete k schedulerRunningDirties
+    -- SSet.delete k schedulerRunningBlocked
     modifyTVar schedulerAllDirties $ deleteKeySet k
 
 -- When a key becomes clean, decrement pending counters of its reverse dependents
@@ -177,10 +177,10 @@ popOutDirtykeysDB Database{..} = do
 
     -- 4. Running dirties set: read and clear
     -- runningDirties <- readTVar schedulerRunningDirties
-    SSet.reset schedulerRunningDirties
+    -- SSet.reset schedulerRunningDirties
 
     -- 5. Also clear blocked subset for consistency
-    SSet.reset schedulerRunningBlocked
+    -- SSet.reset schedulerRunningBlocked
 
     -- 6. All dirties set: read and clear
     reenqueue <- readTVar schedulerAllDirties
@@ -195,23 +195,24 @@ popOutDirtykeysDB Database{..} = do
 readReadyQueue :: Database -> STM Key
 readReadyQueue db@Database{..} = do
     dbNotLocked db
-    blockedOnThreadLimit db 20
+    -- blockedOnThreadLimit db 32
     let SchedulerState{..} = databaseScheduler
     r <- readTQueue schedulerRunningReady
     -- is might blocked because it is already running by downsweep.
-    isBlocked <- SSet.lookup r schedulerRunningBlocked
-    if isBlocked
-      then pure ()
-      else SSet.insert r schedulerRunningDirties
+    -- isBlocked <- SSet.lookup r schedulerRunningBlocked
+    -- if isBlocked
+    --   then pure ()
+    --   else SSet.insert r schedulerRunningDirties
     -- SSet.insert r schedulerRunningDirties
     return r
 
 
 computeRunningNonBlocked :: Database -> STM Int
 computeRunningNonBlocked Database{..} = do
-    let SchedulerState{..} = databaseScheduler
-    runningSetSize <- SSet.size schedulerRunningDirties
-    return runningSetSize
+    return 0
+    -- let SchedulerState{..} = databaseScheduler
+    -- runningSetSize <- SSet.size schedulerRunningDirties
+    -- return runningSetSize
 
 blockedOnThreadLimit :: Database -> Int -> STM ()
 blockedOnThreadLimit db maxThreads = do
