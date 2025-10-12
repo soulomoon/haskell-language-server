@@ -73,8 +73,6 @@ newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra datab
     databaseRRuntimeDepRoot <- atomically SMap.new
     databaseTransitiveRRuntimeDepCache <- atomically SMap.new
     -- Initialize scheduler state
-    schedulerRunningDirties <- SSet.newIO
-    schedulerRunningBlocked  <- SSet.newIO
     schedulerRunningReady    <- newTQueueIO
     schedulerRunningPending <- atomically SMap.new
     schedulerUpsweepQueue <- newTQueueIO
@@ -113,14 +111,11 @@ incDatabase db Nothing = do
 -- computeToPreserve :: Database -> KeySet -> STM (KeySet, ([Key], [Key]), Int)
 computeToPreserve db dirtySet = do
   -- All keys that depend (directly or transitively) on any dirty key
-  traceEvent ("markDirty base " ++ show dirtySet) $ return ()
+--   traceEvent ("markDirty base " ++ show dirtySet) $ return ()
   oldUpSweepDirties <- popOutDirtykeysDB db
   (oldKeys, newKeys, affected) <- transitiveDirtyListBottomUpDiff db (toListKeySet dirtySet) oldUpSweepDirties
-  traceEvent ("oldKeys " ++ show oldKeys) $ return ()
-  traceEvent ("newKeys " ++ show newKeys) $ return ()
---   threads <- readTVar $ databaseThreads db
---   let isNonAffected (k, _async) = (deliverKey k) /= newKey "root" && (deliverKey k) `notMemberKeySet` affected
---   let unaffected = filter isNonAffected threads
+--   traceEvent ("oldKeys " ++ show oldKeys) $ return ()
+--   traceEvent ("newKeys " ++ show newKeys) $ return ()
   pure (affected, (oldKeys, newKeys), length newKeys, oldUpSweepDirties)
 
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()

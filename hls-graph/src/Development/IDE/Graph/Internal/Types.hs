@@ -283,11 +283,6 @@ data SchedulerState = SchedulerState
     {
         schedulerUpsweepQueue :: TQueue Key
     -- ^ Keys that need to be upswept (i.e., re-evaluated because they are dirty)
-    -- , schedulerRunningDirties :: TVar KeySet
-    -- , schedulerRunningDirties :: SSet.Set Key
-    -- ^ Keys that are currently running
-    -- , schedulerRunningBlocked :: SSet.Set Key
-    -- ^ Keys that are blocked because one of their dependencies is running
     , schedulerRunningReady   :: TQueue Key
     -- ^ Keys that are ready to run
     , schedulerRunningPending :: SMap.Map Key Int
@@ -298,7 +293,6 @@ data SchedulerState = SchedulerState
     , schedulerAllKeysInOrder :: TVar [Key]
     }
 -- invariants:
--- schedulerRunningDirties and schedulerRunningBlocked are disjoint.
 
 -- dump scheduler state
 dumpSchedulerState :: SchedulerState -> IO String
