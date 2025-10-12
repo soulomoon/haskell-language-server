@@ -339,11 +339,18 @@ data Database = Database {
     databaseRuntimeDepRoot             :: SMap.Map Key KeySet,
     databaseRRuntimeDepRoot            :: SMap.Map Key KeySet,
     databaseRRuntimeDep                :: SMap.Map Key KeySet,
-    databaseTransitiveRRuntimeDepCache :: SMap.Map KeySet ([Key], KeySet),
     -- it is used to compute the transitive reverse deps, so
     -- if not in any of the transitive reverse deps of a dirty node, it is clean
     -- we can skip clean the threads.
     -- this is update right before we query the database for the key result.
+    databaseTransitiveRRuntimeDepCache :: SMap.Map KeySet ([Key], KeySet),
+    -- ^ this is a cache for transitive reverse deps if we have computed it before
+    -- and the databaseRRuntimeDep did not change since last time
+    -- it is very useful for large projects where many files depend on a few common files
+    -- e.g. we do not want to recompute the transitive reverse deps every time we enter a letter
+    -- to a file.
+
+
     dataBaseLogger                     :: String -> IO (),
 
     databaseQueue                      :: DBQue,
