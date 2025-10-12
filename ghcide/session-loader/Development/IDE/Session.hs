@@ -104,6 +104,7 @@ import           Text.ParserCombinators.ReadP        (readP_to_S)
 import           Control.Concurrent.STM              (STM, TVar)
 import qualified Control.Monad.STM                   as STM
 import           Control.Monad.Trans.Reader
+import           Development.IDE.Graph.Database
 import qualified Development.IDE.Session.Ghc         as Ghc
 import qualified Development.IDE.Session.OrderedSet  as S
 import           Development.IDE.WorkerThread
@@ -834,14 +835,14 @@ session recorder sessionShake sessionState knownTargetsVar(hieYaml, cfp, opts, l
         -- Typecheck all files in the project on startup
         unless (null new_deps || not checkProject) $ do
             cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
-            void $ enqueueActions sessionShake $ mkDelayedAction "InitialLoad" Debug $ void $ do
+            void $ enqueueActions sessionShake =<< mkDelayedAction "InitialLoad" Debug (void $ do
                 mmt <- uses GetModificationTime cfps'
                 let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
                 modIfaces <- uses GetModIface cs_exist
                 -- update exports map
                 shakeExtras <- getShakeExtras
                 let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
-                liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
+                liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>))
         return [keys1, keys2]
 
 -- | Create a new HscEnv from a hieYaml root and a set of options

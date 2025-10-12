@@ -73,7 +73,7 @@ pumpActionThreadReRun (ShakeDatabase _ _ db) d = do
             (DeliverStatus s (actionName d) key)
             (ignoreState a $ runOne d) (const $ return ())
   where
-    key = (newDirectKey $ fromJust $ hashUnique <$> uniqueID d)
+    key = uniqueID d
     runOne d = setActionKey key $ do
             _ <- getAction d
             liftIO $ atomically $ doneQueue d (databaseActionQueue db)
@@ -86,7 +86,7 @@ pumpActionThread sdb@(ShakeDatabase _ _ db) logMsg = do
         s <- atomically $ getDataBaseStepInt db
         liftIO $ runInThreadStmInNewThreads db
             -- (return $ DeliverStatus s (actionName d) (newKey "root"))
-            (DeliverStatus s (actionName d) (newDirectKey $ fromJust $ hashUnique <$> uniqueID d))
+            (DeliverStatus s (actionName d) (uniqueID d))
             (ignoreState a $ runOne d) (const $ return ())
         liftIO $ logMsg ("pump executed: " ++ actionName d)
         pumpActionThread sdb logMsg

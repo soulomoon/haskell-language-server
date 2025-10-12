@@ -141,7 +141,7 @@ data Priority
 type DelayedActionInternal = DelayedAction ()
 -- | A delayed action that carries an Action payload.
 data DelayedAction a = DelayedAction
-    { uniqueID       :: Maybe Unique
+    { uniqueID       :: Key
     , actionName     :: String -- ^ Name we use for debugging
     , actionPriority :: Priority -- ^ Priority with which to log the action
     , getAction      :: Action a -- ^ The payload

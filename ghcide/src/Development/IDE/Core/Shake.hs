@@ -61,9 +61,10 @@ module Development.IDE.Core.Shake(
     deleteValue,
     WithProgressFunc, WithIndefiniteProgressFunc,
     ProgressEvent(..),
-    DelayedAction, mkDelayedAction,
+    DelayedAction,
     IdeAction(..), runIdeAction,
     mkUpdater,
+    mkDelayedAction,
     -- Exposed for testing.
     Q(..),
     IndexQueue,
@@ -139,6 +140,8 @@ import           Development.IDE.Graph                    hiding (ShakeValue,
                                                            action)
 import qualified Development.IDE.Graph                    as Shake
 import           Development.IDE.Graph.Database           (ShakeDatabase,
+                                                           instantiateDelayedAction,
+                                                           mkDelayedAction,
                                                            shakeComputeToPreserve,
                                                            shakeGetActionQueueLength,
                                                            shakeGetBuildStep,
@@ -198,6 +201,8 @@ import           System.IO.Unsafe                         (unsafePerformIO)
 import           System.Time.Extra
 import           UnliftIO                                 (MonadUnliftIO (withRunInIO),
                                                            atomically)
+
+
 
 #if !MIN_VERSION_ghc(9,9,0)
 import           Data.Foldable                            (foldl')
@@ -885,8 +890,8 @@ withMVar' var unmasked masked = uninterruptibleMask $ \restore -> do
     pure c
 
 
-mkDelayedAction :: String -> Logger.Priority -> Action a -> DelayedAction a
-mkDelayedAction s p = DelayedAction Nothing s (toEnum (fromEnum p))
+-- mkDelayedAction :: String -> Logger.Priority -> Action a -> DelayedAction a
+-- mkDelayedAction s p = DelayedAction Nothing s (toEnum (fromEnum p))
 
 
 -- | These actions are run asynchronously after the current action is
@@ -1078,24 +1083,6 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
     -- should wait until the step has increased
     pure (ShakeSession{..})
 
-instantiateDelayedAction
-    :: DelayedAction a
-    -> IO (Barrier (Either SomeException a), DelayedActionInternal)
-instantiateDelayedAction (DelayedAction _ s p a) = do
-  u <- newUnique
-  b <- newBarrier
-  let a' = do
-        -- work gets reenqueued when the Shake session is restarted
-        -- it can happen that a work item finished just as it was reenqueued
-        -- in that case, skipping the work is fine
-        alreadyDone <- liftIO $ isJust <$> waitBarrierMaybe b
-        unless alreadyDone $ do
-          x <- actionCatch @SomeException (Right <$> a) (pure . Left)
-          -- ignore exceptions if the barrier has been filled concurrently
-          liftIO $ void $ try @SomeException $ signalBarrier b x
-      d' = DelayedAction (Just u) s p a'
-  return (b, d')
-
 getDiagnostics :: IdeState -> STM [FileDiagnostic]
 getDiagnostics IdeState{shakeExtras = ShakeExtras{diagnostics}} = do
     getAllDiagnostics diagnostics
@@ -1228,7 +1215,7 @@ useWithStaleFast' key file = do
 
   -- Async trigger the key to be built anyway because we want to
   -- keep updating the value in the key.
-  waitValue <- delayedAction $ mkDelayedAction ("C:" ++ show key ++ ":" ++ fromNormalizedFilePath file) Debug $ use key file
+  waitValue <- delayedAction =<< liftIO (mkDelayedAction ("C:" ++ show key ++ ":" ++ fromNormalizedFilePath file) Debug (use key file))
 
   s@ShakeExtras{stateValues} <- askShake
   r <- liftIO $ atomicallyNamed "useStateFast" $ getValues stateValues key file

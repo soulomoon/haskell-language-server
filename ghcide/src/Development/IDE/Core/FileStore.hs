@@ -46,6 +46,7 @@ import           Development.IDE.Core.Shake                   hiding (Log)
 import qualified Development.IDE.Core.Shake                   as Shake
 import           Development.IDE.GHC.Orphans                  ()
 import           Development.IDE.Graph
+import           Development.IDE.Graph.Database               (mkDelayedAction)
 import           Development.IDE.Import.DependencyInformation
 import           Development.IDE.Types.Diagnostics
 import           Development.IDE.Types.Location
@@ -279,12 +280,13 @@ setFileModified recorder vfs state saved nfp actionBefore = do
           AlwaysCheck -> True
           CheckOnSave -> saved
           _           -> False
-    restartShakeSession (shakeExtras state) vfs (fromNormalizedFilePath nfp ++ " (modified)") ([mkDelayedAction "ParentTC" L.Debug (typecheckParentsAction recorder nfp) | checkParents]) $ do
+    ndls <- sequence [mkDelayedAction "ParentTC" L.Debug (typecheckParentsAction recorder nfp) | checkParents]
+    restartShakeSession (shakeExtras state) vfs (fromNormalizedFilePath nfp ++ " (modified)") ndls $ do
         keys<-actionBefore
         return (toKey GetModificationTime nfp:keys)
 
 typecheckParents :: Recorder (WithPriority Log) -> IdeState -> NormalizedFilePath -> IO ()
-typecheckParents recorder state nfp = void $ shakeEnqueue (shakeExtras state) parents
+typecheckParents recorder state nfp = void $ shakeEnqueue (shakeExtras state) =<< parents
   where parents = mkDelayedAction "ParentTC" L.Debug (typecheckParentsAction recorder nfp)
 
 typecheckParentsAction :: Recorder (WithPriority Log) -> NormalizedFilePath -> Action ()

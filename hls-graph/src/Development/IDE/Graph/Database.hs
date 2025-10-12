@@ -16,6 +16,8 @@ module Development.IDE.Graph.Database(
     shakeComputeToPreserve,
     -- shakedatabaseRuntimeDep,
     shakePeekAsyncsDelivers,
+    instantiateDelayedAction,
+    mkDelayedAction,
     upsweepAction) where
 import           Control.Concurrent.Extra                 (Barrier, newBarrier,
                                                            signalBarrier,
@@ -86,9 +88,10 @@ shakeRunDatabaseForKeysSep
 shakeRunDatabaseForKeysSep keysChanged sdb@(ShakeDatabase _ as1 db) acts = do
     -- we can to upsweep these keys in order one by one,
     preserves <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase1 db keysChanged
-    (_, act) <- instantiateDelayedAction (mkDelayedAction "upsweep" Debug $ upsweepAction)
+    (_, act) <- instantiateDelayedAction =<< (mkDelayedAction "upsweep" Debug $ upsweepAction)
     reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress (databaseActionQueue db)
-    let reenqueuedExceptPreserves = filter (\d -> (newDirectKey $ fromJust $ hashUnique <$> uniqueID d) `notMemberKeySet` preserves) reenqueued
+    -- let reenqueuedExceptPreserves = filter (\d -> (newDirectKey $ fromJust $ hashUnique <$> uniqueID d) `notMemberKeySet` preserves) reenqueued
+    let reenqueuedExceptPreserves = filter (\d -> uniqueID d `notMemberKeySet` preserves) reenqueued
     let ignoreResultActs = (getAction act) : (liftIO $ prepareToRunKeysRealTime db) : as1
     return $ do
         seqRunActions (newKey "root") db $ map (pumpActionThreadReRun sdb) reenqueuedExceptPreserves
@@ -97,8 +100,7 @@ shakeRunDatabaseForKeysSep keysChanged sdb@(ShakeDatabase _ as1 db) acts = do
 instantiateDelayedAction
     :: DelayedAction a
     -> IO (Barrier (Either SomeException a), DelayedActionInternal)
-instantiateDelayedAction (DelayedAction _ s p a) = do
-  u <- newUnique
+instantiateDelayedAction (DelayedAction u s p a) = do
   b <- newBarrier
   let a' = do
         -- work gets reenqueued when the Shake session is restarted
@@ -109,11 +111,13 @@ instantiateDelayedAction (DelayedAction _ s p a) = do
           x <- actionCatch @SomeException (Right <$> a) (pure . Left)
           -- ignore exceptions if the barrier has been filled concurrently
           liftIO $ void $ try @SomeException $ signalBarrier b x
-      d' = DelayedAction (Just u) s p a'
+      d' = DelayedAction u s p a'
   return (b, d')
 
-mkDelayedAction :: String -> Logger.Priority -> Action a -> DelayedAction a
-mkDelayedAction s p = DelayedAction Nothing s (toEnum (fromEnum p))
+mkDelayedAction :: String -> Logger.Priority -> Action a -> IO (DelayedAction a)
+mkDelayedAction s p a = do
+    u <- newUnique
+    return $ DelayedAction (newDirectKey $ hashUnique u) s (toEnum (fromEnum p)) a
 
 -- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO (KeySet, ([Key], [Key]), Int)
 shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
