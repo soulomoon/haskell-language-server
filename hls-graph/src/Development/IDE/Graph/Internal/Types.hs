@@ -29,7 +29,7 @@ import qualified Data.HashMap.Strict                as Map
 import           Data.HashSet                       (HashSet)
 import qualified Data.HashSet                       as Set
 import           Data.IORef
-import           Data.List                          (intercalate)
+import           Data.List                          (intercalate, partition)
 import           Data.Maybe                         (fromMaybe, isJust,
                                                      isNothing)
 import           Data.Typeable
@@ -490,7 +490,8 @@ shutDatabase dirties db@Database{..} = uninterruptibleMask $ \unmask -> do
     -- traceEventIO ("shutDatabase: async entries: " ++ show (map (deliverName . fst) asyncs))
     -- let remains = filter (\(_, s) -> s `S.member` preserve) asyncs
     let rootKey = newKey "root"
-    let toCancel = filter (\(k, _) -> deliverKey k `memberKeySet` dirties || deliverKey k == rootKey) asyncs
+    let (toCancel, remains) = partition (\(k, _) -> deliverKey k `memberKeySet` dirties || deliverKey k == rootKey) asyncs
+    atomically $ modifyTVar' databaseThreads (const remains)
     mapM_ (\(k, a) -> throwTo (asyncThreadId a) $ AsyncParentKill tid step [deliverKey k, newKey "shutDatabase"]) toCancel
     -- atomically $ modifyTVar' databaseThreads (const remains)
     -- traceEventIO ("shutDatabase: remains count: " ++ show (length remains) ++ ", names: " ++ show (map (deliverName . fst) remains))
@@ -509,6 +510,9 @@ shutDatabase dirties db@Database{..} = uninterruptibleMask $ \unmask -> do
                 traceEventIO $ "cleanupAsync: waiting for asyncs to finish; total=" ++ show (length as) ++ ", stillRunning=" ++ show (length still)
                 traceEventIO $ "cleanupAsync: still running (deliverName, threadId) = " ++ show still
         withAsync warnIfTakingTooLong $ \_ -> mapM_ (waitCatch . snd) toCancel
+        forM_ toCancel $ \(d,_p) -> do
+            let k = deliverKey d
+            when (k /= newKey "root") $ atomically $ deleteDatabaseRuntimeDep k db
     pruneFinished db
 
 -- fdsfsifjsflksfjslthat dmake musch more sense to me
