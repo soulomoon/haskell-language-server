@@ -32,8 +32,6 @@ import           Control.Monad.Trans.Class
 import           Data.Foldable                           (toList)
 import           Data.Functor.Identity
 import           Data.IORef
-import           Data.Maybe                              (fromJust)
-import           Data.Unique                             (hashUnique)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Database
 import           Development.IDE.Graph.Internal.Key
@@ -64,7 +62,6 @@ parallel xs = do
             runActionInDb "parallel" xs
         deps -> error $ "parallel not supported when we have precise dependencies: " ++ show deps
 
--- pumpActionThread1 :: ShakeDatabase -> Action ()
 pumpActionThreadReRun :: ShakeDatabase -> DelayedAction () -> Action ()
 pumpActionThreadReRun (ShakeDatabase _ _ db) d = do
         a <- ask

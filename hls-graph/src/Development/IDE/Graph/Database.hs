@@ -87,7 +87,7 @@ shakeRunDatabaseForKeysSep
     -> IO (IO [Either SomeException a])
 shakeRunDatabaseForKeysSep keysChanged sdb@(ShakeDatabase _ as1 db) acts = do
     -- we can to upsweep these keys in order one by one,
-    preserves <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase1 db keysChanged
+    preserves <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase db keysChanged
     (_, act) <- instantiateDelayedAction =<< (mkDelayedAction "upsweep" Debug $ upsweepAction)
     reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress (databaseActionQueue db)
     -- let reenqueuedExceptPreserves = filter (\d -> (newDirectKey $ fromJust $ hashUnique <$> uniqueID d) `notMemberKeySet` preserves) reenqueued
@@ -120,6 +120,7 @@ mkDelayedAction s p a = do
     return $ DelayedAction (newDirectKey $ hashUnique u) s (toEnum (fromEnum p)) a
 
 -- shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO (KeySet, ([Key], [Key]), Int)
+shakeComputeToPreserve :: ShakeDatabase -> KeySet -> IO (KeySet, ([Key], [Key]), Int, [Key])
 shakeComputeToPreserve (ShakeDatabase _ _ db) ks = atomically (computeToPreserve db ks)
 
 -- fds make it possible to do al ot of jobs

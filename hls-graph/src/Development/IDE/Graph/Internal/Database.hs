@@ -9,7 +9,7 @@
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TypeFamilies       #-}
 
-module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..), computeToPreserve, getRunTimeRDeps, spawnAsyncWithDbRegistration, upsweepAction, incDatabase1) where
+module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..), computeToPreserve, getRunTimeRDeps, spawnAsyncWithDbRegistration, upsweepAction) where
 
 import           Prelude                                  hiding (unzip)
 
@@ -40,19 +40,16 @@ import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                        as SMap
 import           System.Time.Extra                        (duration)
-import           UnliftIO                                 (Async, MVar,
-                                                           atomically,
+import           UnliftIO                                 (MVar, atomically,
                                                            isAsyncException,
                                                            newEmptyMVar,
                                                            putMVar, readMVar)
 
 import           Development.IDE.Graph.Internal.Scheduler (cleanHook,
                                                            decreaseMyReverseDepsPendingCount,
-                                                           insertBlockedKey,
                                                            popOutDirtykeysDB,
                                                            readReadyQueue,
                                                            writeUpsweepQueue)
-import qualified StmContainers.Set                        as SSet
 import qualified UnliftIO.Exception                       as UE
 
 #if MIN_VERSION_base(4,19,0)
@@ -81,11 +78,6 @@ newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra datab
     let databaseScheduler = SchedulerState{..}
     pure Database{..}
 
--- incDatabase1 :: Database -> Maybe (KeySet, KeySet) -> IO [Key]
-incDatabase1 :: Database -> Maybe (([Key], [Key]), KeySet) -> IO KeySet
-incDatabase1 db (Just (kk, preserves)) = incDatabase db (Just (kk, preserves ))
-incDatabase1 db Nothing                = incDatabase db Nothing
-
 -- | Increment the step and mark dirty.
 --   Assumes that the database is not running a build
 -- only some keys are dirty
@@ -109,6 +101,7 @@ incDatabase db Nothing = do
 -- computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], ([Key], [Key]))
 -- computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], ([Key], [Key]), Int)
 -- computeToPreserve :: Database -> KeySet -> STM (KeySet, ([Key], [Key]), Int)
+computeToPreserve :: Database -> KeySet -> STM (KeySet, ([Key], [Key]), Int, [Key])
 computeToPreserve db dirtySet = do
   -- All keys that depend (directly or transitively) on any dirty key
 --   traceEvent ("markDirty base " ++ show dirtySet) $ return ()
@@ -189,7 +182,6 @@ builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleM
 
     case (viewToRun current . keyStatus) =<< status of
       Nothing -> do
-        insertBlockedKey "Nothing" parentKey key db
         SMap.focus (updateStatus $ Running current Nothing barrier) key databaseValues
         let register = spawnRefresh db stack key barrier Nothing refresh
                         -- why it is important to use rollback here
@@ -202,7 +194,6 @@ builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleM
                         restore
         return $ register >> return (BCContinue $ readMVar barrier)
       Just (Dirty _) -> do
-        insertBlockedKey "dirty" parentKey key db
         case firstTime of
             FirstTime -> pure . pure $ BCContinue $ do
                     br <- builderOne' NotFirstTime parentKey db stack key
@@ -213,9 +204,7 @@ builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleM
       Just (Clean r) -> pure . pure $ BCStop key r
       Just (Running _step _s wait)
         | memberStack key stack -> throw $ StackException stack
-        | otherwise -> do
-            insertBlockedKey "running" parentKey key db
-            pure . pure $ BCContinue $ readMVar wait
+        | otherwise -> pure . pure $ BCContinue $ readMVar wait
 
 -- Original spawnRefresh implementation moved below to use the abstraction
 -- handleResult :: (Show a1, MonadIO m) => a1 -> MVar (Either a2 (a1, b)) -> Either a2 b -> m ()

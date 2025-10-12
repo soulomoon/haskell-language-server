@@ -116,7 +116,6 @@ import           Data.Time
 import           Data.Traversable
 import           Data.Tuple.Extra
 import           Data.Typeable
-import           Data.Unique
 import           Data.Vector                              (Vector)
 import qualified Data.Vector                              as Vector
 import           Development.IDE.Core.Debouncer
@@ -183,7 +182,6 @@ import           GHC.Stack                                (HasCallStack)
 import           GHC.TypeLits                             (KnownSymbol)
 import           HieDb.Types
 import           Ide.Logger                               hiding (Priority)
-import qualified Ide.Logger                               as Logger
 import           Ide.Plugin.Config
 import qualified Ide.PluginUtils                          as HLS
 import           Ide.Types
@@ -256,7 +254,7 @@ instance Pretty Log where
       "Initializing exports map from hiedb"
     LogCreateHieDbExportsMapFinish exportsMapSize ->
       "Done initializing exports map from hiedb. Size:" <+> pretty exportsMapSize
-    LogBuildSessionRestart restartArgs actionQueue keyBackLog abortDuration computeToPreserveTime lookupNums shakeProfilePath step delivers prepare oldUpSweepDirties ->
+    LogBuildSessionRestart restartArgs actionQueue _keyBackLog abortDuration computeToPreserveTime lookupNums shakeProfilePath step _delivers prepare _oldUpSweepDirties ->
       vcat
         [ "Restarting build session due to" <+> pretty (sraReason restartArgs)
         , "Restarts num:" <+> pretty (sraCount $ restartArgs)

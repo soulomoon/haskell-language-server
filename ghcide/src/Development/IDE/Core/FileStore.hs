@@ -46,7 +46,6 @@ import           Development.IDE.Core.Shake                   hiding (Log)
 import qualified Development.IDE.Core.Shake                   as Shake
 import           Development.IDE.GHC.Orphans                  ()
 import           Development.IDE.Graph
-import           Development.IDE.Graph.Database               (mkDelayedAction)
 import           Development.IDE.Import.DependencyInformation
 import           Development.IDE.Types.Diagnostics
 import           Development.IDE.Types.Location

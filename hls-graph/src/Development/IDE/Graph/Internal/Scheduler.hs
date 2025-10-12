@@ -9,36 +9,29 @@ module Development.IDE.Graph.Internal.Scheduler
   , decreaseMyReverseDepsPendingCount
   , popOutDirtykeysDB
   , readReadyQueue
-  , computeRunningNonBlocked
   , cleanHook
-  , blockedOnThreadLimit
-  , insertBlockedKey
   , prepareToRunKeysRealTime
   , writeUpsweepQueue
   , reportRemainDirties
   , reportTotalCount
   ) where
 
-import           Control.Concurrent.STM               (STM, atomically, check,
+import           Control.Concurrent.STM               (STM, atomically,
                                                        flushTQueue, modifyTVar,
-                                                       modifyTVar', readTQueue,
-                                                       readTVar, writeTQueue,
-                                                       writeTVar)
-import           Control.Monad                        (forM, forM_, void, when)
+                                                       readTQueue, readTVar,
+                                                       writeTQueue, writeTVar)
+import           Control.Monad                        (forM, forM_, void)
 import           Data.Maybe                           (fromMaybe)
 import qualified StmContainers.Map                    as SMap
 
-import           Debug.Trace                          (traceEvent)
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Types (Database (..),
                                                        KeyDetails (..),
-                                                       Result (..), RunChanged,
+                                                       Result (..),
                                                        SchedulerState (..),
                                                        Status (..), dbNotLocked,
                                                        getResult,
                                                        getResultDepsDefault)
-import qualified StmContainers.Set                    as SSet
-
 
 reportRemainDirties :: Database -> STM Int
 reportRemainDirties (databaseScheduler -> SchedulerState{..}) =
@@ -80,22 +73,6 @@ prepareToRunKey k Database {..} = do
     else do
       SMap.insert pendingCount k schedulerRunningPending
 
-
--- for key in the ready queue, if the parent key is running and the child key is not running,
--- it must be blocked on some new dependency
--- we insert the parent key into blocked set, and only clean it when its build succeedsb
-insertBlockedKey :: String -> Key -> Key -> Database -> STM ()
-insertBlockedKey reason pk k Database {..} = do
-  let SchedulerState {..} = databaseScheduler
-  return ()
---   isPkRunnings <- SSet.lookup pk schedulerRunningDirties
---   isKRunnings  <- SSet.lookup k schedulerRunningDirties
---   dirties <- readTVar schedulerAllDirties
-  -- todo it might be blocked before we insert it into running
-  -- and missing the insertion into blocked set when it actually runs
---   when (pk `memberKeySet` dirties && not isKRunnings) $ do
-        -- SSet.delete pk schedulerRunningDirties
-        -- SSet.insert pk schedulerRunningBlocked
 
 -- take out all databaseDirtyTargets and prepare them to run
 prepareToRunKeys :: Foldable t => Database -> t Key -> IO ()
@@ -195,27 +172,6 @@ popOutDirtykeysDB Database{..} = do
 readReadyQueue :: Database -> STM Key
 readReadyQueue db@Database{..} = do
     dbNotLocked db
-    -- blockedOnThreadLimit db 32
     let SchedulerState{..} = databaseScheduler
-    r <- readTQueue schedulerRunningReady
-    -- is might blocked because it is already running by downsweep.
-    -- isBlocked <- SSet.lookup r schedulerRunningBlocked
-    -- if isBlocked
-    --   then pure ()
-    --   else SSet.insert r schedulerRunningDirties
-    -- SSet.insert r schedulerRunningDirties
-    return r
-
-
-computeRunningNonBlocked :: Database -> STM Int
-computeRunningNonBlocked Database{..} = do
-    return 0
-    -- let SchedulerState{..} = databaseScheduler
-    -- runningSetSize <- SSet.size schedulerRunningDirties
-    -- return runningSetSize
-
-blockedOnThreadLimit :: Database -> Int -> STM ()
-blockedOnThreadLimit db maxThreads = do
-    runningNonBlocked <- computeRunningNonBlocked db
-    check $ runningNonBlocked < maxThreads
+    readTQueue schedulerRunningReady
 

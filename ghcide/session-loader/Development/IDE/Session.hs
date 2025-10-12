@@ -104,7 +104,6 @@ import           Text.ParserCombinators.ReadP        (readP_to_S)
 import           Control.Concurrent.STM              (STM, TVar)
 import qualified Control.Monad.STM                   as STM
 import           Control.Monad.Trans.Reader
-import           Development.IDE.Graph.Database
 import qualified Development.IDE.Session.Ghc         as Ghc
 import qualified Development.IDE.Session.OrderedSet  as S
 import           Development.IDE.WorkerThread

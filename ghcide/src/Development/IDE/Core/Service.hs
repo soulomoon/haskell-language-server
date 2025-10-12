@@ -36,7 +36,6 @@ import qualified Development.IDE.Core.FileExists  as FileExists
 import qualified Development.IDE.Core.OfInterest  as OfInterest
 import           Development.IDE.Core.Shake       hiding (Log)
 import qualified Development.IDE.Core.Shake       as Shake
-import           Development.IDE.Graph.Database   (mkDelayedAction)
 import           Development.IDE.Types.Monitoring (Monitoring)
 import           Development.IDE.Types.Shake      (WithHieDb)
 import           Ide.Types                        (IdePlugins)

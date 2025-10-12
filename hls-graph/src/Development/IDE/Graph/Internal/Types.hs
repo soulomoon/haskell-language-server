@@ -33,7 +33,6 @@ import           Data.List                          (intercalate)
 import           Data.Maybe                         (fromMaybe, isJust,
                                                      isNothing)
 import           Data.Typeable
-import           Data.Unique                        (Unique)
 import           Debug.Trace                        (traceEventIO)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
@@ -52,7 +51,6 @@ import qualified Prettyprinter                      as PP
 import           Prettyprinter.Render.String        (renderString)
 import qualified StmContainers.Map                  as SMap
 import           StmContainers.Map                  (Map)
-import qualified StmContainers.Set                  as SSet
 import           System.Time.Extra                  (Seconds, sleep)
 import           UnliftIO                           (Async (asyncThreadId),
                                                      MVar, MonadUnliftIO, async,
