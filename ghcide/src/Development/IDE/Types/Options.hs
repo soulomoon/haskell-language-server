@@ -101,7 +101,7 @@ data IdePreprocessedSource = IdePreprocessedSource
 
 newtype IdeReportProgress    = IdeReportProgress Bool
 newtype IdeDefer             = IdeDefer          Bool
-newtype IdeTesting           = IdeTesting        Bool
+newtype IdeTesting           = IdeTesting        Bool deriving (Eq)
 newtype IdeOTMemoryProfiling = IdeOTMemoryProfiling    Bool
 
 data ProgressReportingStyle

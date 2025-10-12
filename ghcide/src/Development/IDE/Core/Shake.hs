@@ -825,7 +825,11 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
 
 
     -- logMonitoring <- newLogMonitoring recorder
-    let monitoring = argMonitoring <> upsweepReportMonitoring
+    let monitoring = argMonitoring <>
+                        if ideTesting == IdeTesting True
+                            then mempty
+                            else upsweepReportMonitoring
+    -- let monitoring = argMonitoring
     -- monitoring
     let readValuesCounter = fromIntegral . countRelevantKeys checkParents <$> getStateKeys shakeExtras
         readDirtyKeys = fromIntegral . countRelevantKeys checkParents . toListKeySet <$> readTVarIO (dirtyKeys shakeExtras)
