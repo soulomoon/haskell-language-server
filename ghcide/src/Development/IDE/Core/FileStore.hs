@@ -11,7 +11,6 @@ module Development.IDE.Core.FileStore(
     setSomethingModified,
     fileStoreRules,
     modificationTime,
-    typecheckParents,
     resetFileStore,
     resetInterfaceStore,
     getModificationTimeImpl,
@@ -279,23 +278,9 @@ setFileModified recorder vfs state saved nfp actionBefore = do
           AlwaysCheck -> True
           CheckOnSave -> saved
           _           -> False
-    ndls <- sequence [mkDelayedAction "ParentTC" L.Debug (typecheckParentsAction recorder nfp) | checkParents]
-    restartShakeSession (shakeExtras state) vfs (fromNormalizedFilePath nfp ++ " (modified)") ndls $ do
+    restartShakeSession (shakeExtras state) vfs (fromNormalizedFilePath nfp ++ " (modified)") [] $ do
         keys<-actionBefore
         return (toKey GetModificationTime nfp:keys)
-
-typecheckParents :: Recorder (WithPriority Log) -> IdeState -> NormalizedFilePath -> IO ()
-typecheckParents recorder state nfp = void $ shakeEnqueue (shakeExtras state) =<< parents
-  where parents = mkDelayedAction "ParentTC" L.Debug (typecheckParentsAction recorder nfp)
-
-typecheckParentsAction :: Recorder (WithPriority Log) -> NormalizedFilePath -> Action ()
-typecheckParentsAction recorder nfp = do
-    revs <- transitiveReverseDependencies nfp <$> useNoFile_ GetModuleGraph
-    case revs of
-      Nothing -> logWith recorder Info $ LogCouldNotIdentifyReverseDeps nfp
-      Just rs -> do
-        logWith recorder L.Debug $ LogTypeCheckingReverseDeps nfp revs
-        void $ uses GetModIface rs
 
 -- | Note that some keys have been modified and restart the session
 --   Only valid if the virtual file system was initialised by LSP, as that
