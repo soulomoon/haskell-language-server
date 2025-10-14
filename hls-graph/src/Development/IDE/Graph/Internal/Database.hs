@@ -45,6 +45,7 @@ import           UnliftIO                                 (MVar, atomically,
                                                            newEmptyMVar,
                                                            putMVar, readMVar)
 
+import qualified Data.List                                as List
 import           Development.IDE.Graph.Internal.Scheduler (cleanHook,
                                                            decreaseMyReverseDepsPendingCount,
                                                            popOutDirtykeysDB,
@@ -422,17 +423,19 @@ transitiveDirtyListBottomUpDiff database seeds allOldKeys = do
 
 cacheTransitiveDirtyListBottomUpDFSWithRootKey :: Database -> KeySet -> STM ([Key], KeySet)
 cacheTransitiveDirtyListBottomUpDFSWithRootKey db@Database{..} seeds = do
-  (_newKeys, seen) <- cacheTransitiveDirtyListBottomUpDFS db seeds
-  --   we should put pump root keys back to seen
---   for each new key, get its root keys and put them back to seen
-  (newKeys, newSeen) <- transitiveDirtyListBottomUpDFS databaseRRuntimeDepRoot seen
+  (newKeys, seen) <- cacheTransitiveDirtyListBottomUpDFS db seeds
+  -- we should put pump root keys back to seen
+  -- for each new key, get its root keys and put them back to seen
+  -- newKeys is for upsweep, databaseRRuntimeDepRoot only add new root keys which is not needed for upsweep
+  -- but seen is for thread filtering, we need to make sure all root keys are in seen
+  (_newKeys, newSeen) <- transitiveDirtyListBottomUpDFS databaseRRuntimeDepRoot seen
   let rootKey = newKey "root"
   return $ (List.delete rootKey newKeys, deleteKeySet rootKey newSeen)
 
 
 
 cacheTransitiveDirtyListBottomUpDFS :: Database -> KeySet -> STM ([Key], KeySet)
-cacheTransitiveDirtyListBottomUpDFS db@Database{..} seeds = do
+cacheTransitiveDirtyListBottomUpDFS Database{..} seeds = do
     SMap.lookup seeds databaseTransitiveRRuntimeDepCache >>= \case
         Just v  -> return v
         Nothing -> do
