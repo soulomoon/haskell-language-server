@@ -474,7 +474,7 @@ spawnRefresh ::
   (forall a. IO a -> IO a) ->
   IO ()
 spawnRefresh db@Database {..} stack key barrier prevResult refresher rollBack restore = do
-  Step currentStep <- atomically $ readTVar databaseStep
+  Step currentStep <- readTVarIO databaseStep
   spawnAsyncWithDbRegistration
     db
     (DeliverStatus currentStep ("async computation; " ++ show key) key)
