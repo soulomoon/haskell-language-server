@@ -402,9 +402,11 @@ updateReverseDeps myId db prev new = do
 -- inline
 {-# INLINE getRunTimeRDeps #-}
 getRunTimeRDeps :: Database -> Key -> STM (Maybe KeySet)
-getRunTimeRDeps db k = do
-    r <- SMap.lookup k (databaseRRuntimeDep db)
-    return (deleteKeySet (newKey "root") <$> r)
+getRunTimeRDeps db k = SMap.lookup k (databaseRRuntimeDep db)
+
+{-# INLINE getDeps #-}
+getDeps :: SMap.Map Key KeySet -> Key -> STM (Maybe KeySet)
+getDeps m k = SMap.lookup k m
 
 -- Edges in the reverse-dependency graph go from a child to its parents.
 -- We perform a DFS and, after exploring all outgoing edges, cons the node onto
@@ -420,15 +422,12 @@ transitiveDirtyListBottomUpDiff database seeds allOldKeys = do
 
 cacheTransitiveDirtyListBottomUpDFSWithRootKey :: Database -> KeySet -> STM ([Key], KeySet)
 cacheTransitiveDirtyListBottomUpDFSWithRootKey db@Database{..} seeds = do
-  (newKeys, seen) <- cacheTransitiveDirtyListBottomUpDFS db seeds
+  (_newKeys, seen) <- cacheTransitiveDirtyListBottomUpDFS db seeds
   --   we should put pump root keys back to seen
 --   for each new key, get its root keys and put them back to seen
-  foldrM (\k acc -> do
-            mroot <- SMap.lookup k databaseRRuntimeDepRoot
-            case mroot of
-                Just roots -> return $ foldr insertKeySet acc (toListKeySet roots)
-                Nothing    -> return acc
-        ) seen newKeys >>= \seen' -> return (newKeys, seen')
+  (newKeys, newSeen) <- transitiveDirtyListBottomUpDFS databaseRRuntimeDepRoot seen
+  let rootKey = newKey "root"
+  return $ (List.delete rootKey newKeys, deleteKeySet rootKey newSeen)
 
 
 
@@ -437,11 +436,11 @@ cacheTransitiveDirtyListBottomUpDFS db@Database{..} seeds = do
     SMap.lookup seeds databaseTransitiveRRuntimeDepCache >>= \case
         Just v  -> return v
         Nothing -> do
-            r <- transitiveDirtyListBottomUpDFS db seeds
+            r <- transitiveDirtyListBottomUpDFS databaseRRuntimeDep seeds
             SMap.insert r seeds databaseTransitiveRRuntimeDepCache
             return r
 
-transitiveDirtyListBottomUpDFS :: Database -> KeySet -> STM ([Key], KeySet)
+transitiveDirtyListBottomUpDFS :: SMap.Map Key KeySet -> KeySet -> STM ([Key], KeySet)
 transitiveDirtyListBottomUpDFS database seeds = do
   let go1 :: Key -> ([Key], KeySet) -> STM ([Key], KeySet)
       go1 x acc@(dirties, seen) = do
@@ -449,7 +448,7 @@ transitiveDirtyListBottomUpDFS database seeds = do
           then pure acc
           else do
             let newAcc = (dirties, insertKeySet x seen)
-            mnext <- getRunTimeRDeps database x
+            mnext <- getDeps database x
             (newDirties, newSeen) <- foldrM go1 newAcc (maybe mempty toListKeySet mnext)
             return (x:newDirties, newSeen)
                 -- if it is root key, we do not add it to the dirty list

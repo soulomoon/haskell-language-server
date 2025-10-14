@@ -67,30 +67,19 @@ pumpActionThreadReRun (ShakeDatabase _ _ db) d = do
         a <- ask
         s <- atomically $ getDataBaseStepInt db
         liftIO $ runInThreadStmInNewThreads db
-            (DeliverStatus s (actionName d) key)
+            (DeliverStatus s (actionName d) (uniqueID d))
             (ignoreState a $ runOne d) (const $ return ())
   where
-    key = uniqueID d
-    runOne d = setActionKey key $ do
+    runOne d = setActionKey (uniqueID d) $ do
             _ <- getAction d
             liftIO $ atomically $ doneQueue d (databaseActionQueue db)
 
 pumpActionThread :: ShakeDatabase -> (String -> IO ()) -> Action b
 pumpActionThread sdb@(ShakeDatabase _ _ db) logMsg = do
     do
-        a <- ask
         d <- liftIO $ atomicallyNamed "action queue - pop" $ popQueue (databaseActionQueue db)
-        s <- atomically $ getDataBaseStepInt db
-        liftIO $ runInThreadStmInNewThreads db
-            -- (return $ DeliverStatus s (actionName d) (newKey "root"))
-            (DeliverStatus s (actionName d) (uniqueID d))
-            (ignoreState a $ runOne d) (const $ return ())
-        liftIO $ logMsg ("pump executed: " ++ actionName d)
+        pumpActionThreadReRun sdb d
         pumpActionThread sdb logMsg
-  where
-    runOne d = do
-            _ <- getAction d
-            liftIO $ atomically $ doneQueue d (databaseActionQueue db)
 
 runActionInDb :: String -> [Action a] -> Action [Either SomeException a]
 runActionInDb title acts = do
