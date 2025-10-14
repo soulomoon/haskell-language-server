@@ -146,6 +146,8 @@ data DelayedAction a = DelayedAction
     }
     deriving (Functor)
 
+actionNameKey :: DelayedAction a -> String
+actionNameKey d = actionName d ++ " (" ++ show (uniqueID d) ++ ")"
 instance Eq (DelayedAction a) where
     a == b = uniqueID a == uniqueID b
 

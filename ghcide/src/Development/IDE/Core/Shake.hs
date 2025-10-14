@@ -157,6 +157,7 @@ import           Development.IDE.Graph.Internal.Scheduler (reportRemainDirties,
 import           Development.IDE.Graph.Internal.Types     (DBQue,
                                                            ShakeDatabase (ShakeDatabase),
                                                            Step (..),
+                                                           actionNameKey,
                                                            getShakeStep,
                                                            shakeDataBaseQueue,
                                                            withShakeDatabaseValuesLock)
@@ -258,7 +259,7 @@ instance Pretty Log where
       vcat
         [ "Restarting build session due to" <+> pretty (sraReason restartArgs)
         , "Restarts num:" <+> pretty (sraCount $ restartArgs)
-        , "Action Queue:" <+> pretty (map actionName actionQueue)
+        , "Action Queue:" <+> pretty (map actionNameKey actionQueue)
         -- , "Keys:" <+> pretty (map show $ toListKeySet keyBackLog)
         -- , "Keys:" <+> pretty (length $ toListKeySet keyBackLog)
         -- , "Deliveries still alive:" <+> pretty delivers
