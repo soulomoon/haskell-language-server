@@ -40,9 +40,9 @@ tests = testGroup "ghcide command line"
 locateGhcideExecutable :: IO FilePath
 locateGhcideExecutable = do
   -- Run the find command to locate the ghcide executable
-  out <- readProcess "find" ["dist-newstyle", "-type", "f", "-name", "ghcide"] ""
+  out <- readProcess "cabal" ["list-bin", "ghcide", "--verbose=0"] ""
   case lines out of
-    (path:_) -> makeAbsolute path
+    (path:_) -> return path
     []       -> throwIO $ userError "ghcide executable not found in dist-newstyle"
 
 
