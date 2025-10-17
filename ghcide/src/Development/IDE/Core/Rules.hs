@@ -710,7 +710,7 @@ loadGhcSession recorder ghcSessionDepsConfig = do
                 itExists <- getFileExists nfp
                 when itExists $ void $ do
                   use_ GetPhysicalModificationTime nfp
-        logWith recorder Logger.Debug $ LogDependencies file deps
+        -- logWith recorder Logger.Debug $ LogDependencies file deps
 
         mapM_ addDependency deps
 
