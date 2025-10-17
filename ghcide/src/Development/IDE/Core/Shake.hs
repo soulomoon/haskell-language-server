@@ -802,6 +802,9 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
                     return $ t - remains
             upsweepProgressReporting <- progressReportingNoTrace (reportTotalCount db) done lspEnv "Upsweeping" optProgressStyle
             async <- async $ forever $ do
+                atomically $ do
+                    remains <- reportRemainDirties db
+                    check (remains /= 0)
                 progressUpdate upsweepProgressReporting ProgressStarted
                 atomically $ do
                     remains <- reportRemainDirties db

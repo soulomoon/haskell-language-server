@@ -51,6 +51,7 @@ import qualified Prettyprinter                      as PP
 import           Prettyprinter.Render.String        (renderString)
 import qualified StmContainers.Map                  as SMap
 import           StmContainers.Map                  (Map)
+import qualified StmContainers.Set                  as SSet
 import           System.Time.Extra                  (Seconds, sleep)
 import           UnliftIO                           (Async (asyncThreadId),
                                                      MVar, MonadUnliftIO, async,
@@ -287,7 +288,7 @@ data SchedulerState = SchedulerState
     -- ^ Keys that are ready to run
     , schedulerRunningPending :: SMap.Map Key Int
     -- ^ Keys that are pending because they are waiting for dependencies to complete
-    , schedulerAllDirties     :: TVar KeySet
+    , schedulerAllDirties     :: SSet.Set Key
     -- todo try to use set from stm-containers
     -- , schedulerAllDirties     :: SSet.Set KeySet
     , schedulerAllKeysInOrder :: TVar [Key]

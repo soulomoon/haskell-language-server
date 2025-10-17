@@ -20,7 +20,8 @@ import           Control.Concurrent.STM               (STM, atomically,
                                                        flushTQueue, modifyTVar,
                                                        readTQueue, readTVar,
                                                        writeTQueue, writeTVar)
-import           Control.Monad                        (forM, forM_, void)
+import           Control.Monad                        (filterM, forM, forM_,
+                                                       void)
 import           Data.Maybe                           (fromMaybe)
 import qualified StmContainers.Map                    as SMap
 
@@ -32,10 +33,11 @@ import           Development.IDE.Graph.Internal.Types (Database (..),
                                                        Status (..), dbNotLocked,
                                                        getResult,
                                                        getResultDepsDefault)
+import qualified StmContainers.Set                    as SSet
 
 reportRemainDirties :: Database -> STM Int
 reportRemainDirties (databaseScheduler -> SchedulerState{..}) =
-    lengthKeySet <$> readTVar schedulerAllDirties
+    SSet.size schedulerAllDirties
 
 reportTotalCount :: Database -> STM Int
 reportTotalCount (databaseScheduler -> SchedulerState{..}) =
@@ -112,9 +114,7 @@ cleanHook :: Key -> Database -> STM ()
 cleanHook k db = do
     -- remove itself from running dirties and blocked sets
     let SchedulerState{..} = databaseScheduler db
-    -- SSet.delete k schedulerRunningDirties
-    -- SSet.delete k schedulerRunningBlocked
-    modifyTVar schedulerAllDirties $ deleteKeySet k
+    SSet.delete k schedulerAllDirties
 
 -- When a key becomes clean, decrement pending counters of its reverse dependents
 -- gathered from both runtime and stored reverse maps.
@@ -133,9 +133,11 @@ decreaseMyReverseDepsPendingCount k db@Database{..} = do
 writeUpsweepQueue :: [Key] -> Database -> STM ()
 writeUpsweepQueue ks Database{..} = do
     let SchedulerState{..} = databaseScheduler
-    forM_ ks $ \k -> writeTQueue schedulerUpsweepQueue k
+    forM_ ks $ \k -> do
+        writeTQueue schedulerUpsweepQueue k
+        SSet.insert k schedulerAllDirties
     writeTVar schedulerAllKeysInOrder ks
-    writeTVar schedulerAllDirties $ fromListKeySet ks
+
 
 -- gather all dirty keys that is not finished, to reschedule after restart
 -- includes keys in databaseDirtyTargets, databaseRunningReady, databaseRunningPending, databaseRunningDirties
@@ -160,11 +162,11 @@ popOutDirtykeysDB Database{..} = do
     -- SSet.reset schedulerRunningBlocked
 
     -- 6. All dirties set: read and clear
-    reenqueue <- readTVar schedulerAllDirties
-    _ <- writeTVar schedulerAllDirties mempty
+    -- reenqueue <- readTVar schedulerAllDirties
+    -- _ <- writeTVar schedulerAllDirties mempty
     allKeys <- readTVar schedulerAllKeysInOrder
     _ <- writeTVar schedulerAllKeysInOrder mempty
-    pure $ filter (`memberKeySet` reenqueue) allKeys
+    filterM (`SSet.lookup` schedulerAllDirties) allKeys
 
 -- read one key from ready queue, and insert it into running dirties
 -- this function will block if there is no key in ready queue

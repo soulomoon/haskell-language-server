@@ -55,6 +55,7 @@ import qualified UnliftIO.Exception                       as UE
 
 #if MIN_VERSION_base(4,19,0)
 import           Data.Functor                             (unzip)
+import qualified StmContainers.Set                        as SSet
 #else
 import           Data.List.NonEmpty                       (unzip)
 #endif
@@ -74,7 +75,7 @@ newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra datab
     schedulerRunningReady    <- newTQueueIO
     schedulerRunningPending <- atomically SMap.new
     schedulerUpsweepQueue <- newTQueueIO
-    schedulerAllDirties <- newTVarIO mempty
+    schedulerAllDirties <- SSet.newIO
     schedulerAllKeysInOrder <- newTVarIO []
     let databaseScheduler = SchedulerState{..}
     pure Database{..}
