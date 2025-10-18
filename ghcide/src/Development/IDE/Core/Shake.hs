@@ -601,7 +601,7 @@ type IdeRule k v =
 -- | A live Shake session with the ability to enqueue Actions for running.
 --   Keeps the 'ShakeDatabase' open, so at most one 'ShakeSession' per database.
 newtype ShakeSession = ShakeSession
-  { cancelShakeSession :: KeySet -> IO ()
+  { cancelShakeSession :: IO (KeySet -> IO ())
     -- ^ Closes the Shake session
   }
 
@@ -877,7 +877,10 @@ shakeShut IdeState{..} = do
     -- writeFile dumpPath dump
     -- Shake gets unhappy if you try to close when there is a running
     -- request so we first abort that.
-    for_ runner (flip cancelShakeSession mempty)
+    for_ runner (\r -> do
+        can <- cancelShakeSession r
+        can mempty
+        )
     shakeShutDatabase mempty shakeDb
     void $ shakeDatabaseProfile shakeDb
     progressStop $ progress shakeExtras
@@ -976,12 +979,13 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
   withMVar'
     shakeSession
     ( \runner -> do
+        can <- cancelShakeSession runner
         newDirtyKeys <- sraBetweenSessions shakeRestartArgs
         -- reverseMap <- shakedatabaseRuntimeDep shakeDb
         -- logWith recorder Debug $ LogPreserveKeys (map fst preservekvs) newDirtyKeys [] reverseMap
         (stopTime, (toUpSweepKeys, computePreserveTime, lookupsNum, oldUpSweepDirties)) <- duration $ do
             (computePreserveTime,(dirties, toUpSweepKeys, lookupsNum, oldUpSweepDirties)) <- duration $ shakeComputeToPreserve shakeDb $ fromListKeySet newDirtyKeys
-            logErrorAfter 10 $ cancelShakeSession runner dirties
+            logErrorAfter 10 $ can dirties
             return (toUpSweepKeys, computePreserveTime, lookupsNum, oldUpSweepDirties)
         survivedDelivers <- shakePeekAsyncsDelivers shakeDb
         -- it is every important to update the dirty keys after we enter the critical section
@@ -1080,11 +1084,11 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
 
     let
         -- cancelShakeSession :: Set (Async ()) -> IO ()
-        cancelShakeSession dirties = do
+        cancelShakeSession = do
             logWith recorder Info $ LogShakeText ("Starting shake cancellation: " <> " (" <> T.pack (show reason) <> ")")
             tid <- myThreadId
             cancelWith workThread $ AsyncParentKill tid step [newKey ("root" :: String)]
-            shakeShutDatabase dirties shakeDb
+            return $ \dirties -> shakeShutDatabase dirties shakeDb
 
     -- should wait until the step has increased
     pure (ShakeSession{..})
