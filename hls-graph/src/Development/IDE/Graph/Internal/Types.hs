@@ -282,16 +282,17 @@ raedAllLeftsDBQue q = do
 -- Encapsulated scheduler state, previously scattered on Database
 data SchedulerState = SchedulerState
     {
-        schedulerUpsweepQueue :: TQueue Key
+    schedulerUpsweepQueue         :: TQueue Key
     -- ^ Keys that need to be upswept (i.e., re-evaluated because they are dirty)
-    , schedulerRunningReady   :: TQueue Key
+    , schedulerRunningReady       :: TQueue Key
     -- ^ Keys that are ready to run
-    , schedulerRunningPending :: SMap.Map Key Int
+    , schedulerRunningPending     :: SMap.Map Key Int
     -- ^ Keys that are pending because they are waiting for dependencies to complete
-    , schedulerAllDirties     :: SSet.Set Key
+    , schedulerAllDirties         :: SSet.Set Key
     -- todo try to use set from stm-containers
     -- , schedulerAllDirties     :: SSet.Set KeySet
-    , schedulerAllKeysInOrder :: TVar [Key]
+    , schedulerAllKeysInOrder     :: TVar [Key]
+    , schedulerAllKeysInOrderSize :: TVar Int
     }
 -- invariants:
 

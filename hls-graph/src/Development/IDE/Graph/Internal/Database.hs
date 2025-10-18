@@ -77,6 +77,7 @@ newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra datab
     schedulerUpsweepQueue <- newTQueueIO
     schedulerAllDirties <- SSet.newIO
     schedulerAllKeysInOrder <- newTVarIO []
+    schedulerAllKeysInOrderSize <- newTVarIO 0
     let databaseScheduler = SchedulerState{..}
     pure Database{..}
 

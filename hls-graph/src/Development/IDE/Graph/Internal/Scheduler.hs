@@ -137,6 +137,7 @@ writeUpsweepQueue ks Database{..} = do
         writeTQueue schedulerUpsweepQueue k
         SSet.insert k schedulerAllDirties
     writeTVar schedulerAllKeysInOrder ks
+    writeTVar schedulerAllKeysInOrderSize $ length ks
 
 
 -- gather all dirty keys that is not finished, to reschedule after restart
