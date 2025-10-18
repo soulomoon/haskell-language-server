@@ -1075,12 +1075,13 @@ withBootSuffix _          = id
 --   Runs preprocessors as needed.
 getModSummaryFromImports
   :: HscEnv
+  -> String
   -> FilePath
   -> UTCTime
   -> Maybe Util.StringBuffer
   -> ExceptT [FileDiagnostic] IO ModSummaryResult
 -- modTime is only used in GHC < 9.4
-getModSummaryFromImports env fp _modTime mContents = do
+getModSummaryFromImports env hscOptionHash fp _modTime mContents = do
 -- src_hash is only used in GHC >= 9.4
     (contents, opts, ppEnv, _src_hash) <- preprocessor env fp mContents
 
@@ -1175,6 +1176,9 @@ getModSummaryFromImports env fp _modTime mContents = do
                     [ Util.fingerprintString fp
                     , fingerPrintImports
                     , modLocationFingerprint ms_location
+                    , Util.fingerprintString hscOptionHash
+                    -- this is necessary to account for the original hsc options, since now we
+                    -- do not include optionHash in the cache dir.
                     ] ++ map Util.fingerprintString opts
 
         modLocationFingerprint :: ModLocation -> Util.Fingerprint

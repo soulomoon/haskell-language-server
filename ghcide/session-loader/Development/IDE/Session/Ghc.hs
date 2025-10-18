@@ -99,6 +99,7 @@ data ComponentInfo = ComponentInfo
   -- | Processed DynFlags. Does not contain inplace packages such as local
   -- libraries. Can be used to actually load this Component.
   , componentDynFlags       :: DynFlags
+  , componentOptionHash     :: String
   -- | All targets of this components.
   , componentTargets        :: [GHC.Target]
   -- | Filepath which caused the creation of this component
@@ -182,7 +183,7 @@ newComponentCache recorder exts _cfp hsc_env old_cis new_cis = do
             -- above.
             -- We just need to set the current unit here
             pure $ hscSetActiveUnitId (homeUnitId_ df) hscEnv'
-      henv <- newHscEnvEq thisEnv
+      henv <- newHscEnvEq thisEnv $ componentOptionHash ci
       let targetEnv = (if isBad ci then multi_errs else [], Just henv)
           targetDepends = componentDependencyInfo ci
       logWith recorder Debug $ LogNewComponentCache (targetEnv, targetDepends)
@@ -309,6 +310,7 @@ addComponentInfo recorder getCacheDirs dep_info newDynFlags (hieYaml, cfp, opts)
       , componentFP = rawComponentFP
       , componentCOptions = rawComponentCOptions
       , componentDependencyInfo = rawComponentDependencyInfo
+      , componentOptionHash = getOptionHash (componentOptions opts)
       }
   -- Modify the map so the hieYaml now maps to the newly updated
   -- ComponentInfos
@@ -420,9 +422,12 @@ getCacheDirsDefault root prefix opts = do
     where
         -- Create a unique folder per set of different GHC options, assuming that each different set of
         -- GHC options will create incompatible interface files.
-        opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
+        -- opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
         -- opts_hash = "fixed"
-        -- opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack [root])
+        opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack [root])
+
+getOptionHash :: [String] -> String
+getOptionHash opts = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
 
 setNameCache :: NameCache -> HscEnv -> HscEnv
 setNameCache nc hsc = hsc { hsc_NC = nc }
