@@ -284,9 +284,9 @@ data SchedulerState = SchedulerState
     {
     schedulerUpsweepQueue         :: TQueue Key
     -- ^ Keys that need to be upswept (i.e., re-evaluated because they are dirty)
-    , schedulerRunningReady       :: TQueue Key
+    , schedulerRunningReady       :: TQueue (Key, RunMode, Maybe Result)
     -- ^ Keys that are ready to run
-    , schedulerRunningPending     :: SMap.Map Key Int
+    , schedulerRunningPending     :: SMap.Map Key (Int, RunMode, Maybe Result)
     -- ^ Keys that are pending because they are waiting for dependencies to complete
     , schedulerAllDirties         :: SSet.Set Key
     -- todo try to use set from stm-containers
@@ -322,8 +322,8 @@ dumpSchedulerState SchedulerState{..} = atomically $ do
               , PP.indent 2 (ppKeys ups)
             --   , PP.pretty ("ready:" :: String) <> PP.pretty (length ready)
             --   , PP.indent 2 (ppKeys ready)
-              , PP.pretty ("pending:" :: String) <> PP.pretty (length pendingPairs)
-              , PP.indent 2 (ppPairs pendingPairs)
+            --   , PP.pretty ("pending:" :: String) <> PP.pretty (length pendingPairs)
+            --   , PP.indent 2 (ppPairs pendingPairs)
             --   , PP.pretty ("running:" :: String) <> PP.pretty (length dirties)
             --   , PP.indent 2 (ppKeys (dirties))
             --   , PP.pretty ("blocked:" :: String) <> PP.pretty (length blocked)
@@ -452,14 +452,15 @@ databaseGetActionQueueLength db = do
 -- 4. Exception safety with rollback on registration failure
 -- @ inline
 {-# INLINE spawnAsyncWithDbRegistration #-}
-spawnAsyncWithDbRegistration :: Database -> DeliverStatus -> IO a1 -> (Either SomeException a1 -> IO ()) -> (forall a. IO a -> IO a) -> IO ()
-spawnAsyncWithDbRegistration db@Database{..} deliver asyncBody handler restore = do
+spawnAsyncWithDbRegistration :: Database -> DeliverStatus -> STM () -> IO a1 -> (Either SomeException a1 -> IO ()) -> (forall a. IO a -> IO a) -> IO ()
+spawnAsyncWithDbRegistration db@Database{..} deliver registerHook asyncBody handler restore = do
     startBarrier <- newEmptyTMVarIO
     -- 1. we need to make sure the thread is registered before we actually start
     -- 2. we should not start in between the restart
     -- 3. if it is killed before we start, we need to cancel the async
     let register a = do
                     dbNotLocked db
+                    registerHook
                     modifyTVar' databaseThreads ((deliver, a):)
                     -- make sure we only start after the restart
                     putTMVar startBarrier ()
@@ -473,7 +474,7 @@ spawnAsyncWithDbRegistration db@Database{..} deliver asyncBody handler restore =
 {-# INLINE runInThreadStmInNewThreads #-}
 runInThreadStmInNewThreads :: Database -> DeliverStatus -> IO a -> (Either SomeException a -> IO ()) -> IO ()
 runInThreadStmInNewThreads db deliver act handler = uninterruptibleMask $ \restore ->
-        spawnAsyncWithDbRegistration db deliver act handler restore
+        spawnAsyncWithDbRegistration db deliver (return ()) act handler restore
 
 getDataBaseStepInt :: Database -> STM Int
 getDataBaseStepInt db = do
@@ -553,6 +554,10 @@ data Status
         runningPrev :: !(Maybe Result),
         runningWait :: !(MVar (Either SomeException (Key, Result)))
         }
+instance Show Status where
+    show (Clean _)       = "Clean"
+    show (Dirty _)       = "Dirty"
+    show (Running s _ _) = "Running step " ++ show s
 
 viewDirty :: Step -> Status -> Status
 -- viewDirty currentStep (Running s re _ _) | currentStep /= s = Dirty re
@@ -615,6 +620,12 @@ data RunMode
     = RunDependenciesSame -- ^ My dependencies have not changed.
     | RunDependenciesChanged -- ^ At least one of my dependencies from last time have changed, or I have no recorded dependencies.
       deriving (Eq,Show)
+
+instance Monoid RunMode where
+    mempty = RunDependenciesSame
+instance Semigroup RunMode where
+    RunDependenciesSame <> b    = b
+    RunDependenciesChanged <> _ = RunDependenciesChanged
 
 instance NFData RunMode where rnf x = x `seq` ()
 

@@ -48,6 +48,7 @@ import           UnliftIO                                 (MVar, atomically,
 import qualified Data.List                                as List
 import           Development.IDE.Graph.Internal.Scheduler (cleanHook,
                                                            decreaseMyReverseDepsPendingCount,
+                                                           isDirty,
                                                            popOutDirtykeysDB,
                                                            readReadyQueue,
                                                            writeUpsweepQueue)
@@ -186,7 +187,7 @@ builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleM
     case (viewToRun current . keyStatus) =<< status of
       Nothing -> do
         SMap.focus (updateStatus $ Running current Nothing barrier) key databaseValues
-        let register = spawnRefresh db stack key barrier Nothing refresh
+        let register = spawnRefresh db stack key (return ()) barrier Nothing refresh
                         -- why it is important to use rollback here
 
                         {- Note [Rollback is required if killed before registration]
@@ -219,10 +220,6 @@ handleResult k barrier eResult = do
         Left e | Just (AsyncParentKill tid s ks) <- fromException e  -> putMVar barrier (Left (toException $ AsyncParentKill tid s (k:ks)))
         Left e  -> putMVar barrier (Left e)
 
--- | isDirty
--- only dirty when it's build time is older than the changed time of one of its dependencies
-isDirty :: Foldable t => Result -> t (a, Result) -> Bool
-isDirty me = any (\(_,dep) -> resultBuilt me < resultChanged dep)
 
 -- | Refresh dependencies for a key and compute the key:
 -- The refresh the deps linearly(last computed order of the deps for the key).
@@ -256,45 +253,35 @@ refreshDeps visited db stack key result = \case
 -- a version of upsweep that only freshes the key in topo order and limit the concurrency
 -- it is simpler and should be more efficient when too many keys need to be upswept
 upsweepAll :: Database -> Stack -> IO ()
-upsweepAll db stack = go
-    where
-        go = do
-            k <- atomically $ readReadyQueue db
-            upsweep db stack k
-            go
+upsweepAll db@Database {..} stack = go
+  where
+    go = UE.uninterruptibleMask $ \k -> do
+      barrier <- newEmptyMVar
+      spanwThread <- k $ atomically $ do
+        (key, runMode, mRes) <- readReadyQueue db
+        current <- readTVar databaseStep
+        return $
+        -- update status and clean hook should be run at the same time atomically
+        -- since it indicate we transfer the responsibility of managing the key from scheduler to the thread
+          spawnRefresh db stack key (do
+            SMap.focus (updateStatus $ Running current mRes barrier) key databaseValues
+            cleanHook key db) barrier mRes
+            ( \db stack key s -> do
+                result <- compute db stack key runMode s
+                return result
+            )
+            -- see Note [Rollback is required if killed before registration]
+            (const $ atomicallyNamed "upsweep rollback" $ SMap.focus updateDirty key databaseValues)
+            -- (traceEventIO $ "markDirty should " ++ show key)
+            k
+      spanwThread
+      k go
 
 upsweepAction :: Action ()
 upsweepAction = Action $ do
     SAction{..} <- RWS.ask
     let db = actionDatabase
     liftIO $ upsweepAll db actionStack
-
-upsweep :: Database -> Stack -> Key -> IO ()
-upsweep db@Database {..} stack key = UE.uninterruptibleMask $ \k -> do
-  barrier <- newEmptyMVar
-  join $ k $ atomicallyNamed "upsweep" $ do
-    dbNotLocked db
-    status <- SMap.lookup key databaseValues
-    current <- readTVar databaseStep
-    case keyStatus <$> status of
-      -- if it is still dirty, we update it and propogate further
-      Just (Dirty s) -> do
-        SMap.focus (updateStatus $ Running current s barrier) key databaseValues
-        -- if it is clean, other event update it, so it is fine.
-        return $
-            spawnRefresh db stack key barrier s (\db stack key s -> do
-                result <- refresh db stack key s
-                -- todo, maybe just put this to refresh
-                -- atomically $ cleanHook key db
-                return result)
-                -- see Note [Rollback is required if killed before registration]
-                (const $ atomicallyNamed "upsweep rollback" $ SMap.focus updateDirty key databaseValues)
-                -- (traceEventIO $ "markDirty should " ++ show key)
-                k
-      Just (Clean _) -> return $ atomically $ cleanHook key db
-    --   leave it for downsweep
-      Nothing -> return $ atomically $ cleanHook key db
-      _ -> return . return $ ()
 
 -- refresh :: Database -> Stack -> Key -> Maybe Result -> IO Result
 -- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
@@ -343,8 +330,7 @@ compute db@Database{..} stack key mode result = do
                     deps
             _ -> pure ()
         runHook
-        decreaseMyReverseDepsPendingCount key db
-        cleanHook key db
+        decreaseMyReverseDepsPendingCount key res db
         -- todo
         -- it might be overridden by error if another kills this thread
         SMap.focus (updateStatus $ Clean res) key databaseValues
@@ -469,17 +455,19 @@ spawnRefresh ::
   Database ->
   t ->
   Key ->
+  STM () ->
   MVar (Either SomeException (Key, Result)) ->
   Maybe Result ->
   (Database -> t -> Key -> Maybe Result -> IO Result) ->
   (SomeException -> IO ()) ->
   (forall a. IO a -> IO a) ->
   IO ()
-spawnRefresh db@Database {..} stack key barrier prevResult refresher rollBack restore = do
+spawnRefresh db@Database {..} stack key registerHook barrier prevResult refresher rollBack restore = do
   Step currentStep <- readTVarIO databaseStep
   spawnAsyncWithDbRegistration
     db
     (DeliverStatus currentStep ("async computation; " ++ show key) key)
+    registerHook
     (refresher db stack key prevResult)
     (\r -> do
         case r of
