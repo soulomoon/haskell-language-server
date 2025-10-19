@@ -86,6 +86,7 @@ prepareToRunKeysRealTime db@Database{..} = do
     -- pop one at a time to reduce fraction
     atomically $ do
         let SchedulerState{..} = databaseScheduler
+        dbNotLocked db
         enque <- readTQueue schedulerUpsweepQueue
         prepareToRunKey enque db
     prepareToRunKeysRealTime db
