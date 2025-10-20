@@ -27,6 +27,7 @@ import           Control.Monad                        (filterM, forM, forM_,
 import           Data.Maybe                           (fromMaybe, mapMaybe)
 import qualified StmContainers.Map                    as SMap
 
+import qualified Control.Concurrent.STM.TPQueue       as TPQ
 import           Data.Foldable                        (Foldable (..))
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Types (Database (..),
@@ -36,7 +37,7 @@ import           Development.IDE.Graph.Internal.Types (Database (..),
                                                        RunMode (..),
                                                        SchedulerState (..),
                                                        Status (..), dbNotLocked,
-                                                       getResultDepsDefault)
+                                                       lookupDatabaseRuntimeDepRootCounter)
 import qualified StmContainers.Set                    as SSet
 
 reportRemainDirties :: Database -> STM Int
@@ -98,7 +99,8 @@ prepareToRunKey key db@Database {..} = do
     Just (pendingCount, runMode, mRes) ->
       if pendingCount == 0
         then do
-          writeTQueue schedulerRunningReady $ (key, runMode, mRes)
+          prio <- lookupDatabaseRuntimeDepRootCounter key db
+          TPQ.writeTPQueue schedulerRunningReady prio $ (key, runMode, mRes)
           SMap.delete key schedulerRunningPending
         else do
           SMap.insert (pendingCount, runMode, mRes) key schedulerRunningPending
@@ -124,7 +126,7 @@ prepareToRunKeysRealTime db@Database{..} = do
 -- decrease the pending count of a key in databaseRunningPending
 -- if the pending count reaches zero, we move it to databaseRunningReady and remove it from databaseRunningPending
 decreasePendingCount :: Key -> Result -> Database -> STM ()
-decreasePendingCount k res Database{..} = do
+decreasePendingCount k res db@Database{..} = do
     let SchedulerState{..} = databaseScheduler
     mCount <- SMap.lookup k schedulerRunningPending
     case mCount of
@@ -133,7 +135,8 @@ decreasePendingCount k res Database{..} = do
           | c <= 1 -> do
                 -- Done waiting: move to ready and remove from pending
                 SMap.delete k schedulerRunningPending
-                writeTQueue schedulerRunningReady (k, newRunMode, mRes)
+                prio <- lookupDatabaseRuntimeDepRootCounter k db
+                TPQ.writeTPQueue schedulerRunningReady prio (k, newRunMode, mRes)
           | otherwise ->
                 -- Decrement pending count
                 SMap.insert (c - 1, newRunMode, mRes) k schedulerRunningPending
@@ -186,7 +189,7 @@ popOutDirtykeysDB Database{..} = do
     void $ flushTQueue schedulerUpsweepQueue
 
     -- 2. Ready queue: drain all (atomic flush)
-    void $ flushTQueue schedulerRunningReady
+    void $ TPQ.flushTPQueue schedulerRunningReady
 
     -- 3. Pending map: collect keys and clear
     SMap.reset schedulerRunningPending
@@ -214,5 +217,5 @@ readReadyQueue :: Database -> STM (Key, RunMode, Maybe Result)
 readReadyQueue db@Database{..} = do
     dbNotLocked db
     let SchedulerState{..} = databaseScheduler
-    readTQueue schedulerRunningReady
+    TPQ.readTPQueue schedulerRunningReady
 

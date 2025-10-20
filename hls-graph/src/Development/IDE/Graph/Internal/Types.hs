@@ -12,6 +12,7 @@ import           Control.Concurrent.STM             (STM, TQueue, TVar, check,
                                                      newTVar, readTQueue,
                                                      readTVar, unGetTQueue,
                                                      writeTQueue)
+import qualified Control.Concurrent.STM.TPQueue     as TPQ
 import           Control.Exception                  (throw)
 import           Control.Monad                      (forM, forM_, forever,
                                                      unless, when)
@@ -64,6 +65,7 @@ import           UnliftIO                           (Async (asyncThreadId),
                                                      waitCatch, withAsync)
 import           UnliftIO.Concurrent                (ThreadId, myThreadId)
 import qualified UnliftIO.Exception                 as UE
+
 
 #if !MIN_VERSION_base(4,18,0)
 import           Control.Applicative                (liftA2)
@@ -284,7 +286,8 @@ data SchedulerState = SchedulerState
     {
     schedulerUpsweepQueue         :: TQueue Key
     -- ^ Keys that need to be upswept (i.e., re-evaluated because they are dirty)
-    , schedulerRunningReady       :: TQueue (Key, RunMode, Maybe Result)
+    -- , schedulerRunningReady       :: TQueue (Key, RunMode, Maybe Result)
+    , schedulerRunningReady       :: TPQ.TPQueue Int (Key, RunMode, Maybe Result)
     -- ^ Keys that are ready to run
     , schedulerRunningPending     :: SMap.Map Key (Int, RunMode, Maybe Result)
     -- ^ Keys that are pending because they are waiting for dependencies to complete
@@ -333,6 +336,22 @@ dumpSchedulerState SchedulerState{..} = atomically $ do
     pure $ renderString (PP.layoutPretty PP.defaultLayoutOptions doc)
 
 
+-- increaseDatabaseRuntimeDepRootCounter
+-- record that k has one more root depending on it
+increaseDatabaseRuntimeDepRootCounter :: Key -> Database -> STM ()
+increaseDatabaseRuntimeDepRootCounter k Database{..} = do
+    -- increase the counter
+    modifyTVar' databaseRuntimeDepRootCounter $ (\x -> x - 1)
+    -- also record the count for the key
+    v <- fromIntegral <$> readTVar databaseRuntimeDepRootCounter
+    SMap.insert v k databaseRuntimeDepRootCounterMap
+
+lookupDatabaseRuntimeDepRootCounter :: Key -> Database -> STM Int
+lookupDatabaseRuntimeDepRootCounter k Database{..} = do
+    m <- SMap.lookup k databaseRuntimeDepRootCounterMap
+    case m of
+        Nothing -> return 0
+        Just v  -> return v
 
 
 data Database = Database {
@@ -341,6 +360,11 @@ data Database = Database {
     databaseThreads                    :: TVar [(DeliverStatus, Async ())],
 
     databaseRuntimeDepRoot             :: SMap.Map Key KeySet,
+
+    -- todo put this to scheduler state?
+    databaseRuntimeDepRootCounterMap   :: SMap.Map Key Int,
+    databaseRuntimeDepRootCounter      :: TVar Int,
+
     databaseRRuntimeDepRoot            :: SMap.Map Key KeySet,
     databaseRRuntimeDep                :: SMap.Map Key KeySet,
     -- it is used to compute the transitive reverse deps, so
@@ -413,6 +437,10 @@ insertdatabaseRuntimeDep k pk db = do
     if isRootKey pk || isRootKey k
         then do
             SMap.focus (Focus.alter (Just . maybe (singletonKeySet k) (insertKeySet k))) pk (databaseRuntimeDepRoot db)
+            -- record that when did k being depended by a root key
+            -- it is used as a part of ready queue to indicate priority
+            -- the more recent root dependents, the higher priority
+            increaseDatabaseRuntimeDepRootCounter k db
             SMap.focus (Focus.alter (Just . maybe (singletonKeySet pk) (insertKeySet pk))) k (databaseRRuntimeDepRoot db)
         else do
             -- databaseRRuntimeDep only incremental, so no need to keep a reverse one

@@ -55,6 +55,7 @@ import           Development.IDE.Graph.Internal.Scheduler (cleanHook,
 import qualified UnliftIO.Exception                       as UE
 
 #if MIN_VERSION_base(4,19,0)
+import qualified Control.Concurrent.STM.TPQueue           as TPQ
 import           Data.Functor                             (unzip)
 import qualified StmContainers.Set                        as SSet
 #else
@@ -73,13 +74,15 @@ newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra datab
     databaseRRuntimeDepRoot <- atomically SMap.new
     databaseTransitiveRRuntimeDepCache <- atomically SMap.new
     -- Initialize scheduler state
-    schedulerRunningReady    <- newTQueueIO
+    schedulerRunningReady    <- TPQ.newTPQueueIO
     schedulerRunningPending <- atomically SMap.new
     schedulerUpsweepQueue <- newTQueueIO
     schedulerAllDirties <- SSet.newIO
     schedulerAllKeysInOrder <- newTVarIO []
     schedulerAllKeysInOrderSize <- newTVarIO 0
     let databaseScheduler = SchedulerState{..}
+    databaseRuntimeDepRootCounterMap <- atomically SMap.new
+    databaseRuntimeDepRootCounter <- newTVarIO 0
     pure Database{..}
 
 -- | Increment the step and mark dirty.
@@ -297,7 +300,7 @@ compute db@Database{..} stack key mode result = do
     let act = runRule databaseRules key (fmap resultData result) mode
     deps <- liftIO $ newIORef UnknownDeps
     curStep <- liftIO $ readTVarIO databaseStep
-    dataBaseLogger $ "Computing key: " ++ show key ++ " at step " ++ show curStep
+    -- dataBaseLogger $ "Computing key: " ++ show key ++ " at step " ++ show curStep
     (execution, RunResult{..}) <-
         liftIO $ duration $ runReaderT (fromAction act) $ SAction key db deps stack
     deps <- liftIO $ readIORef deps

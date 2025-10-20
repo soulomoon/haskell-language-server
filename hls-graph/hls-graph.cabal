@@ -51,6 +51,7 @@ library
   import: warnings
   exposed-modules:
     Control.Concurrent.STM.Stats
+    Control.Concurrent.STM.TPQueue
     Development.IDE.Graph
     Development.IDE.Graph.Classes
     Development.IDE.Graph.Database
@@ -89,6 +90,7 @@ library
     , js-flot
     , js-jquery
     , list-t
+    , pqueue
     , stm
     , stm-containers
     , text
