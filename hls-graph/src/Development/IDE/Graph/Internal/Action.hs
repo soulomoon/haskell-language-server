@@ -51,15 +51,28 @@ alwaysRerun = do
     ref <- asks actionDeps
     liftIO $ modifyIORef' ref (AlwaysRerunDeps mempty <>)
 
+-- parallel :: [Action a] -> Action [Either SomeException a]
+-- parallel [] = return []
+-- parallel xs = do
+--     a <- ask
+--     deps <- liftIO $ readIORef $ actionDeps a
+--     case deps of
+--         UnknownDeps ->
+--             -- if we are already in the rerun mode, nothing we do is going to impact our state
+--             -- runActionInDb "parallel" xs
+--             runActionInDb "parallel" xs
+--         deps -> error $ "parallel not supported when we have precise dependencies: " ++ show deps
+
 parallel :: [Action a] -> Action [Either SomeException a]
 parallel [] = return []
 parallel xs = do
     a <- ask
     deps <- liftIO $ readIORef $ actionDeps a
     case deps of
-        UnknownDeps ->
+        UnknownDeps -> do
             -- if we are already in the rerun mode, nothing we do is going to impact our state
-            runActionInDb "parallel" xs
+            -- runActionInDb "parallel" xs
+            liftIO $ mapConcurrently (fmap Right . ignoreState a) xs
         deps -> error $ "parallel not supported when we have precise dependencies: " ++ show deps
 
 pumpActionThreadReRun :: ShakeDatabase -> DelayedAction () -> Action ()
