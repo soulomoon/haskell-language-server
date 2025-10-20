@@ -272,12 +272,6 @@ setFileModified :: Recorder (WithPriority Log)
                 -> IO [Key]
                 -> IO ()
 setFileModified recorder vfs state saved nfp actionBefore = do
-    ideOptions <- getIdeOptionsIO $ shakeExtras state
-    doCheckParents <- optCheckParents ideOptions
-    let checkParents = case doCheckParents of
-          AlwaysCheck -> True
-          CheckOnSave -> saved
-          _           -> False
     restartShakeSession (shakeExtras state) vfs (fromNormalizedFilePath nfp ++ " (modified)") $ do
         keys<-actionBefore
         return (toKey GetModificationTime nfp:keys)
