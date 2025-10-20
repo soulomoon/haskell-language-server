@@ -129,9 +129,32 @@ get_bin_path() {
     fi
   done
   local path=""
-  path=$(find dist-newstyle -type f -name "$name" -perm -111 2>/dev/null | head -n1 || true)
+  local candidate="$name"
+
+  if ! path=$(cabal list-bin "$candidate" 2>/dev/null); then
+    if [[ "$candidate" != test:* ]]; then
+      if path=$(cabal list-bin "test:${name}" 2>/dev/null); then
+        candidate="test:${name}"
+      elif path=$(cabal list-bin "exe:${name}" 2>/dev/null); then
+        candidate="exe:${name}"
+      else
+        path=""
+      fi
+    else
+      path=""
+    fi
+  fi
+
+  path=$(printf '%s\n' "$path" | head -n1)
+
+  if [[ -z "$path" ]]; then
+    echo "[loop][error] Unable to locate binary for '${name}' via 'cabal list-bin'." >&2
+    echo "[loop][error] Try running 'cabal build ${name}' to ensure the target exists." >&2
+    exit 2
+  fi
+
   BIN_NAMES+=("$name"); BIN_PATHS+=("$path")
-  echo "$path"
+  # echo "$path" >&2
 }
 
 while true; do
