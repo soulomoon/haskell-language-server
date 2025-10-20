@@ -278,7 +278,7 @@ setFileModified recorder vfs state saved nfp actionBefore = do
           AlwaysCheck -> True
           CheckOnSave -> saved
           _           -> False
-    restartShakeSession (shakeExtras state) vfs (fromNormalizedFilePath nfp ++ " (modified)") [] $ do
+    restartShakeSession (shakeExtras state) vfs (fromNormalizedFilePath nfp ++ " (modified)") $ do
         keys<-actionBefore
         return (toKey GetModificationTime nfp:keys)
 
@@ -289,7 +289,7 @@ setSomethingModified :: VFSModified -> IdeState -> String -> IO [Key] -> IO ()
 setSomethingModified vfs state reason actionBetweenSession = do
     -- Update database to remove any files that might have been renamed/deleted
     atomically $ writeTaskQueue (indexQueue $ hiedbWriter $ shakeExtras state) (\withHieDb -> withHieDb deleteMissingRealFiles)
-    void $ restartShakeSession (shakeExtras state) vfs reason [] actionBetweenSession
+    void $ restartShakeSession (shakeExtras state) vfs reason actionBetweenSession
 
 registerFileWatches :: [String] -> LSP.LspT Config IO Bool
 registerFileWatches globs = do

@@ -376,7 +376,6 @@ data ShakeExtras = ShakeExtras
     ,restartShakeSession
         :: VFSModified
         -> String
-        -> [DelayedAction ()]
         -> IO [Key]
         -> IO ()
     ,ideNc :: NameCache
@@ -865,7 +864,7 @@ shakeSessionInit recorder IdeState{..} = do
     -- Take a snapshot of the VFS - it should be empty as we've received no notifications
     -- till now, but it can't hurt to be in sync with the `lsp` library.
     vfs <- vfsSnapshot (lspEnv shakeExtras)
-    initSession <- newSession recorder shakeExtras (VFSModified vfs) shakeDb [] "shakeSessionInit" mempty (const $ return ())
+    initSession <- newSession recorder shakeExtras (VFSModified vfs) shakeDb "shakeSessionInit" mempty (const $ return ())
     putMVar shakeSession initSession
     logWith recorder Debug LogSessionInitialised
 
@@ -915,7 +914,6 @@ delayedAction a = do
 data ShakeRestartArgs = ShakeRestartArgs
     { sraVfs             :: !VFSModified
     , sraReason          :: !String
-    , sraActions         :: ![DelayedAction ()]
     , sraBetweenSessions :: IO [Key]
     , sraCount           :: !Int
     -- ^ Just for debugging, how many restarts have been requested so far
@@ -926,7 +924,6 @@ data ShakeRestartArgs = ShakeRestartArgs
 instance Show ShakeRestartArgs where
     show ShakeRestartArgs{..} =
         "ShakeRestartArgs { sraReason = " ++ show sraReason
-        ++ ", sraActions = " ++ show (map actionName sraActions)
         ++ ", sraCount = " ++ show sraCount
         ++ " }"
 
@@ -938,7 +935,6 @@ instance Semigroup ShakeRestartArgs where
         in ShakeRestartArgs
             { sraVfs = sraVfs old <> sraVfs new
             , sraReason = sraReason old ++ "; " ++ sraReason new
-            , sraActions = sraActions old ++ sraActions new
             , sraBetweenSessions = (++) <$> sraBetweenSessions old <*> sraBetweenSessions new
             , sraCount = sraCount old + sraCount new
             , sraWaitMVars = sraWaitMVars old ++ sraWaitMVars new
@@ -948,8 +944,8 @@ instance Semigroup ShakeRestartArgs where
 -- | Restart the current 'ShakeSession' with the given system actions.
 --   Any actions running in the current session will be aborted,
 --   but actions added via 'shakeEnqueue' will be requeued.
-shakeRestart :: TVar Int -> ShakeDatabase ->  VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
-shakeRestart version db vfs reason acts ioActionBetweenShakeSession = do
+shakeRestart :: TVar Int -> ShakeDatabase ->  VFSModified -> String -> IO [Key] -> IO ()
+shakeRestart version db vfs reason ioActionBetweenShakeSession = do
     -- lockShakeDatabaseValues db
     v <- atomically $ do
         modifyTVar' version (+1)
@@ -959,7 +955,7 @@ shakeRestart version db vfs reason acts ioActionBetweenShakeSession = do
     -- submit at the head of the queue,
     -- prefer restart request over any pending actions
     void $ submitWork rts $ Left $
-        toDyn $ ShakeRestartArgs vfs reason acts ioActionBetweenShakeSession 1 [waitMVar] v
+        toDyn $ ShakeRestartArgs vfs reason ioActionBetweenShakeSession 1 [waitMVar] v
     -- Wait until the restart is done
     takeMVar waitMVar
 
@@ -1007,7 +1003,7 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
     -- See https://github.com/haskell/ghcide/issues/79
     ( \(ShakeRestartArgs {..}, toUpSweepKeys, unaffected, logRestart) ->
         do
-          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraActions sraReason (toUpSweepKeys, unaffected) logRestart
+          (,()) <$> newSession recorder shakeExtras sraVfs shakeDb sraReason (toUpSweepKeys, unaffected) logRestart
           `finally` for_ sraWaitMVars (`putMVar` ())
     )
   where
@@ -1052,12 +1048,11 @@ newSession
     -> ShakeExtras
     -> VFSModified
     -> ShakeDatabase
-    -> [DelayedActionInternal]
     -> String
     -> (([Key], [Key]), KeySet)
     -> (Seconds  -> IO ())
     -> IO ShakeSession
-newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKeys logrestart = do
+newSession recorder extras@ShakeExtras{..} vfsMod shakeDb reason newDirtyKeys logrestart = do
 
     -- Take a new VFS snapshot
     case vfsMod of
@@ -1068,7 +1063,7 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason newDirtyKe
     -- Wrap delayed actions (both reenqueued and new) to preserve LogDelayedAction timing instrumentation
     let pumpLogger msg = logWith recorder Debug $ LogShakeText (T.pack msg)
     -- Use graph-level helper that runs the pump thread and enqueues upsweep actions
-    (seconds, startDatabase) <- duration $ shakeRunDatabaseForKeysSep (Just newDirtyKeys) shakeDb (pumpActionThread shakeDb pumpLogger: map getAction acts)
+    (seconds, startDatabase) <- duration $ shakeRunDatabaseForKeysSep (Just newDirtyKeys) shakeDb ([pumpActionThread shakeDb pumpLogger])
     logrestart seconds
     -- Capture step AFTER scheduling so logging reflects new build number inside workRun
     step <- getShakeStep shakeDb
