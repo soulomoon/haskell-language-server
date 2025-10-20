@@ -785,7 +785,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         pure ShakeExtras{shakeRecorder = recorder, ..}
     shakeDb@(ShakeDatabase _ _ db)  <-
         shakeNewDatabase
-            (\logText -> logWith recorder Debug (LogShakeText $ T.pack logText))
+            (\logText -> logWith recorder Info (LogShakeText $ T.pack logText))
             shakeControlQueue
             (actionQueue shakeExtras)
             opts { shakeExtra = newShakeExtra shakeExtras }

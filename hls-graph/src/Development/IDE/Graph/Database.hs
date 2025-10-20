@@ -43,6 +43,8 @@ import           Development.IDE.Graph.Internal.Scheduler
 import           Development.IDE.Graph.Internal.Types
 import qualified Development.IDE.Graph.Internal.Types     as Logger
 import           Development.IDE.WorkerThread             (DeliverStatus)
+import           System.Time.Extra                        (duration,
+                                                           showDuration)
 
 
 -- Placeholder to be the 'extra' if the user doesn't set it
@@ -92,8 +94,11 @@ shakeRunDatabaseForKeysSep keysChanged sdb@(ShakeDatabase _ as1 db) acts = do
     reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress (databaseActionQueue db)
     -- let reenqueuedExceptPreserves = filter (\d -> (newDirectKey $ fromJust $ hashUnique <$> uniqueID d) `notMemberKeySet` preserves) reenqueued
     let reenqueuedExceptPreserves = filter (\d -> uniqueID d `notMemberKeySet` preserves) reenqueued
-    let ignoreResultActs = (getAction act) : (liftIO $ prepareToRunKeysRealTime db) : as1
+    -- let ignoreResultActs = (getAction act) : (liftIO $ prepareToRunKeysRealTime db) : as1
+    let ignoreResultActs = (getAction act) : as1
     return $ do
+        (tm, keys) <- duration $ prepareToRunKeys db
+        dataBaseLogger db $ "prepareToRunKeys took " ++ showDuration tm ++ " for " ++ show (length keys) ++ " keys"
         seqRunActions (newKey "root") db $ map (pumpActionThreadReRun sdb) reenqueuedExceptPreserves
         drop (length ignoreResultActs) <$> runActions (newKey "root") db (map unvoid ignoreResultActs ++ acts)
 
