@@ -18,7 +18,8 @@ module Development.IDE.Graph.Database(
     shakePeekAsyncsDelivers,
     instantiateDelayedAction,
     mkDelayedAction,
-    upsweepAction) where
+    upsweepAction,
+    shakeDatabaseSize) where
 import           Control.Concurrent.Extra                 (Barrier, newBarrier,
                                                            signalBarrier,
                                                            waitBarrierMaybe)
@@ -43,6 +44,7 @@ import           Development.IDE.Graph.Internal.Scheduler
 import           Development.IDE.Graph.Internal.Types
 import qualified Development.IDE.Graph.Internal.Types     as Logger
 import           Development.IDE.WorkerThread             (DeliverStatus)
+import qualified StmContainers.Map                        as SMap
 import           System.Time.Extra                        (duration,
                                                            showDuration)
 
@@ -142,6 +144,12 @@ shakeRunDatabaseForKeys (Just x) sdb as2 =
 
 shakePeekAsyncsDelivers :: ShakeDatabase -> IO [DeliverStatus]
 shakePeekAsyncsDelivers (ShakeDatabase _ _ db) = peekAsyncsDelivers db
+
+shakeDatabaseSize :: ShakeDatabase -> IO Int
+shakeDatabaseSize (ShakeDatabase _ _ db) = databaseSize db
+
+databaseSize :: Database -> IO Int
+databaseSize db = atomically $ SMap.size $ databaseValues db
 
 -- | Given a 'ShakeDatabase', write an HTML profile to the given file about the latest run.
 shakeProfileDatabase :: ShakeDatabase -> FilePath -> IO ()
