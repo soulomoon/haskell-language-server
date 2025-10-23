@@ -16,7 +16,7 @@ module Development.IDE.Graph.Internal.Scheduler
   , reportTotalCount
   , isDirty
   , isRunDepChangedOne
-  , doAction
+  , doPrepareAction
   ) where
 
 import           Control.Concurrent.STM               (STM, atomically,
@@ -83,14 +83,14 @@ prepareToRunKey key db =
 
 data PrepareAction a k =  PrepareActionNothing | PrepareActionPending a Int | PrepareActionReady a
 
-doAction :: Database -> PrepareAction (Key, RunMode, Maybe Result) Key -> STM (Maybe (Key, RunMode, Maybe Result))
-doAction _ PrepareActionNothing   = pure Nothing
-doAction (Database{..}) (PrepareActionReady (key, runMode, mRes) ) = do
+doPrepareAction :: Database -> PrepareAction (Key, RunMode, Maybe Result) Key -> STM (Maybe (Key, RunMode, Maybe Result))
+doPrepareAction _ PrepareActionNothing   = pure Nothing
+doPrepareAction (Database{..}) (PrepareActionReady (key, runMode, mRes) ) = do
                     let SchedulerState{..} = databaseScheduler
                     SMap.delete key schedulerRunningPending
                     pure $ Just (key, runMode, mRes)
 
-doAction (Database{..}) (PrepareActionPending (key, runMode, mRes) pendingCount)  = do
+doPrepareAction (Database{..}) (PrepareActionPending (key, runMode, mRes) pendingCount)  = do
                     let SchedulerState{..} = databaseScheduler
                     SMap.insert (pendingCount, runMode, mRes) key schedulerRunningPending
                     pure Nothing
@@ -101,7 +101,7 @@ prepareToRunKeyCached db@Database {..} cache0 key = do
     let SchedulerState {..} = databaseScheduler
     (status, cache1) <- lookupStatusCache db key cache0
     (cache2, res) <- case keyStatus <$> status of
-        Just (Dirty Nothing) -> pure (cache1, Just (0, RunDependenciesChanged, Nothing))
+        -- Just (Dirty Nothing) -> pure (cache1, Just (0, RunDependenciesChanged, Nothing))
         Just (Dirty (Just r)) -> do
             -- todo we use final deps instead of runtime deps here
             -- does it cause in compatiable issues?
@@ -151,30 +151,28 @@ prepareToRunKeyCached db@Database {..} cache0 key = do
 -- prepareToRunKeys :: Database -> IO [Key]
 prepareToRunKeys db = do
     let SchedulerState{..} = databaseScheduler db
-    dirties <- atomically $
-        -- dbNotLocked db
-        flushTQueue schedulerUpsweepQueue
+    dirties <- atomically $ flushTQueue schedulerUpsweepQueue
     -- let dirtiesList = chunksOf 1 dirties
     let dirtiesList = toNChunks 8 dirties
     -- We need to make sure what is the good number of dirtis for a batch
     -- maybe we should make it dynamic based on the total number of dirties
-    (t1, toRunsList) <- duration $ flip mapConcurrently dirtiesList $ \ks -> do
-        atomically $ fst <$> foldM (\(result, cache) k -> do
+    (t1, res) <- duration $ flip mapConcurrently dirtiesList $ \ks -> do
+        toRuns <- atomically $ fst <$> foldM (\(result, cache) k -> do
                     (nresult, ncache) <- prepareToRunKeyCached db cache k
                     return (nresult: result, ncache)
                     ) ([], mempty) ks
+        res <- forM toRuns $ \k -> atomically $ doPrepareAction db k
+        return res
     -- (t1, toRunsList) <- duration $ forM dirtiesList $ \ks -> do
     --     atomically $ fst <$> foldM (\(result, cache) k -> do
     --                 (nresult, ncache) <- prepareToRunKeyCached db cache k
     --                 return (nresult: result, ncache)
     --                 ) ([], mempty) ks
         -- dbNotLocked db
-    (t2, res) <- duration $ forM toRunsList $ \toRuns -> forM toRuns $ \k -> do
         -- we would potentially missed an acition here decreasePendingCount
         -- if this is not running fast enough
-        atomically $ doAction db k
     (t3, ()) <- duration $ atomically $ TPQ.fromList schedulerRunningReady [(0,(k, a, b)) | r <- res, (k, a, b) <- catMaybes r]
-    return ((t1,t2,t3), dirties)
+    return ((t1,0,t3), dirties)
     where
         toNChunks n xs = go xs
           where
