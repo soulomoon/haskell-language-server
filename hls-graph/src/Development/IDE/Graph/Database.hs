@@ -94,13 +94,12 @@ shakeRunDatabaseForKeysSep keysChanged sdb@(ShakeDatabase _ as1 db) acts = do
     preserves <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase db keysChanged
     (_, act) <- instantiateDelayedAction =<< (mkDelayedAction "upsweep" Debug $ upsweepAction)
     reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress (databaseActionQueue db)
-    -- let reenqueuedExceptPreserves = filter (\d -> (newDirectKey $ fromJust $ hashUnique <$> uniqueID d) `notMemberKeySet` preserves) reenqueued
     let reenqueuedExceptPreserves = filter (\d -> uniqueID d `notMemberKeySet` preserves) reenqueued
-    -- let ignoreResultActs = (getAction act) : (liftIO $ prepareToRunKeysRealTime db) : as1
-    let ignoreResultActs = (getAction act) : as1
+    let ignoreResultActs = (getAction act) : (liftIO $ prepareToRunKeysRealTime db) : as1
+    -- let ignoreResultActs = (getAction act) : as1
     return $ do
-        (tm, keys) <- duration $ prepareToRunKeys db
-        dataBaseLogger db $ "prepareToRunKeys took " ++ showDuration tm ++ " for " ++ show (length keys) ++ " keys"
+        -- (tm, keys) <- duration $ prepareToRunKeys db
+        -- dataBaseLogger db $ "prepareToRunKeys took " ++ showDuration tm ++ " for " ++ show (length keys) ++ " keys"
         seqRunActions (newKey "root") db $ map (pumpActionThreadReRun sdb) reenqueuedExceptPreserves
         drop (length ignoreResultActs) <$> runActions (newKey "root") db (map unvoid ignoreResultActs ++ acts)
 
