@@ -918,7 +918,7 @@ getModIfaceRule :: Recorder (WithPriority Log) -> Rules ()
 getModIfaceRule recorder = defineEarlyCutoff (cmapWithPrio LogShake recorder) $ Rule $ \GetModIface f -> do
   fileOfInterest <- use_ IsFileOfInterest f
   res <- case fileOfInterest of
-    IsFOI status -> do
+    IsFOI _status -> do
       -- Never load from disk for files of interest
       tmr <- use_ TypeCheck f
       linkableType <- getLinkableType f
@@ -930,8 +930,7 @@ getModIfaceRule recorder = defineEarlyCutoff (cmapWithPrio LogShake recorder) $ 
       let fp = hiFileFingerPrint <$> mbHiFile
       hiDiags <- case mbHiFile of
         Just hiFile
-          | OnDisk <- status
-          , not (tmrDeferredError tmr) -> liftIO $ writeHiFile se hsc' hiFile
+          | not (tmrDeferredError tmr) -> liftIO $ writeHiFile se hsc' hiFile
         _ -> pure []
       return (fp, (diags++hiDiags, mbHiFile))
     NotFOI -> do

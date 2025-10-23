@@ -18,7 +18,8 @@ module Development.IDE.Graph.Database(
     shakePeekAsyncsDelivers,
     instantiateDelayedAction,
     mkDelayedAction,
-    upsweepAction) where
+    upsweepAction,
+    shakeDatabaseSize) where
 import           Control.Concurrent.Extra                 (Barrier, newBarrier,
                                                            signalBarrier,
                                                            waitBarrierMaybe)
@@ -43,6 +44,7 @@ import           Development.IDE.Graph.Internal.Scheduler
 import           Development.IDE.Graph.Internal.Types
 import qualified Development.IDE.Graph.Internal.Types     as Logger
 import           Development.IDE.WorkerThread             (DeliverStatus)
+import qualified StmContainers.Map                        as SMap
 import           System.Time.Extra                        (duration,
                                                            showDuration)
 
@@ -92,10 +94,9 @@ shakeRunDatabaseForKeysSep keysChanged sdb@(ShakeDatabase _ as1 db) acts = do
     preserves <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase db keysChanged
     (_, act) <- instantiateDelayedAction =<< (mkDelayedAction "upsweep" Debug $ upsweepAction)
     reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress (databaseActionQueue db)
-    -- let reenqueuedExceptPreserves = filter (\d -> (newDirectKey $ fromJust $ hashUnique <$> uniqueID d) `notMemberKeySet` preserves) reenqueued
     let reenqueuedExceptPreserves = filter (\d -> uniqueID d `notMemberKeySet` preserves) reenqueued
-    -- let ignoreResultActs = (getAction act) : (liftIO $ prepareToRunKeysRealTime db) : as1
-    let ignoreResultActs = (getAction act) : as1
+    let ignoreResultActs = (getAction act) : (liftIO $ prepareToRunKeysRealTime db) : as1
+    -- let ignoreResultActs = (getAction act) : as1
     return $ do
         (tm, ((t1,t2,t3), keys)) <- duration $ prepareToRunKeys db
         dataBaseLogger db $ "prepareToRunKeys took " ++ showDuration tm ++ " for " ++ show (length keys) ++ " keys ( sort time " ++ show (showDuration t1, showDuration t2, showDuration t3) ++ ")"
@@ -142,6 +143,12 @@ shakeRunDatabaseForKeys (Just x) sdb as2 =
 
 shakePeekAsyncsDelivers :: ShakeDatabase -> IO [DeliverStatus]
 shakePeekAsyncsDelivers (ShakeDatabase _ _ db) = peekAsyncsDelivers db
+
+shakeDatabaseSize :: ShakeDatabase -> IO Int
+shakeDatabaseSize (ShakeDatabase _ _ db) = databaseSize db
+
+databaseSize :: Database -> IO Int
+databaseSize db = atomically $ SMap.size $ databaseValues db
 
 -- | Given a 'ShakeDatabase', write an HTML profile to the given file about the latest run.
 shakeProfileDatabase :: ShakeDatabase -> FilePath -> IO ()

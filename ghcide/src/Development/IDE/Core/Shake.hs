@@ -142,6 +142,7 @@ import           Development.IDE.Graph.Database           (ShakeDatabase,
                                                            instantiateDelayedAction,
                                                            mkDelayedAction,
                                                            shakeComputeToPreserve,
+                                                           shakeDatabaseSize,
                                                            shakeGetActionQueueLength,
                                                            shakeGetBuildStep,
                                                            shakeGetDatabaseKeys,
@@ -211,7 +212,7 @@ import           Data.Foldable                            (foldl')
 data Log
   = LogCreateHieDbExportsMapStart
   | LogCreateHieDbExportsMapFinish !Int
-  | LogBuildSessionRestart !ShakeRestartArgs ![DelayedActionInternal] !KeySet !Seconds !Seconds !Int !(Maybe FilePath) !Int ![DeliverStatus] !Seconds ![Key]
+  | LogBuildSessionRestart !ShakeRestartArgs ![DelayedActionInternal] !KeySet !Seconds !Seconds !Int !(Maybe FilePath) !Int ![DeliverStatus] !Seconds ![Key] !Int
   | LogBuildSessionRestartTakingTooLong !Seconds
   | LogDelayedAction !(DelayedAction ()) !Seconds
   | LogBuildSessionFinish !Step !(Either SomeException [Either SomeException ()])
@@ -255,7 +256,7 @@ instance Pretty Log where
       "Initializing exports map from hiedb"
     LogCreateHieDbExportsMapFinish exportsMapSize ->
       "Done initializing exports map from hiedb. Size:" <+> pretty exportsMapSize
-    LogBuildSessionRestart restartArgs actionQueue _keyBackLog abortDuration computeToPreserveTime lookupNums shakeProfilePath step _delivers prepare _oldUpSweepDirties ->
+    LogBuildSessionRestart restartArgs actionQueue _keyBackLog abortDuration computeToPreserveTime lookupNums shakeProfilePath step _delivers prepare _oldUpSweepDirties dbSize ->
       vcat
         [ "Restarting build session due to" <+> pretty (sraReason restartArgs)
         , "Restarts num:" <+> pretty (sraCount $ restartArgs)
@@ -264,9 +265,10 @@ instance Pretty Log where
         -- , "Keys:" <+> pretty (length $ toListKeySet keyBackLog)
         -- , "Deliveries still alive:" <+> pretty delivers
         , "Current step:" <+> pretty (show step)
-        , "Aborting previous build session took" <+> pretty (showDuration abortDuration) <+> "(" <> pretty (showDuration computeToPreserveTime) <+> "to compute preserved keys," <+> pretty lookupNums <+> "lookups)"
+        , "Aborting previous build session took" <+> pretty (showDuration abortDuration) <+> "(" <> pretty (showDuration computeToPreserveTime) <+> "to compute preserved keys," <+> pretty lookupNums <+>"/" <+> pretty dbSize <+> " lookups)"
                     <+> pretty shakeProfilePath
         , "prepare new session took" <+> pretty (showDuration prepare)
+        , "Database size:" <+> pretty dbSize
         -- , "old upsweep dirties:" <+> pretty (oldUpSweepDirties)
         ]
     LogBuildSessionRestartTakingTooLong seconds ->
@@ -984,6 +986,7 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
             logErrorAfter 10 $ can dirties
             return (toUpSweepKeys, computePreserveTime, lookupsNum, oldUpSweepDirties)
         survivedDelivers <- shakePeekAsyncsDelivers shakeDb
+        dbSize <- shakeDatabaseSize shakeDb
         -- it is every important to update the dirty keys after we enter the critical section
         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
         atomically $ modifyTVar' (dirtyKeys shakeExtras) $ \x -> foldl' (flip insertKeySet) x newDirtyKeys
@@ -995,7 +998,7 @@ runRestartTask recorder ideStateVar shakeRestartArgs = do
         step <- shakeGetBuildStep shakeDb
 
         -- let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime computePreserveTime lookupsNum  res step survivedDelivers x $ preservekvs
-        let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime computePreserveTime lookupsNum  res step survivedDelivers x oldUpSweepDirties
+        let logRestart x = logWith recorder Info $ LogBuildSessionRestart shakeRestartArgs queue backlog stopTime computePreserveTime lookupsNum  res step survivedDelivers x oldUpSweepDirties dbSize
         return (shakeRestartArgs, toUpSweepKeys, fromListKeySet $ map deliverKey survivedDelivers, logRestart)
     )
     -- It is crucial to be masked here, otherwise we can get killed
