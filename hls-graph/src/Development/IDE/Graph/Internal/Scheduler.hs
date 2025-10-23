@@ -16,17 +16,19 @@ module Development.IDE.Graph.Internal.Scheduler
   , reportTotalCount
   , isDirty
   , isRunDepChangedOne
+  , doAction
   ) where
 
 import           Control.Concurrent.STM               (STM, atomically,
                                                        flushTQueue, readTQueue,
                                                        readTVar, writeTQueue,
                                                        writeTVar)
-import           Control.Monad                        (filterM, foldM, forM_,
-                                                       void)
-import           Data.Maybe                           (fromMaybe)
+import           Control.Monad                        (filterM, foldM, forM,
+                                                       forM_, void)
+import           Data.Maybe                           (catMaybes, fromMaybe)
 import qualified StmContainers.Map                    as SMap
 
+import           Control.Concurrent.Async             (mapConcurrently)
 import qualified Control.Concurrent.STM.TPQueue       as TPQ
 import           Data.Foldable                        (Foldable (..))
 import           Development.IDE.Graph.Internal.Key
@@ -39,6 +41,8 @@ import           Development.IDE.Graph.Internal.Types (Database (..),
                                                        Status (..), dbNotLocked,
                                                        lookupDatabaseRuntimeDepRootCounter)
 import qualified StmContainers.Set                    as SSet
+import           System.Time.Extra                    (duration)
+
 
 type StatusCache = KeyMap (Maybe KeyDetails)
 
@@ -75,9 +79,24 @@ isRunDepChangedOne me dep =
 -- so when a dep is cleaned, we can decrement the pending count, and when it reaches zero, we can move it to databaseRunningReady
 prepareToRunKey :: Key -> Database -> STM ()
 prepareToRunKey key db =
-    void $ prepareToRunKeyCached db mempty key
+    void $ prepareToRunKeyCached db undefined key
 
-prepareToRunKeyCached :: Database -> StatusCache -> Key -> STM StatusCache
+data PrepareAction a k =  PrepareActionNothing | PrepareActionPending a Int | PrepareActionReady a
+
+doAction :: Database -> PrepareAction (Key, RunMode, Maybe Result) Key -> STM (Maybe (Key, RunMode, Maybe Result))
+doAction _ PrepareActionNothing   = pure Nothing
+doAction (Database{..}) (PrepareActionReady (key, runMode, mRes) ) = do
+                    let SchedulerState{..} = databaseScheduler
+                    SMap.delete key schedulerRunningPending
+                    pure $ Just (key, runMode, mRes)
+
+doAction (Database{..}) (PrepareActionPending (key, runMode, mRes) pendingCount)  = do
+                    let SchedulerState{..} = databaseScheduler
+                    SMap.insert (pendingCount, runMode, mRes) key schedulerRunningPending
+                    pure Nothing
+
+-- prepareToRunKeyCached :: Database -> StatusCache -> Key -> STM StatusCache
+prepareToRunKeyCached :: Database -> StatusCache -> Key -> STM (PrepareAction (Key, RunMode, Maybe Result) Key, StatusCache)
 prepareToRunKeyCached db@Database {..} cache0 key = do
     let SchedulerState {..} = databaseScheduler
     (status, cache1) <- lookupStatusCache db key cache0
@@ -106,17 +125,17 @@ prepareToRunKeyCached db@Database {..} cache0 key = do
         -- since it is not upsweep responsibility
         _ -> cleanHook key db >> pure (cache1, Nothing)
     case res of
-        Nothing -> pure cache2
+        Nothing -> pure (PrepareActionNothing, cache2)
         Just (pendingCount, runMode, mRes) ->
             if pendingCount == 0
                 then do
-                    prio <- lookupDatabaseRuntimeDepRootCounter key db
-                    TPQ.writeTPQueue schedulerRunningReady prio (key, runMode, mRes)
-                    SMap.delete key schedulerRunningPending
-                    pure cache2
+                    -- prio <- lookupDatabaseRuntimeDepRootCounter key db
+                    -- TPQ.writeTPQueue schedulerRunningReady prio (key, runMode, mRes)
+                    -- SMap.delete key schedulerRunningPending
+                    pure (PrepareActionReady (key, runMode, mRes), cache2)
                 else do
-                    SMap.insert (pendingCount, runMode, mRes) key schedulerRunningPending
-                    pure cache2
+                    -- SMap.insert (pendingCount, runMode, mRes) key schedulerRunningPending
+                    pure (PrepareActionPending (key, runMode, mRes) pendingCount, cache2)
   where
     collectDep r (cacheAcc, cleanAcc, modeAcc) dep = do
         (depStatus, cacheNext) <- lookupStatusCache db dep cacheAcc
@@ -129,14 +148,39 @@ prepareToRunKeyCached db@Database {..} cache0 key = do
 
 
 -- take out all databaseDirtyTargets and prepare them to run
-prepareToRunKeys :: Database -> IO [Key]
-prepareToRunKeys db =
-    atomically $ do
-        dbNotLocked db
-        let SchedulerState{..} = databaseScheduler db
-        dirtys <- flushTQueue schedulerUpsweepQueue
-        _ <- foldM (prepareToRunKeyCached db) mempty dirtys
-        return dirtys
+-- prepareToRunKeys :: Database -> IO [Key]
+prepareToRunKeys db = do
+    let SchedulerState{..} = databaseScheduler db
+    dirties <- atomically $
+        -- dbNotLocked db
+        flushTQueue schedulerUpsweepQueue
+    -- let dirtiesList = chunksOf 1 dirties
+    let dirtiesList = toNChunks 8 dirties
+    -- We need to make sure what is the good number of dirtis for a batch
+    -- maybe we should make it dynamic based on the total number of dirties
+    (t1, toRunsList) <- duration $ flip mapConcurrently dirtiesList $ \ks -> do
+        atomically $ fst <$> foldM (\(result, cache) k -> do
+                    (nresult, ncache) <- prepareToRunKeyCached db cache k
+                    return (nresult: result, ncache)
+                    ) ([], mempty) ks
+    -- (t1, toRunsList) <- duration $ forM dirtiesList $ \ks -> do
+    --     atomically $ fst <$> foldM (\(result, cache) k -> do
+    --                 (nresult, ncache) <- prepareToRunKeyCached db cache k
+    --                 return (nresult: result, ncache)
+    --                 ) ([], mempty) ks
+        -- dbNotLocked db
+    (t2, res) <- duration $ forM toRunsList $ \toRuns -> forM toRuns $ \k -> do
+        -- we would potentially missed an acition here decreasePendingCount
+        -- if this is not running fast enough
+        atomically $ doAction db k
+    (t3, ()) <- duration $ atomically $ TPQ.fromList schedulerRunningReady [(0,(k, a, b)) | r <- res, (k, a, b) <- catMaybes r]
+    return ((t1,t2,t3), dirties)
+    where
+        toNChunks n xs = go xs
+          where
+            go [] = replicate n []
+            go ys = let (h, t) = splitAt (length ys `div` n + if length ys `mod` n > 0 then 1 else 0) ys
+                     in h : go t
 
 prepareToRunKeysRealTime :: Database -> IO ()
 prepareToRunKeysRealTime db@Database{..} = do

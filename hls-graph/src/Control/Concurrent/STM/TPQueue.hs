@@ -10,6 +10,7 @@ module Control.Concurrent.STM.TPQueue
   , tryPeekTPQueue
   , isEmptyTPQueue
   , flushTPQueue
+  , fromList
   ) where
 
 import           Control.Concurrent.STM.TVar
@@ -78,3 +79,9 @@ isEmptyTPQueue (TPQueue h) = fmap PQueue.null (readTVar h)
 flushTPQueue :: TPQueue k v -> STM ()
 flushTPQueue (TPQueue h) = do
     writeTVar h PQueue.empty
+
+fromList :: Ord k =>TPQueue k v ->  [(k, v)] -> STM ()
+fromList (TPQueue h) kvs  = do
+    writeTVar h (PQueue.fromList kvs)
+
+

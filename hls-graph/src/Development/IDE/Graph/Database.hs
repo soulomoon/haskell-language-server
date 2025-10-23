@@ -97,8 +97,8 @@ shakeRunDatabaseForKeysSep keysChanged sdb@(ShakeDatabase _ as1 db) acts = do
     -- let ignoreResultActs = (getAction act) : (liftIO $ prepareToRunKeysRealTime db) : as1
     let ignoreResultActs = (getAction act) : as1
     return $ do
-        (tm, keys) <- duration $ prepareToRunKeys db
-        dataBaseLogger db $ "prepareToRunKeys took " ++ showDuration tm ++ " for " ++ show (length keys) ++ " keys"
+        (tm, ((t1,t2,t3), keys)) <- duration $ prepareToRunKeys db
+        dataBaseLogger db $ "prepareToRunKeys took " ++ showDuration tm ++ " for " ++ show (length keys) ++ " keys ( sort time " ++ show (showDuration t1, showDuration t2, showDuration t3) ++ ")"
         seqRunActions (newKey "root") db $ map (pumpActionThreadReRun sdb) reenqueuedExceptPreserves
         drop (length ignoreResultActs) <$> runActions (newKey "root") db (map unvoid ignoreResultActs ++ acts)
 
