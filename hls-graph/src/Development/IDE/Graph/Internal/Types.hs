@@ -284,18 +284,18 @@ raedAllLeftsDBQue q = do
 -- Encapsulated scheduler state, previously scattered on Database
 data SchedulerState = SchedulerState
     {
-    schedulerUpsweepQueue         :: TQueue Key
-    -- ^ Keys that need to be upswept (i.e., re-evaluated because they are dirty)
-    -- , schedulerRunningReady       :: TQueue (Key, RunMode, Maybe Result)
-    , schedulerRunningReady       :: TPQ.TPQueue Int (Key, RunMode, Maybe Result)
-    -- ^ Keys that are ready to run
-    , schedulerRunningPending     :: SMap.Map Key (Int, RunMode, Maybe Result)
-    -- ^ Keys that are pending because they are waiting for dependencies to complete
-    , schedulerAllDirties         :: SSet.Set Key
-    -- todo try to use set from stm-containers
-    -- , schedulerAllDirties     :: SSet.Set KeySet
-    , schedulerAllKeysInOrder     :: TVar [Key]
-    , schedulerAllKeysInOrderSize :: TVar Int
+    -- schedulerUpsweepQueue         :: TQueue Key
+    -- -- ^ Keys that need to be upswept (i.e., re-evaluated because they are dirty)
+    -- -- , schedulerRunningReady       :: TQueue (Key, RunMode, Maybe Result)
+    -- , schedulerRunningReady       :: TPQ.TPQueue Int (Key, RunMode, Maybe Result)
+    -- -- ^ Keys that are ready to run
+    -- , schedulerRunningPending     :: SMap.Map Key (Int, RunMode, Maybe Result)
+    -- -- ^ Keys that are pending because they are waiting for dependencies to complete
+    -- , schedulerAllDirties         :: SSet.Set Key
+    -- -- todo try to use set from stm-containers
+    -- -- , schedulerAllDirties     :: SSet.Set KeySet
+    -- , schedulerAllKeysInOrder     :: TVar [Key]
+    -- , schedulerAllKeysInOrderSize :: TVar Int
     }
 -- invariants:
 
@@ -303,55 +303,58 @@ data SchedulerState = SchedulerState
 dumpSchedulerState :: SchedulerState -> IO String
 dumpSchedulerState SchedulerState{..} = atomically $ do
     -- Snapshot queues (drain then restore) to avoid side effects
-    ups <- flushTQueue schedulerUpsweepQueue
-    mapM_ (writeTQueue schedulerUpsweepQueue) ups
+    -- ups <- flushTQueue schedulerUpsweepQueue
+    -- mapM_ (writeTQueue schedulerUpsweepQueue) ups
 
-    -- ready <- flushTQueue schedulerRunningReady
-    -- mapM_ (writeTQueue schedulerRunningReady) ready
+    -- -- ready <- flushTQueue schedulerRunningReady
+    -- -- mapM_ (writeTQueue schedulerRunningReady) ready
 
-    -- Snapshot sets and pending map
-    -- dirties <- ListT.toList $ SSet.listT schedulerRunningDirties
-    -- blocked <- ListT.toList $ SSet.listT schedulerRunningBlocked
-    pendingPairs <- ListT.toList (SMap.listT schedulerRunningPending)
+    -- -- Snapshot sets and pending map
+    -- -- dirties <- ListT.toList $ SSet.listT schedulerRunningDirties
+    -- -- blocked <- ListT.toList $ SSet.listT schedulerRunningBlocked
+    -- pendingPairs <- ListT.toList (SMap.listT schedulerRunningPending)
 
-    let ppKey k    = PP.pretty k
-        ppKeys ks  = if null ks then PP.brackets mempty else PP.vsep (map (\k -> PP.hsep [PP.pretty ("-" :: String), ppKey k]) ks)
-        ppPairs xs = if null xs then PP.brackets mempty else PP.vsep (map (\(k,c) -> PP.hsep [PP.pretty ("-" :: String), ppKey k, PP.pretty (":" :: String), PP.pretty c]) xs)
+    -- let ppKey k    = PP.pretty k
+    --     ppKeys ks  = if null ks then PP.brackets mempty else PP.vsep (map (\k -> PP.hsep [PP.pretty ("-" :: String), ppKey k]) ks)
+    --     ppPairs xs = if null xs then PP.brackets mempty else PP.vsep (map (\(k,c) -> PP.hsep [PP.pretty ("-" :: String), ppKey k, PP.pretty (":" :: String), PP.pretty c]) xs)
 
-        doc = PP.vsep
-          [ PP.pretty ("SchedulerState" :: String)
-          , PP.indent 2 $ PP.vsep
-              [ PP.pretty ("upsweep:" :: String) <> PP.pretty (length ups)
-              , PP.indent 2 (ppKeys ups)
-            --   , PP.pretty ("ready:" :: String) <> PP.pretty (length ready)
-            --   , PP.indent 2 (ppKeys ready)
-            --   , PP.pretty ("pending:" :: String) <> PP.pretty (length pendingPairs)
-            --   , PP.indent 2 (ppPairs pendingPairs)
-            --   , PP.pretty ("running:" :: String) <> PP.pretty (length dirties)
-            --   , PP.indent 2 (ppKeys (dirties))
-            --   , PP.pretty ("blocked:" :: String) <> PP.pretty (length blocked)
-            --   , PP.indent 2 (ppKeys (blocked))
-              ]
-          ]
-    pure $ renderString (PP.layoutPretty PP.defaultLayoutOptions doc)
+    --     doc = PP.vsep
+    --       [ PP.pretty ("SchedulerState" :: String)
+    --       , PP.indent 2 $ PP.vsep
+    --           [ PP.pretty ("upsweep:" :: String) <> PP.pretty (length ups)
+    --           , PP.indent 2 (ppKeys ups)
+    --         --   , PP.pretty ("ready:" :: String) <> PP.pretty (length ready)
+    --         --   , PP.indent 2 (ppKeys ready)
+    --         --   , PP.pretty ("pending:" :: String) <> PP.pretty (length pendingPairs)
+    --         --   , PP.indent 2 (ppPairs pendingPairs)
+    --         --   , PP.pretty ("running:" :: String) <> PP.pretty (length dirties)
+    --         --   , PP.indent 2 (ppKeys (dirties))
+    --         --   , PP.pretty ("blocked:" :: String) <> PP.pretty (length blocked)
+    --         --   , PP.indent 2 (ppKeys (blocked))
+    --           ]
+    --       ]
+    -- pure $ renderString (PP.layoutPretty PP.defaultLayoutOptions "")
+    return ""
 
 
 -- increaseDatabaseRuntimeDepRootCounter
 -- record that k has one more root depending on it
 increaseDatabaseRuntimeDepRootCounter :: Key -> Database -> STM ()
 increaseDatabaseRuntimeDepRootCounter k Database{..} = do
-    -- increase the counter
-    modifyTVar' databaseRuntimeDepRootCounter $ (\x -> x - 1)
-    -- also record the count for the key
-    v <- fromIntegral <$> readTVar databaseRuntimeDepRootCounter
-    SMap.insert v k databaseRuntimeDepRootCounterMap
+    -- -- increase the counter
+    -- modifyTVar' databaseRuntimeDepRootCounter $ (\x -> x - 1)
+    -- -- also record the count for the key
+    -- v <- fromIntegral <$> readTVar databaseRuntimeDepRootCounter
+    -- SMap.insert v k databaseRuntimeDepRootCounterMap
+    return ()
 
 lookupDatabaseRuntimeDepRootCounter :: Key -> Database -> STM Int
 lookupDatabaseRuntimeDepRootCounter k Database{..} = do
-    m <- SMap.lookup k databaseRuntimeDepRootCounterMap
-    case m of
-        Nothing -> return 0
-        Just v  -> return v
+    -- m <- SMap.lookup k databaseRuntimeDepRootCounterMap
+    -- case m of
+    --     Nothing -> return 0
+    --     Just v  -> return v
+    return 0
 
 
 data Database = Database {

@@ -92,11 +92,12 @@ shakeRunDatabaseForKeysSep
 shakeRunDatabaseForKeysSep keysChanged sdb@(ShakeDatabase _ as1 db) acts = do
     -- we can to upsweep these keys in order one by one,
     preserves <- traceEvent ("upsweep dirties " ++ show keysChanged) $ incDatabase db keysChanged
-    (_, act) <- instantiateDelayedAction =<< (mkDelayedAction "upsweep" Debug $ upsweepAction)
+    -- (_, act) <- instantiateDelayedAction =<< (mkDelayedAction "upsweep" Debug $ upsweepAction)
     reenqueued <- atomicallyNamed "actionQueue - peek" $ peekInProgress (databaseActionQueue db)
     let reenqueuedExceptPreserves = filter (\d -> uniqueID d `notMemberKeySet` preserves) reenqueued
-    let ignoreResultActs = (getAction act) : (liftIO $ prepareToRunKeysRealTime db) : as1
+    -- let ignoreResultActs = (getAction act) : (liftIO $ prepareToRunKeysRealTime db) : as1
     -- let ignoreResultActs = (getAction act) : as1
+    let ignoreResultActs = as1
     return $ do
         -- (tm, keys) <- duration $ prepareToRunKeys db
         -- dataBaseLogger db $ "prepareToRunKeys took " ++ showDuration tm ++ " for " ++ show (length keys) ++ " keys"

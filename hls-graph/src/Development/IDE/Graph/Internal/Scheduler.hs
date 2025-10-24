@@ -53,11 +53,13 @@ lookupStatusCache Database{..} k cache =
 
 reportRemainDirties :: Database -> STM Int
 reportRemainDirties (databaseScheduler -> SchedulerState{..}) =
-    SSet.size schedulerAllDirties
+    -- SSet.size schedulerAllDirties
+    return 0
 
 reportTotalCount :: Database -> STM Int
 reportTotalCount (databaseScheduler -> SchedulerState{..}) =
-    length <$> readTVar schedulerAllKeysInOrder
+    -- length <$> readTVar schedulerAllKeysInOrder
+    return 0
 
 -- | isDirty
 -- only dirty when it's build time is older than the changed time of one of its dependencies
@@ -79,44 +81,45 @@ prepareToRunKey key db =
 
 prepareToRunKeyCached :: Database -> StatusCache -> Key -> STM StatusCache
 prepareToRunKeyCached db@Database {..} cache0 key = do
-    let SchedulerState {..} = databaseScheduler
-    (status, cache1) <- lookupStatusCache db key cache0
-    (cache2, res) <- case keyStatus <$> status of
-        Just (Dirty Nothing) -> pure (cache1, Just (0, RunDependenciesChanged, Nothing))
-        Just (Dirty (Just r)) -> do
-            -- todo we use final deps instead of runtime deps here
-            -- does it cause in compatiable issues?
-            -- we did not take care of always rerun here
-            let depsSet =
-                    case resultDeps r of
-                        ResultDeps deps -> fold deps
-                        _               -> mempty
-            if nullKeySet depsSet
-                then pure (cache1, Just (0, RunDependenciesChanged, Just r))
-                else do
-                    let totalDeps = lengthKeySet depsSet
-                    let depsList = toListKeySet depsSet
-                    (cacheFinal, cleanCount, runMode) <- foldM (collectDep r) (cache1, 0, RunDependenciesSame) depsList
-                    let pendingCount = totalDeps - cleanCount
-                    pure (cacheFinal, Just (pendingCount, runMode, Just r))
-        -- s -> trace ("prepareToRunKey: key " ++ show key ++ " is not dirty but in dirty targets, status: " ++ show s) $ cleanHook key db >> return Nothing
-        --  todo find out how to avoid this
-        -- this is possible when a key still downsweeping
-        -- we leave it for the downsweep to handle
-        -- since it is not upsweep responsibility
-        _ -> cleanHook key db >> pure (cache1, Nothing)
-    case res of
-        Nothing -> pure cache2
-        Just (pendingCount, runMode, mRes) ->
-            if pendingCount == 0
-                then do
-                    prio <- lookupDatabaseRuntimeDepRootCounter key db
-                    TPQ.writeTPQueue schedulerRunningReady prio (key, runMode, mRes)
-                    SMap.delete key schedulerRunningPending
-                    pure cache2
-                else do
-                    SMap.insert (pendingCount, runMode, mRes) key schedulerRunningPending
-                    pure cache2
+    -- let SchedulerState {..} = databaseScheduler
+    -- (status, cache1) <- lookupStatusCache db key cache0
+    -- (cache2, res) <- case keyStatus <$> status of
+    --     Just (Dirty Nothing) -> pure (cache1, Just (0, RunDependenciesChanged, Nothing))
+    --     Just (Dirty (Just r)) -> do
+    --         -- todo we use final deps instead of runtime deps here
+    --         -- does it cause in compatiable issues?
+    --         -- we did not take care of always rerun here
+    --         let depsSet =
+    --                 case resultDeps r of
+    --                     ResultDeps deps -> fold deps
+    --                     _               -> mempty
+    --         if nullKeySet depsSet
+    --             then pure (cache1, Just (0, RunDependenciesChanged, Just r))
+    --             else do
+    --                 let totalDeps = lengthKeySet depsSet
+    --                 let depsList = toListKeySet depsSet
+    --                 (cacheFinal, cleanCount, runMode) <- foldM (collectDep r) (cache1, 0, RunDependenciesSame) depsList
+    --                 let pendingCount = totalDeps - cleanCount
+    --                 pure (cacheFinal, Just (pendingCount, runMode, Just r))
+    --     -- s -> trace ("prepareToRunKey: key " ++ show key ++ " is not dirty but in dirty targets, status: " ++ show s) $ cleanHook key db >> return Nothing
+    --     --  todo find out how to avoid this
+    --     -- this is possible when a key still downsweeping
+    --     -- we leave it for the downsweep to handle
+    --     -- since it is not upsweep responsibility
+    --     _ -> cleanHook key db >> pure (cache1, Nothing)
+    -- case res of
+    --     Nothing -> pure cache2
+    --     Just (pendingCount, runMode, mRes) ->
+    --         if pendingCount == 0
+    --             then do
+    --                 prio <- lookupDatabaseRuntimeDepRootCounter key db
+    --                 TPQ.writeTPQueue schedulerRunningReady prio (key, runMode, mRes)
+    --                 SMap.delete key schedulerRunningPending
+    --                 pure cache2
+    --             else do
+    --                 SMap.insert (pendingCount, runMode, mRes) key schedulerRunningPending
+    --                 pure cache2
+    undefined
   where
     collectDep r (cacheAcc, cleanAcc, modeAcc) dep = do
         (depStatus, cacheNext) <- lookupStatusCache db dep cacheAcc
@@ -131,43 +134,46 @@ prepareToRunKeyCached db@Database {..} cache0 key = do
 -- take out all databaseDirtyTargets and prepare them to run
 prepareToRunKeys :: Database -> IO [Key]
 prepareToRunKeys db =
-    atomically $ do
-        dbNotLocked db
-        let SchedulerState{..} = databaseScheduler db
-        dirtys <- flushTQueue schedulerUpsweepQueue
-        _ <- foldM (prepareToRunKeyCached db) mempty dirtys
-        return dirtys
+    -- atomically $ do
+    --     dbNotLocked db
+    --     let SchedulerState{..} = databaseScheduler db
+    --     dirtys <- flushTQueue schedulerUpsweepQueue
+    --     _ <- foldM (prepareToRunKeyCached db) mempty dirtys
+    --     return dirtys
+    return []
 
 prepareToRunKeysRealTime :: Database -> IO ()
 prepareToRunKeysRealTime db@Database{..} = do
-    -- pop one at a time to reduce fraction
-    atomically $ do
-        let SchedulerState{..} = databaseScheduler
-        dbNotLocked db
-        enque <- readTQueue schedulerUpsweepQueue
-        prepareToRunKey enque db
-    prepareToRunKeysRealTime db
+    -- -- pop one at a time to reduce fraction
+    -- atomically $ do
+    --     let SchedulerState{..} = databaseScheduler
+    --     dbNotLocked db
+    --     enque <- readTQueue schedulerUpsweepQueue
+    --     prepareToRunKey enque db
+    -- prepareToRunKeysRealTime db
+    return ()
 
 -- decrease the pending count of a key in databaseRunningPending
 -- if the pending count reaches zero, we move it to databaseRunningReady and remove it from databaseRunningPending
 decreasePendingCount :: Key -> Result -> Database -> STM ()
 decreasePendingCount k res db@Database{..} = do
-    let SchedulerState{..} = databaseScheduler
-    mCount <- SMap.lookup k schedulerRunningPending
-    case mCount of
-        Nothing -> pure ()
-        Just (c, runMode, mRes)
-          | c <= 1 -> do
-                -- Done waiting: move to ready and remove from pending
-                SMap.delete k schedulerRunningPending
-                prio <- lookupDatabaseRuntimeDepRootCounter k db
-                TPQ.writeTPQueue schedulerRunningReady prio (k, newRunMode, mRes)
-          | otherwise ->
-                -- Decrement pending count
-                SMap.insert (c - 1, newRunMode, mRes) k schedulerRunningPending
-            where newRunMode = case mRes of
-                    Just pRes -> runMode <> isRunDepChangedOne pRes res
-                    Nothing   -> runMode
+    -- let SchedulerState{..} = databaseScheduler
+    -- mCount <- SMap.lookup k schedulerRunningPending
+    -- case mCount of
+    --     Nothing -> pure ()
+    --     Just (c, runMode, mRes)
+    --       | c <= 1 -> do
+    --             -- Done waiting: move to ready and remove from pending
+    --             SMap.delete k schedulerRunningPending
+    --             prio <- lookupDatabaseRuntimeDepRootCounter k db
+    --             TPQ.writeTPQueue schedulerRunningReady prio (k, newRunMode, mRes)
+    --       | otherwise ->
+    --             -- Decrement pending count
+    --             SMap.insert (c - 1, newRunMode, mRes) k schedulerRunningPending
+    --         where newRunMode = case mRes of
+    --                 Just pRes -> runMode <> isRunDepChangedOne pRes res
+    --                 Nothing   -> runMode
+    return ()
 
 
 -- When a key becomes clean, decrement pending counters of its reverse dependents
@@ -177,8 +183,9 @@ decreasePendingCount k res db@Database{..} = do
 cleanHook :: Key -> Database -> STM ()
 cleanHook k db = do
     -- remove itself from running dirties and blocked sets
-    let SchedulerState{..} = databaseScheduler db
-    SSet.delete k schedulerAllDirties
+    -- let SchedulerState{..} = databaseScheduler db
+    -- SSet.delete k schedulerAllDirties
+    return ()
 
 -- When a key becomes clean, decrement pending counters of its reverse dependents
 -- gathered from both runtime and stored reverse maps.
@@ -186,22 +193,24 @@ decreaseMyReverseDepsPendingCount :: Key -> Result -> Database -> STM ()
 decreaseMyReverseDepsPendingCount k res db@Database{..} = do
     -- Gather reverse dependents from runtime map and stored reverse deps
     -- mStored  <- SMap.lookup k databaseValues
-    mRuntime <- SMap.lookup k databaseRRuntimeDep
-    let
-        -- rdepsStored  = maybe mempty keyReverseDeps mStored
-        rdepsRuntime = fromMaybe mempty mRuntime
-        parents = deleteKeySet (newKey "root") rdepsRuntime
-    -- For each parent, decrement its pending count; enqueue if it hits zero
-    forM_ (toListKeySet parents) $ \p -> decreasePendingCount p res db
+    -- mRuntime <- SMap.lookup k databaseRRuntimeDep
+    -- let
+    --     -- rdepsStored  = maybe mempty keyReverseDeps mStored
+    --     rdepsRuntime = fromMaybe mempty mRuntime
+    --     parents = deleteKeySet (newKey "root") rdepsRuntime
+    -- -- For each parent, decrement its pending count; enqueue if it hits zero
+    -- forM_ (toListKeySet parents) $ \p -> decreasePendingCount p res db
+    return ()
 
 writeUpsweepQueue :: [Key] -> Database -> STM ()
 writeUpsweepQueue ks Database{..} = do
-    let SchedulerState{..} = databaseScheduler
-    forM_ ks $ \k -> do
-        writeTQueue schedulerUpsweepQueue k
-        SSet.insert k schedulerAllDirties
-    writeTVar schedulerAllKeysInOrder ks
-    writeTVar schedulerAllKeysInOrderSize $ length ks
+    -- let SchedulerState{..} = databaseScheduler
+    -- forM_ ks $ \k -> do
+    --     writeTQueue schedulerUpsweepQueue k
+    --     SSet.insert k schedulerAllDirties
+    -- writeTVar schedulerAllKeysInOrder ks
+    -- writeTVar schedulerAllKeysInOrderSize $ length ks
+    return ()
 
 
 -- gather all dirty keys that is not finished, to reschedule after restart
@@ -209,30 +218,30 @@ writeUpsweepQueue ks Database{..} = do
 -- and clears them from the database
 popOutDirtykeysDB :: Database -> STM [Key]
 popOutDirtykeysDB Database{..} = do
-    let SchedulerState{..} = databaseScheduler
-    -- 1. upsweep queue: drain all (atomic flush)
-    void $ flushTQueue schedulerUpsweepQueue
+    -- let SchedulerState{..} = databaseScheduler
+    -- -- 1. upsweep queue: drain all (atomic flush)
+    -- void $ flushTQueue schedulerUpsweepQueue
 
-    -- 2. Ready queue: drain all (atomic flush)
-    void $ TPQ.flushTPQueue schedulerRunningReady
+    -- -- 2. Ready queue: drain all (atomic flush)
+    -- void $ TPQ.flushTPQueue schedulerRunningReady
 
-    -- 3. Pending map: collect keys and clear
-    SMap.reset schedulerRunningPending
+    -- -- 3. Pending map: collect keys and clear
+    -- SMap.reset schedulerRunningPending
 
-    -- 4. Running dirties set: read and clear
-    -- runningDirties <- readTVar schedulerRunningDirties
-    -- SSet.reset schedulerRunningDirties
+    -- -- 4. Running dirties set: read and clear
+    -- -- runningDirties <- readTVar schedulerRunningDirties
+    -- -- SSet.reset schedulerRunningDirties
 
-    -- 5. Also clear blocked subset for consistency
-    -- SSet.reset schedulerRunningBlocked
+    -- -- 5. Also clear blocked subset for consistency
+    -- -- SSet.reset schedulerRunningBlocked
 
-    -- 6. All dirties set: read and clear
-    allKeys <- readTVar schedulerAllKeysInOrder
-    _ <- writeTVar schedulerAllKeysInOrder mempty
-    writeTVar schedulerAllKeysInOrderSize 0
-    res <- filterM (`SSet.lookup` schedulerAllDirties) allKeys
-    SSet.reset schedulerAllDirties
-    return res
+    -- -- 6. All dirties set: read and clear
+    -- allKeys <- readTVar schedulerAllKeysInOrder
+    -- _ <- writeTVar schedulerAllKeysInOrder mempty
+    -- writeTVar schedulerAllKeysInOrderSize 0
+    -- res <- filterM (`SSet.lookup` schedulerAllDirties) allKeys
+    -- SSet.reset schedulerAllDirties
+    return []
 
 -- read one key from ready queue, and insert it into running dirties
 -- this function will block if there is no key in ready queue
@@ -240,7 +249,5 @@ popOutDirtykeysDB Database{..} = do
 -- readReadyQueue :: Database -> STM Key
 readReadyQueue :: Database -> STM (Key, RunMode, Maybe Result)
 readReadyQueue db@Database{..} = do
-    dbNotLocked db
-    let SchedulerState{..} = databaseScheduler
-    TPQ.readTPQueue schedulerRunningReady
+    undefined
 

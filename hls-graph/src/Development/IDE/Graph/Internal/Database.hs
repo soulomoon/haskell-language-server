@@ -200,14 +200,18 @@ builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleM
                         (\_ -> atomicallyNamed "builderOne rollback" $ SMap.delete key databaseValues)
                         restore
         return $ register >> return (BCContinue $ readMVar barrier)
-      Just (Dirty _) -> do
-        case firstTime of
-            FirstTime -> pure . pure $ BCContinue $ do
-                    br <- builderOne' NotFirstTime parentKey db stack key
-                    case br of
-                        BCContinue ioR -> ioR
-                        BCStop k r     -> pure $ Right (k, r)
-            NotFirstTime -> retry
+      Just (Dirty prev) -> do
+        SMap.focus (updateStatus $ Running current prev barrier) key databaseValues
+        let register = spawnRefresh db stack key barrier prev (return ()) refresh
+                        -- why it is important to use rollback here
+
+                        {- Note [Rollback is required if killed before registration]
+                        It is important to use rollback here because a key might be killed before it is registered, even though it is not one of the dirty keys.
+                        In this case, it would skip being marked as dirty. Therefore, we have to roll back here if it is killed, to ensure consistency.
+                        -}
+                        (\_ -> atomicallyNamed "builderOne rollback" $ SMap.focus updateDirty key databaseValues)
+                        restore
+        return $ register >> return (BCContinue $ readMVar barrier)
       Just (Clean r) -> pure . pure $ BCStop key r
       Just (Running _step _s wait)
         | memberStack key stack -> throw $ StackException stack
