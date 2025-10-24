@@ -190,7 +190,7 @@ builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleM
     case (viewToRun current . keyStatus) =<< status of
       Nothing -> do
         SMap.focus (updateStatus $ Running current Nothing barrier) key databaseValues
-        let register = spawnRefresh db stack key (return ()) barrier Nothing refresh
+        let register = spawnRefresh db stack key barrier Nothing (return ()) refresh
                         -- why it is important to use rollback here
 
                         {- Note [Rollback is required if killed before registration]
@@ -266,9 +266,9 @@ upsweepAll db@Database {..} stack = go
         return $
         -- update status and clean hook should be run at the same time atomically
         -- since it indicate we transfer the responsibility of managing the key from scheduler to the thread
-          spawnRefresh db stack key (do
+          spawnRefresh db stack key barrier mRes (do
             SMap.focus (updateStatus $ Running current mRes barrier) key databaseValues
-            cleanHook key db) barrier mRes
+            cleanHook key db)
             ( \db stack key s -> do
                 result <- compute db stack key runMode s
                 return result
@@ -458,14 +458,14 @@ spawnRefresh ::
   Database ->
   t ->
   Key ->
-  STM () ->
   MVar (Either SomeException (Key, Result)) ->
   Maybe Result ->
+  STM () ->
   (Database -> t -> Key -> Maybe Result -> IO Result) ->
   (SomeException -> IO ()) ->
   (forall a. IO a -> IO a) ->
   IO ()
-spawnRefresh db@Database {..} stack key registerHook barrier prevResult refresher rollBack restore = do
+spawnRefresh db@Database {..} stack key barrier prevResult registerHook  refresher rollBack restore = do
   Step currentStep <- readTVarIO databaseStep
   spawnAsyncWithDbRegistration
     db
