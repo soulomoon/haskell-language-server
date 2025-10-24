@@ -45,6 +45,7 @@ import           UnliftIO                                 (MVar, atomically,
                                                            newEmptyMVar,
                                                            putMVar, readMVar)
 
+import qualified Control.Concurrent.STM.TPQueue           as TPQ
 import qualified Data.List                                as List
 import           Development.IDE.Graph.Internal.Scheduler (cleanHook,
                                                            decreaseMyReverseDepsPendingCount,
@@ -52,12 +53,11 @@ import           Development.IDE.Graph.Internal.Scheduler (cleanHook,
                                                            popOutDirtykeysDB,
                                                            readReadyQueue,
                                                            writeUpsweepQueue)
+import qualified StmContainers.Set                        as SSet
 import qualified UnliftIO.Exception                       as UE
 
 #if MIN_VERSION_base(4,19,0)
-import qualified Control.Concurrent.STM.TPQueue           as TPQ
 import           Data.Functor                             (unzip)
-import qualified StmContainers.Set                        as SSet
 #else
 import           Data.List.NonEmpty                       (unzip)
 #endif
