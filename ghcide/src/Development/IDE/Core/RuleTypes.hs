@@ -78,12 +78,6 @@ type instance RuleResult GetParsedModuleWithComments = ParsedModule
 
 type instance RuleResult GetModuleGraph = DependencyInformation
 
--- | it only compute the fingerprint of the module graph for a file and its dependencies
--- we need this to trigger recompilation when the sub module graph for a file changes
-type instance RuleResult GetModuleGraphTransDepsFingerprints = Fingerprint
-type instance RuleResult GetModuleGraphTransReverseDepsFingerprints = Fingerprint
-type instance RuleResult GetModuleGraphImmediateReverseDepsFingerprints = Fingerprint
-
 data GetKnownTargets = GetKnownTargets
   deriving (Show, Generic, Eq, Ord)
 instance Hashable GetKnownTargets
@@ -440,21 +434,6 @@ data GetModuleGraph = GetModuleGraph
 instance Hashable GetModuleGraph
 instance NFData   GetModuleGraph
 
-data GetModuleGraphTransDepsFingerprints = GetModuleGraphTransDepsFingerprints
-    deriving (Eq, Show, Generic)
-instance Hashable GetModuleGraphTransDepsFingerprints
-instance NFData   GetModuleGraphTransDepsFingerprints
-
-data GetModuleGraphTransReverseDepsFingerprints = GetModuleGraphTransReverseDepsFingerprints
-    deriving (Eq, Show, Generic)
-instance Hashable GetModuleGraphTransReverseDepsFingerprints
-instance NFData   GetModuleGraphTransReverseDepsFingerprints
-
-data GetModuleGraphImmediateReverseDepsFingerprints = GetModuleGraphImmediateReverseDepsFingerprints
-    deriving (Eq, Show, Generic)
-instance Hashable GetModuleGraphImmediateReverseDepsFingerprints
-instance NFData   GetModuleGraphImmediateReverseDepsFingerprints
-
 data ReportImportCycles = ReportImportCycles
     deriving (Eq, Show, Generic)
 instance Hashable ReportImportCycles
@@ -518,6 +497,14 @@ data IsFileOfInterest = IsFileOfInterest
     deriving (Eq, Show, Generic)
 instance Hashable IsFileOfInterest
 instance NFData   IsFileOfInterest
+
+-- | A no-file rule that triggers the IDE "kick" action
+data Kick = Kick
+    deriving (Eq, Show, Generic)
+instance Hashable Kick
+instance NFData   Kick
+
+type instance RuleResult Kick = ()
 
 data GetModSummaryWithoutTimestamps = GetModSummaryWithoutTimestamps
     deriving (Eq, Show, Generic)

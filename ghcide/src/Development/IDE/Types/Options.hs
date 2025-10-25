@@ -101,12 +101,13 @@ data IdePreprocessedSource = IdePreprocessedSource
 
 newtype IdeReportProgress    = IdeReportProgress Bool
 newtype IdeDefer             = IdeDefer          Bool
-newtype IdeTesting           = IdeTesting        Bool
+newtype IdeTesting           = IdeTesting        Bool deriving (Eq)
 newtype IdeOTMemoryProfiling = IdeOTMemoryProfiling    Bool
 
 data ProgressReportingStyle
     = Percentage -- ^ Report using the LSP @_percentage@ field
     | Explicit   -- ^ Report using explicit 123/456 text
+    | TestReporting -- ^ Special mode for testing, reports only start/stop
     | NoProgress -- ^ Do not report any percentage
     deriving Eq
 

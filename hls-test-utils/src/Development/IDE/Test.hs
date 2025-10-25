@@ -25,7 +25,6 @@ module Development.IDE.Test
   , flushMessages
   , waitForAction
   , getInterfaceFilesDir
-  , garbageCollectDirtyKeys
   , getFilesOfInterest
   , waitForTypecheck
   , waitForBuildQueue
@@ -218,8 +217,8 @@ waitForAction key TextDocumentIdentifier{_uri} =
 getInterfaceFilesDir :: TextDocumentIdentifier -> Session FilePath
 getInterfaceFilesDir TextDocumentIdentifier{_uri} = callTestPlugin (GetInterfaceFilesDir _uri)
 
-garbageCollectDirtyKeys :: CheckParents -> Int -> Session [String]
-garbageCollectDirtyKeys parents age = callTestPlugin (GarbageCollectDirtyKeys parents age)
+-- garbageCollectDirtyKeys :: CheckParents -> Int -> Session [String]
+-- garbageCollectDirtyKeys parents age = callTestPlugin (GarbageCollectDirtyKeys parents age)
 
 getStoredKeys :: Session [Text]
 getStoredKeys = callTestPlugin GetStoredKeys
