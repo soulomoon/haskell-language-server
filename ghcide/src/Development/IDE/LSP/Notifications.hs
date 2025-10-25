@@ -85,9 +85,9 @@ descriptor recorder plId = (defaultPluginDescriptor plId desc) { pluginNotificat
 
   , mkPluginNotificationHandler LSP.SMethod_TextDocumentDidSave $
       \ide vfs _ (DidSaveTextDocumentParams TextDocumentIdentifier{_uri} _) -> liftIO $ do
-        -- whenUriFile _uri $ \file -> do
-        --     setFileModified (cmapWithPrio LogFileStore recorder) (VFSModified vfs) ide True file $
-        --         addFileOfInterest ide file OnDisk
+        whenUriFile _uri $ \file -> do
+            setFileModified (cmapWithPrio LogFileStore recorder) (VFSModified vfs) ide True file $
+                addFileOfInterest ide file OnDisk
         logWith recorder Debug $ LogSavedTextDocument _uri
 
   , mkPluginNotificationHandler LSP.SMethod_TextDocumentDidClose $
