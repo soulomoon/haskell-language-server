@@ -1112,11 +1112,36 @@ garbageCollectDirtyKeys = do
     garbageCollectDirtyKeysOlderThan 0 checkParents
 
 garbageCollectDirtyKeysOlderThan :: Int -> CheckParents -> Action [Key]
-garbageCollectDirtyKeysOlderThan _maxAge _checkParents = otTracedGarbageCollection "dirty GC" $ do
-    -- dirtySet <- getDirtySet
-    -- garbageCollectKeys "dirty GC" maxAge checkParents dirtySet
-    return []
+garbageCollectDirtyKeysOlderThan maxAge checkParents = otTracedGarbageCollection "dirty GC" $ do
+    dirtySet <- getDirtySet
+    garbageCollectKeys "dirty GC" maxAge checkParents dirtySet
 
+garbageCollectKeys :: String -> Int -> CheckParents -> [(Key, Int)] -> Action [Key]
+garbageCollectKeys label maxAge checkParents agedKeys = do
+    start <- liftIO offsetTime
+    ShakeExtras{stateValues, dirtyKeys, lspEnv, shakeRecorder, ideTesting} <- getShakeExtras
+    (n::Int, garbage) <- liftIO $
+        foldM (removeDirtyKey dirtyKeys stateValues) (0,[]) agedKeys
+    t <- liftIO start
+    when (n>0) $ liftIO $ do
+        logWith shakeRecorder Debug $ LogShakeGarbageCollection (T.pack label) n t
+    when (coerce ideTesting) $ liftIO $ mRunLspT lspEnv $
+        LSP.sendNotification (SMethod_CustomMethod (Proxy @"ghcide/GC"))
+                             (toJSON $ mapMaybe (fmap showKey . fromKeyType) garbage)
+    return garbage
+
+    where
+        showKey = show . Q
+        removeDirtyKey dk values st@(!counter, keys) (k, age)
+            | age > maxAge
+            , Just (kt,_) <- fromKeyType k
+            , not(kt `HSet.member` preservedKeys checkParents)
+            = atomicallyNamed "GC" $ do
+                gotIt <- STM.focus (Focus.member <* Focus.delete) k values
+                when gotIt $
+                   modifyTVar' dk (insertKeySet k)
+                return $ if gotIt then (counter+1, k:keys) else st
+            | otherwise = pure st
 
 countRelevantKeys :: CheckParents -> [Key] -> Int
 countRelevantKeys checkParents =

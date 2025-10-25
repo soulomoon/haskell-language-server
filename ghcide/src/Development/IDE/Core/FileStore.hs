@@ -272,9 +272,30 @@ setFileModified :: Recorder (WithPriority Log)
                 -> IO [Key]
                 -> IO ()
 setFileModified recorder vfs state saved nfp actionBefore = do
+    ideOptions <- getIdeOptionsIO $ shakeExtras state
+    doCheckParents <- optCheckParents ideOptions
+    let checkParents = case doCheckParents of
+          AlwaysCheck -> True
+          CheckOnSave -> saved
+          _           -> False
     restartShakeSession (shakeExtras state) vfs (fromNormalizedFilePath nfp ++ " (modified)") $ do
         keys<-actionBefore
         return (toKey GetModificationTime nfp:keys)
+    when checkParents $
+      typecheckParents recorder state nfp
+
+typecheckParents :: Recorder (WithPriority Log) -> IdeState -> NormalizedFilePath -> IO ()
+typecheckParents recorder state nfp = void $ shakeEnqueue (shakeExtras state) =<< parents
+  where parents = mkDelayedAction "ParentTC" L.Debug (typecheckParentsAction recorder nfp)
+
+typecheckParentsAction :: Recorder (WithPriority Log) -> NormalizedFilePath -> Action ()
+typecheckParentsAction recorder nfp = do
+    revs <- transitiveReverseDependencies nfp <$> useNoFile_ GetModuleGraph
+    case revs of
+      Nothing -> logWith recorder Info $ LogCouldNotIdentifyReverseDeps nfp
+      Just rs -> do
+        logWith recorder Info $ LogTypeCheckingReverseDeps nfp revs
+        void $ uses GetModIface rs
 
 -- | Note that some keys have been modified and restart the session
 --   Only valid if the virtual file system was initialised by LSP, as that

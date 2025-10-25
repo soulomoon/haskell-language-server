@@ -195,24 +195,23 @@ tests =
         "Ord Foo" `isInfixOf` output                @? "Output does not include instance Ord Foo"
         not ("Baz Foo" `isInfixOf` output)          @? "Output includes instance Baz Foo"
     ]
-    -- todo since upsweeep always rebuilds every dirty key, the test is not very meaningful now
---   , testCase "Interfaces are reused after Eval" $ do
---       runSessionWithServerInTmpDir def evalPlugin (mkFs $ FS.directProjectMulti ["TLocalImport.hs", "Util.hs"]) $ do
---         doc <- openDoc "TLocalImport.hs" "haskell"
---         _ <- waitForTypecheck doc
---         lenses <- getCodeLenses doc
---         cmd <- liftIO $ case lenses^..folded.command._Just of
---           [cmd] -> (cmd^.title @?= "Evaluate...") >> pure cmd
---           cmds -> assertFailure $ "Expected a single command, got " <> show (length cmds)
+  , testCase "Interfaces are reused after Eval" $ do
+      runSessionWithServerInTmpDir def evalPlugin (mkFs $ FS.directProjectMulti ["TLocalImport.hs", "Util.hs"]) $ do
+        doc <- openDoc "TLocalImport.hs" "haskell"
+        _ <- waitForTypecheck doc
+        lenses <- getCodeLenses doc
+        cmd <- liftIO $ case lenses^..folded.command._Just of
+          [cmd] -> (cmd^.title @?= "Evaluate...") >> pure cmd
+          cmds -> assertFailure $ "Expected a single command, got " <> show (length cmds)
 
---         executeCmd cmd
+        executeCmd cmd
 
---         -- trigger a rebuild and check that dependency interfaces are not rebuilt
---         changeDoc doc []
---         _ <- waitForTypecheck doc
---         Right keys <- getLastBuildKeys
---         let ifaceKeys = filter ("GetModIface" `T.isPrefixOf`) keys
---         liftIO $ ifaceKeys @?= []
+        -- trigger a rebuild and check that dependency interfaces are not rebuilt
+        changeDoc doc []
+        _ <- waitForTypecheck doc
+        Right keys <- getLastBuildKeys
+        let ifaceKeys = filter ("GetModIface" `T.isPrefixOf`) keys
+        liftIO $ ifaceKeys @?= []
   ]
   where
     knownBrokenInWindowsBeforeGHC912 msg =

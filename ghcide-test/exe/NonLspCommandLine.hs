@@ -35,8 +35,6 @@ tests = testGroup "ghcide command line"
         ec @?= ExitSuccess
   ]
 
-
-
 locateGhcideExecutable :: IO FilePath
 locateGhcideExecutable = do
   -- Run the find command to locate the ghcide executable
