@@ -58,6 +58,7 @@ import           UnliftIO                           (Async (asyncThreadId),
                                                      MVar, MonadUnliftIO, async,
                                                      asyncExceptionFromException,
                                                      asyncExceptionToException,
+                                                     asyncWithUnmask,
                                                      atomically, cancelWith,
                                                      newEmptyTMVarIO, poll,
                                                      putTMVar, readTMVar,
@@ -492,7 +493,7 @@ spawnAsyncWithDbRegistration db@Database{..} deliver registerHook asyncBody hand
                     modifyTVar' databaseThreads ((deliver, a):)
                     -- make sure we only start after the restart
                     putTMVar startBarrier ()
-    a <- async (handler =<< ((restore $ atomically (readTMVar startBarrier) >> (Right <$> asyncBody)) `catch` \e@(SomeException _) -> return (Left e)))
+    a <- asyncWithUnmask $ \restore -> (handler =<< ((restore $ atomically (readTMVar startBarrier) >> (Right <$> asyncBody)) `catch` \e@(SomeException _) -> return (Left e)))
     (restore $ atomically $ register a)
         `catch` \e@(SomeException _) -> do
                 cancelWith a e
