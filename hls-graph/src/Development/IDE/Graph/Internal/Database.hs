@@ -65,9 +65,6 @@ newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra datab
     databaseRuntimeDepRoot <- atomically SMap.new
     databaseRRuntimeDepRoot <- atomically SMap.new
     databaseTransitiveRRuntimeDepCache <- atomically SMap.new
-    -- Initialize scheduler state
-    databaseRuntimeDepRootCounterMap <- atomically SMap.new
-    databaseRuntimeDepRootCounter <- newTVarIO 0
     pure Database{..}
 
 -- | Increment the step and mark dirty.
