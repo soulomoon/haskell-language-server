@@ -18,7 +18,6 @@ module Development.IDE.Graph.Database(
     shakePeekAsyncsDelivers,
     instantiateDelayedAction,
     mkDelayedAction,
-    upsweepAction,
     shakeDatabaseSize) where
 import           Control.Concurrent.Extra                 (Barrier, newBarrier,
                                                            signalBarrier,

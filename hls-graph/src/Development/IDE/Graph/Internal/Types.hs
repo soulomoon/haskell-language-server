@@ -232,9 +232,6 @@ data ShakeDatabase = ShakeDatabase !Int [Action ()] Database
 newtype Step = Step Int
     deriving newtype (Eq,Ord,Hashable,Show,Num,Enum,Real,Integral)
 
-getShakeSchedulerState :: ShakeDatabase -> IO SchedulerState
-getShakeSchedulerState (ShakeDatabase _ _ db) = return $ databaseScheduler db
-
 getShakeStep :: MonadIO m => ShakeDatabase -> m Step
 getShakeStep (ShakeDatabase _ _ db) = do
     s <- readTVarIO $ databaseStep db
@@ -302,7 +299,7 @@ data SchedulerState = SchedulerState
 
 -- dump scheduler state
 dumpSchedulerState :: SchedulerState -> IO String
-dumpSchedulerState SchedulerState{..} = atomically $ do
+dumpSchedulerState _ = atomically $ do
     -- Snapshot queues (drain then restore) to avoid side effects
     -- ups <- flushTQueue schedulerUpsweepQueue
     -- mapM_ (writeTQueue schedulerUpsweepQueue) ups
@@ -388,11 +385,6 @@ data Database = Database {
     databaseQueue                      :: DBQue,
     -- The action queue and
     databaseActionQueue                :: ActionQueue,
-
-    -- All scheduling-related state is grouped under a standalone scheduler
-    -- to improve encapsulation and make refactors simpler.
-    -- unpack this field
-    databaseScheduler                  :: {-# UNPACK #-} !SchedulerState,
 
 
     databaseRules                      :: TheRules,
