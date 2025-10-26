@@ -63,7 +63,6 @@ library
     Development.IDE.Graph.Internal.Profile
     Development.IDE.Graph.Internal.Rules
     Development.IDE.Graph.Internal.Types
-    Development.IDE.Graph.Internal.Scheduler
     Development.IDE.Graph.KeyMap
     Development.IDE.Graph.KeySet
     Development.IDE.Graph.Rule

@@ -11,46 +11,44 @@
 
 module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..), computeToPreserve, getRunTimeRDeps, spawnAsyncWithDbRegistration) where
 
-import           Prelude                                  hiding (unzip)
+import           Prelude                              hiding (unzip)
 
-import           Control.Concurrent.STM.Stats             (STM, atomicallyNamed,
-                                                           modifyTVar',
-                                                           newTVarIO, readTVar,
-                                                           readTVarIO)
+import           Control.Concurrent.STM.Stats         (STM, atomicallyNamed,
+                                                       modifyTVar', newTVarIO,
+                                                       readTVar, readTVarIO)
 import           Control.Exception
 import           Control.Monad
-import           Control.Monad.IO.Class                   (MonadIO (liftIO))
+import           Control.Monad.IO.Class               (MonadIO (liftIO))
 import           Control.Monad.Trans.Reader
 import           Data.Dynamic
-import           Data.Foldable                            (foldrM)
+import           Data.Foldable                        (foldrM)
 import           Data.IORef.Extra
 import           Data.Maybe
-import           Data.Traversable                         (for)
+import           Data.Traversable                     (for)
 import           Data.Tuple.Extra
-import           Debug.Trace                              (traceEvent)
+import           Debug.Trace                          (traceEvent)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
-import           Development.IDE.Graph.Internal.Types     ()
-import           Development.IDE.WorkerThread             (DeliverStatus (..))
+import           Development.IDE.Graph.Internal.Types ()
+import           Development.IDE.WorkerThread         (DeliverStatus (..))
 import qualified Focus
 import qualified ListT
-import qualified StmContainers.Map                        as SMap
-import           System.Time.Extra                        (duration)
-import           UnliftIO                                 (MVar, atomically,
-                                                           isAsyncException,
-                                                           newEmptyMVar,
-                                                           putMVar, readMVar)
+import qualified StmContainers.Map                    as SMap
+import           System.Time.Extra                    (duration)
+import           UnliftIO                             (MVar, atomically,
+                                                       isAsyncException,
+                                                       newEmptyMVar, putMVar,
+                                                       readMVar)
 
-import qualified Data.List                                as List
-import           Development.IDE.Graph.Internal.Scheduler (isDirty)
-import qualified UnliftIO.Exception                       as UE
+import qualified Data.List                            as List
+import qualified UnliftIO.Exception                   as UE
 
 #if MIN_VERSION_base(4,19,0)
-import           Data.Functor                             (unzip)
+import           Data.Functor                         (unzip)
 #else
-import           Data.List.NonEmpty                       (unzip)
+import           Data.List.NonEmpty                   (unzip)
 #endif
 
 
@@ -207,6 +205,12 @@ handleResult k barrier eResult = do
         -- accumulate the async kill info for debugging
         Left e | Just (AsyncParentKill tid s ks) <- fromException e  -> putMVar barrier (Left (toException $ AsyncParentKill tid s (k:ks)))
         Left e  -> putMVar barrier (Left e)
+
+
+-- | isDirty
+-- only dirty when it's build time is older than the changed time of one of its dependencies
+isDirty :: Foldable t => Result -> t (a, Result) -> Bool
+isDirty me = any (\(_,dep) -> resultBuilt me < resultChanged dep)
 
 
 -- | Refresh dependencies for a key and compute the key:

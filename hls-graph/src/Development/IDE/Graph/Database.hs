@@ -19,33 +19,30 @@ module Development.IDE.Graph.Database(
     instantiateDelayedAction,
     mkDelayedAction,
     shakeDatabaseSize) where
-import           Control.Concurrent.Extra                 (Barrier, newBarrier,
-                                                           signalBarrier,
-                                                           waitBarrierMaybe)
-import           Control.Concurrent.STM.Stats             (atomically,
-                                                           atomicallyNamed,
-                                                           readTVarIO)
-import           Control.Exception                        (SomeException, try)
-import           Control.Monad                            (join, unless, void)
-import           Control.Monad.IO.Class                   (liftIO)
+import           Control.Concurrent.Extra                (Barrier, newBarrier,
+                                                          signalBarrier,
+                                                          waitBarrierMaybe)
+import           Control.Concurrent.STM.Stats            (atomically,
+                                                          atomicallyNamed,
+                                                          readTVarIO)
+import           Control.Exception                       (SomeException, try)
+import           Control.Monad                           (join, unless, void)
+import           Control.Monad.IO.Class                  (liftIO)
 import           Data.Dynamic
 import           Data.Maybe
 import           Data.Unique
-import           Debug.Trace                              (traceEvent)
-import           Development.IDE.Graph.Classes            ()
+import           Debug.Trace                             (traceEvent)
+import           Development.IDE.Graph.Classes           ()
 import           Development.IDE.Graph.Internal.Action
 import           Development.IDE.Graph.Internal.Database
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Options
-import           Development.IDE.Graph.Internal.Profile   (writeProfile)
+import           Development.IDE.Graph.Internal.Profile  (writeProfile)
 import           Development.IDE.Graph.Internal.Rules
-import           Development.IDE.Graph.Internal.Scheduler
 import           Development.IDE.Graph.Internal.Types
-import qualified Development.IDE.Graph.Internal.Types     as Logger
-import           Development.IDE.WorkerThread             (DeliverStatus)
-import qualified StmContainers.Map                        as SMap
-import           System.Time.Extra                        (duration,
-                                                           showDuration)
+import qualified Development.IDE.Graph.Internal.Types    as Logger
+import           Development.IDE.WorkerThread            (DeliverStatus)
+import qualified StmContainers.Map                       as SMap
 
 
 -- Placeholder to be the 'extra' if the user doesn't set it
