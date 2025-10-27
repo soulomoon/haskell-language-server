@@ -45,8 +45,6 @@ import           Development.IDE.Graph.Internal.Types
 import qualified Development.IDE.Graph.Internal.Types     as Logger
 import           Development.IDE.WorkerThread             (DeliverStatus)
 import qualified StmContainers.Map                        as SMap
-import           System.Time.Extra                        (duration,
-                                                           showDuration)
 
 
 -- Placeholder to be the 'extra' if the user doesn't set it

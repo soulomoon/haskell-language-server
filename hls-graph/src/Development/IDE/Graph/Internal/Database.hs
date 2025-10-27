@@ -43,7 +43,7 @@ import           System.Time.Extra                        (duration)
 import           UnliftIO                                 (MVar, atomically,
                                                            isAsyncException,
                                                            newEmptyMVar,
-                                                           putMVar, readMVar)
+                                                           putMVar)
 
 import qualified Control.Concurrent.STM.TPQueue           as TPQ
 import qualified Data.List                                as List
@@ -121,7 +121,7 @@ computeToPreserve db dirtySet = do
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
             let status'
-                  | Running _ x _ <- status = Dirty x
+                  | Running _ x <- status = Dirty x
                   | Clean x <- status = Dirty (Just x)
                   | otherwise = status
             in KeyDetails status' rdeps
@@ -154,42 +154,45 @@ builder pk db stack keys = do
     for waits (interpreBuildContinue db pk)
 
 -- the first run should not block
-data BuildContinue = BCContinue (IO (Either SomeException (Key, Result))) | BCStop Key Result
+data BuildContinue = BCContinue | BCStop Key Result
 
--- interpreBuildContinue :: BuildContinue -> IO (Key, Result)
 interpreBuildContinue :: Database -> Key -> (Key, BuildContinue) -> IO (Key, Result)
-interpreBuildContinue _db _pk (_kid, BCStop k v)     = return (k, v)
-interpreBuildContinue _db _pk (_kid, BCContinue ioR) = do
-    r <- ioR
-    case r of
-        Right kv -> return kv
-        Left e   -> throw e
+interpreBuildContinue _db _pk (_kid, BCStop k v) = return (k, v)
+interpreBuildContinue _db _pk (_kid, BCContinue) = builderOneFinal _db _kid
+
+builderOneFinal :: Database -> Key -> IO (Key, Result)
+builderOneFinal Database {..} key = do
+  traceEvent ("builderOne: " ++ show key) return ()
+  -- join is used to register the async
+  atomicallyNamed "builder" $ do
+    status <- SMap.lookup key databaseValues
+    case (viewToRun 0 . keyStatus) =<< status of
+      Nothing                 -> retry
+      Just (Dirty _prev)      -> retry
+      Just (Clean r)          -> return (key, r)
+      Just (Running _step _s) -> retry
 
 builderOne :: Key -> Database -> Stack -> Key -> IO (Key, BuildContinue)
 builderOne parentKey db stack kid = do
-    r <- builderOne' FirstTime parentKey db stack kid
+    r <- builderOne' parentKey db stack kid
     return (kid, r)
 
-data FirstTime = FirstTime | NotFirstTime
 
-builderOne' :: FirstTime -> Key -> Database -> Stack -> Key -> IO BuildContinue
-builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleMask $ \restore -> do
+builderOne' :: Key -> Database -> Stack -> Key -> IO BuildContinue
+builderOne' parentKey db@Database {..} stack key = UE.uninterruptibleMask $ \restore -> do
   traceEvent ("builderOne: " ++ show key) return ()
   barrier <- newEmptyMVar
   -- join is used to register the async
   join $ restore $ atomicallyNamed "builder" $ do
     dbNotLocked db
     -- Spawn the id if needed
-    case firstTime of
-        FirstTime -> do
-            insertdatabaseRuntimeDep key parentKey db
-        NotFirstTime -> return ()
+    insertdatabaseRuntimeDep key parentKey db
     status <- SMap.lookup key databaseValues
     current <- readTVar databaseStep
 
     case (viewToRun current . keyStatus) =<< status of
       Nothing -> do
-        SMap.focus (updateStatus $ Running current Nothing barrier) key databaseValues
+        SMap.focus (updateStatus $ Running current Nothing) key databaseValues
         let register = spawnRefresh db stack key barrier Nothing (return ()) refresh
                         -- why it is important to use rollback here
 
@@ -199,19 +202,12 @@ builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleM
                         -}
                         (\_ -> atomicallyNamed "builderOne rollback" $ SMap.delete key databaseValues)
                         restore
-        return $ register >> return (BCContinue $ readMVar barrier)
-      Just (Dirty _) -> do
-        case firstTime of
-            FirstTime -> pure . pure $ BCContinue $ do
-                    br <- builderOne' NotFirstTime parentKey db stack key
-                    case br of
-                        BCContinue ioR -> ioR
-                        BCStop k r     -> pure $ Right (k, r)
-            NotFirstTime -> retry
+        return $ register >> return BCContinue
+      Just (Dirty _) -> pure $ pure BCContinue
       Just (Clean r) -> pure . pure $ BCStop key r
-      Just (Running _step _s wait)
+      Just (Running _step _s)
         | memberStack key stack -> throw $ StackException stack
-        | otherwise -> pure . pure $ BCContinue $ readMVar wait
+        | otherwise -> pure . pure $ BCContinue
 
 -- Original spawnRefresh implementation moved below to use the abstraction
 -- handleResult :: (Show a1, MonadIO m) => a1 -> MVar (Either a2 (a1, b)) -> Either a2 b -> m ()
@@ -267,7 +263,7 @@ upsweepAll db@Database {..} stack = go
         -- update status and clean hook should be run at the same time atomically
         -- since it indicate we transfer the responsibility of managing the key from scheduler to the thread
           spawnRefresh db stack key barrier mRes (do
-            SMap.focus (updateStatus $ Running current mRes barrier) key databaseValues
+            SMap.focus (updateStatus $ Running current mRes) key databaseValues
             cleanHook key db)
             ( \db stack key s -> do
                 result <- compute db stack key runMode s

@@ -580,13 +580,12 @@ data Status
     | Running {
         runningStep :: !Step,
         -- runningResult :: Result,     -- LAZY
-        runningPrev :: !(Maybe Result),
-        runningWait :: !(MVar (Either SomeException (Key, Result)))
+        runningPrev :: !(Maybe Result)
         }
 instance Show Status where
-    show (Clean _)       = "Clean"
-    show (Dirty _)       = "Dirty"
-    show (Running s _ _) = "Running step " ++ show s
+    show (Clean _)     = "Clean"
+    show (Dirty _)     = "Dirty"
+    show (Running s _) = "Running step " ++ show s
 
 viewDirty :: Step -> Status -> Status
 -- viewDirty currentStep (Running s re _ _) | currentStep /= s = Dirty re
@@ -599,9 +598,9 @@ viewToRun :: Step -> Status -> Maybe Status
 viewToRun _ other = Just other
 
 getResult :: Status -> Maybe Result
-getResult (Clean re)         = Just re
-getResult (Dirty m_re)       = m_re
-getResult (Running _ m_re _) = m_re -- watch out: this returns the previous result
+getResult (Clean re)        = Just re
+getResult (Dirty m_re)      = m_re
+getResult (Running _ m_re ) = m_re -- watch out: this returns the previous result
 
 
 data Result = Result {
