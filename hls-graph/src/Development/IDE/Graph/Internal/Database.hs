@@ -15,7 +15,8 @@ import           Prelude                              hiding (unzip)
 
 import           Control.Concurrent.STM.Stats         (STM, atomicallyNamed,
                                                        modifyTVar', newTVarIO,
-                                                       readTVar, readTVarIO)
+                                                       readTVar, readTVarIO,
+                                                       retry)
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class               (MonadIO (liftIO))
@@ -100,7 +101,7 @@ computeToPreserve db dirtySet = do
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
             let status'
-                  | Running _ x _ <- status = Dirty x
+                  | Running _ x <- status = Dirty x
                   | Clean x <- status = Dirty (Just x)
                   | otherwise = status
             in KeyDetails status' rdeps
@@ -133,54 +134,46 @@ builder pk db stack keys = do
     for waits (interpreBuildContinue db pk)
 
 -- the first run should not block
-data BuildContinue = BCContinue (IO (Either SomeException (Key, Result))) | BCStop Key Result
+data BuildContinue = BCContinue | BCStop Key Result
 
 -- interpreBuildContinue :: BuildContinue -> IO (Key, Result)
 interpreBuildContinue :: Database -> Key -> (Key, BuildContinue) -> IO (Key, Result)
 interpreBuildContinue _db _pk (_kid, BCStop k v)     = return (k, v)
-interpreBuildContinue _db _pk (_kid, BCContinue ioR) = do
-    r <- ioR
-    case r of
-        Right kv -> return kv
-        Left e   -> throw e
+interpreBuildContinue db _pk (kid, BCContinue) = builderOneFinal db emptyStack kid
+
 
 builderOne :: Key -> Database -> Stack -> Key -> IO (Key, BuildContinue)
 builderOne parentKey db stack kid = do
-    r <- builderOne' FirstTime parentKey db stack kid
+    r <- builderOne' parentKey db stack kid
     return (kid, r)
 
-data FirstTime = FirstTime | NotFirstTime
+builderOneFinal :: Database -> Stack -> Key -> IO (Key, Result)
+builderOneFinal Database {..} stack key = do
+  traceEvent ("builderOne: " ++ show key) return ()
+  -- join is used to register the async
+  atomicallyNamed "builder" $ do
+    status <- SMap.lookup key databaseValues
+    case (viewToRun $ keyStatus <$> status) of
+      (Dirty _prev) -> retry
+      (Clean r) -> return (key, r)
+      (Running _step _s)
+        | memberStack key stack -> throw $ StackException stack
+        | otherwise -> retry
 
-builderOne' :: FirstTime -> Key -> Database -> Stack -> Key -> IO BuildContinue
-builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleMask $ \restore -> do
+builderOne' :: Key -> Database -> Stack -> Key -> IO BuildContinue
+builderOne' parentKey db@Database {..} stack key = UE.uninterruptibleMask $ \restore -> do
   traceEvent ("builderOne: " ++ show key) return ()
   barrier <- newEmptyMVar
   -- join is used to register the async
   join $ restore $ atomicallyNamed "builder" $ do
     dbNotLocked db
-    -- Spawn the id if needed
-    case firstTime of
-        FirstTime -> do
-            insertdatabaseRuntimeDep key parentKey db
-        NotFirstTime -> return ()
+    insertdatabaseRuntimeDep key parentKey db
     status <- SMap.lookup key databaseValues
     current <- readTVar databaseStep
 
-    case (viewToRun current . keyStatus) =<< status of
-      Nothing -> do
-        SMap.focus (updateStatus $ Running current Nothing barrier) key databaseValues
-        let register = spawnRefresh db stack key barrier Nothing (return ()) refresh
-                        -- why it is important to use rollback here
-
-                        {- Note [Rollback is required if killed before registration]
-                        It is important to use rollback here because a key might be killed before it is registered, even though it is not one of the dirty keys.
-                        In this case, it would skip being marked as dirty. Therefore, we have to roll back here if it is killed, to ensure consistency.
-                        -}
-                        (\_ -> atomicallyNamed "builderOne rollback" $ SMap.delete key databaseValues)
-                        restore
-        return $ register >> return (BCContinue $ readMVar barrier)
-      Just (Dirty prev) -> do
-        SMap.focus (updateStatus $ Running current prev barrier) key databaseValues
+    case (viewToRun $ keyStatus <$> status) of
+      (Dirty prev) -> do
+        SMap.focus (updateStatus $ Running current prev) key databaseValues
         let register = spawnRefresh db stack key barrier prev (return ()) refresh
                         -- why it is important to use rollback here
 
@@ -190,11 +183,11 @@ builderOne' firstTime parentKey db@Database {..} stack key = UE.uninterruptibleM
                         -}
                         (\_ -> atomicallyNamed "builderOne rollback" $ SMap.focus updateDirty key databaseValues)
                         restore
-        return $ register >> return (BCContinue $ readMVar barrier)
-      Just (Clean r) -> pure . pure $ BCStop key r
-      Just (Running _step _s wait)
+        return $ register >> return BCContinue
+      (Clean r) -> pure . pure $ BCStop key r
+      (Running _step _s)
         | memberStack key stack -> throw $ StackException stack
-        | otherwise -> pure . pure $ BCContinue $ readMVar wait
+        | otherwise -> pure . pure $ BCContinue
 
 -- Original spawnRefresh implementation moved below to use the abstraction
 -- handleResult :: (Show a1, MonadIO m) => a1 -> MVar (Either a2 (a1, b)) -> Either a2 b -> m ()
