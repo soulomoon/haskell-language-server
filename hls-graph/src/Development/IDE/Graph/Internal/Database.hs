@@ -179,14 +179,15 @@ builderOne parentKey db stack kid = do
 
 
 builderOne' :: Key -> Database -> Stack -> Key -> IO BuildContinue
-builderOne' parentKey db@Database {..} stack key = UE.uninterruptibleMask $ \restore -> do
+builderOne' parentKey db@Database {..} stack key = do
+ atomicallyNamed "builder" $ insertdatabaseRuntimeDep key parentKey db
+ UE.uninterruptibleMask $ \restore -> do
   traceEvent ("builderOne: " ++ show key) return ()
   barrier <- newEmptyMVar
   -- join is used to register the async
   join $ restore $ atomicallyNamed "builder" $ do
     dbNotLocked db
     -- Spawn the id if needed
-    insertdatabaseRuntimeDep key parentKey db
     status <- SMap.lookup key databaseValues
     current <- readTVar databaseStep
 
