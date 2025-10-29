@@ -29,7 +29,7 @@ examples:
   # Small-sized project with TH
   - name: lsp-types
     package: lsp-types
-    version: 2.1.1.0
+    version: 2.3.0.1
     modules:
         - src/Language/LSP/Protocol/Types/SemanticTokens.hs
         - generated/Language/LSP/Protocol/Internal/Types/NotebookDocumentChangeEvent.hs
@@ -126,6 +126,7 @@ versions:
 # - 1.8.0.0
 - upstream: origin/master
 # - HEAD~1
+# - fa72d21706925450b29af911a5251465a878044b
 - HEAD
 
 # A list of plugin configurations to analyze

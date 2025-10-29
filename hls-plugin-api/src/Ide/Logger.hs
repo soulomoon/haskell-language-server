@@ -30,53 +30,58 @@ module Ide.Logger
   , defaultLoggingColumns
   ) where
 
-import           Colog.Core                    (LogAction (..), Severity,
-                                                WithSeverity (..))
-import qualified Colog.Core                    as Colog
-import           Control.Concurrent            (myThreadId)
-import           Control.Concurrent.Extra      (Lock, newLock, withLock)
-import           Control.Concurrent.STM        (atomically, flushTBQueue,
-                                                isFullTBQueue, newTBQueueIO,
-                                                newTVarIO, readTVarIO,
-                                                writeTBQueue, writeTVar)
-import           Control.Exception             (IOException)
-import           Control.Monad                 (unless, when, (>=>))
-import           Control.Monad.IO.Class        (MonadIO (liftIO))
-import           Data.Foldable                 (for_)
-import           Data.Functor.Contravariant    (Contravariant (contramap))
-import           Data.Maybe                    (fromMaybe)
-import           Data.Text                     (Text)
-import qualified Data.Text                     as Text
-import qualified Data.Text.IO                  as Text
-import           Data.Time                     (defaultTimeLocale, formatTime,
-                                                getCurrentTime)
-import           GHC.Stack                     (CallStack, HasCallStack,
-                                                SrcLoc (SrcLoc, srcLocModule, srcLocStartCol, srcLocStartLine),
-                                                callStack, getCallStack,
-                                                withFrozenCallStack)
-import           Language.LSP.Protocol.Message (SMethod (SMethod_WindowLogMessage, SMethod_WindowShowMessage))
-import           Language.LSP.Protocol.Types   (LogMessageParams (..),
-                                                MessageType (..),
-                                                ShowMessageParams (..))
+import           Colog.Core                           (LogAction (..), Severity,
+                                                       WithSeverity (..))
+import qualified Colog.Core                           as Colog
+import           Control.Concurrent                   (myThreadId)
+import           Control.Concurrent.Extra             (Lock, newLock, withLock)
+import           Control.Concurrent.STM               (atomically, flushTBQueue,
+                                                       isFullTBQueue,
+                                                       newTBQueueIO, newTVarIO,
+                                                       readTVarIO, writeTBQueue,
+                                                       writeTVar)
+import           Control.Exception                    (IOException)
+import           Control.Monad                        (unless, when, (>=>))
+import           Control.Monad.IO.Class               (MonadIO (liftIO))
+import           Data.Foldable                        (for_)
+import           Data.Functor.Contravariant           (Contravariant (contramap))
+import           Data.Maybe                           (fromMaybe)
+import           Data.Text                            (Text)
+import qualified Data.Text                            as Text
+import qualified Data.Text.IO                         as Text
+import           Data.Time                            (defaultTimeLocale,
+                                                       formatTime,
+                                                       getCurrentTime)
+import           Development.IDE.Graph.Internal.Types (Priority (..))
+import           GHC.Stack                            (CallStack, HasCallStack,
+                                                       SrcLoc (SrcLoc, srcLocModule, srcLocStartCol, srcLocStartLine),
+                                                       callStack, getCallStack,
+                                                       withFrozenCallStack)
+import           Language.LSP.Protocol.Message        (SMethod (SMethod_WindowLogMessage, SMethod_WindowShowMessage))
+import           Language.LSP.Protocol.Types          (LogMessageParams (..),
+                                                       MessageType (..),
+                                                       ShowMessageParams (..))
 import           Language.LSP.Server
-import qualified Language.LSP.Server           as LSP
-import           Prettyprinter                 as PrettyPrinterModule
-import           Prettyprinter.Render.Text     (renderStrict)
-import           System.IO                     (Handle, IOMode (AppendMode),
-                                                hClose, hFlush, openFile,
-                                                stderr)
-import           UnliftIO                      (MonadUnliftIO, finally, try)
+import qualified Language.LSP.Server                  as LSP
+import           Prettyprinter                        as PrettyPrinterModule
+import           Prettyprinter.Render.Text            (renderStrict)
+import           System.IO                            (Handle,
+                                                       IOMode (AppendMode),
+                                                       hClose, hFlush, openFile,
+                                                       stderr)
+import           UnliftIO                             (MonadUnliftIO, finally,
+                                                       try)
 
-data Priority
--- Don't change the ordering of this type or you will mess up the Ord
--- instance
-    = Debug -- ^ Verbose debug logging.
-    | Info  -- ^ Useful information in case an error has to be understood.
-    | Warning
-      -- ^ These error messages should not occur in a expected usage, and
-      -- should be investigated.
-    | Error -- ^ Such log messages must never occur in expected usage.
-    deriving (Eq, Show, Read, Ord, Enum, Bounded)
+-- data Priority
+-- -- Don't change the ordering of this type or you will mess up the Ord
+-- -- instance
+--     = Debug -- ^ Verbose debug logging.
+--     | Info  -- ^ Useful information in case an error has to be understood.
+--     | Warning
+--       -- ^ These error messages should not occur in a expected usage, and
+--       -- should be investigated.
+--     | Error -- ^ Such log messages must never occur in expected usage.
+--     deriving (Eq, Show, Read, Ord, Enum, Bounded)
 
 data WithPriority a = WithPriority { priority :: Priority, callStack_ :: CallStack, payload :: a } deriving Functor
 
