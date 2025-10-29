@@ -166,7 +166,7 @@ builderOne' parentKey db@Database {..} stack key = UE.uninterruptibleMask $ \res
   atomicallyNamed "builder" $ insertdatabaseRuntimeDep key parentKey db
   barrier <- newEmptyMVar
   -- join is used to register the async
-  join $ restore $ atomicallyNamed "builder" $ do
+  join $ restore $ mask_ $ atomicallyNamed "builder" $ do
     dbNotLocked db
     status <- SMap.lookup key databaseValues
     current <- readTVar databaseStep
