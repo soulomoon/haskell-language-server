@@ -200,7 +200,9 @@ import           System.FilePath                          hiding (makeRelative)
 import           System.IO.Unsafe                         (unsafePerformIO)
 import           System.Time.Extra
 import           UnliftIO                                 (MonadUnliftIO (withRunInIO),
-                                                           atomically)
+                                                           atomically,
+                                                           uninterruptibleMask_)
+import qualified UnliftIO.Exception                       as UE
 
 
 
@@ -1478,7 +1480,7 @@ updateFileDiagnostics recorder fp ver k ShakeExtras{diagnostics, hiddenDiagnosti
         update addTagUnsafeMethod new store = addTagUnsafeMethod "count" (show $ Prelude.length new) $ setStageDiagnostics addTagUnsafeMethod uri ver (renderKey k) new store
         current = map (fdLspDiagnosticL %~ diagsFromRule) current0
     addTag "version" (show ver)
-    mask_ $ do
+    UE.uninterruptibleMask_ $ do
         -- Mask async exceptions to ensure that updated diagnostics are always
         -- published. Otherwise, we might never publish certain diagnostics if
         -- an exception strikes between modifyVar but before
