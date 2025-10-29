@@ -131,21 +131,7 @@ get_bin_path() {
   local path=""
   local candidate="$name"
 
-  if ! path=$(cabal list-bin "$candidate" 2>/dev/null); then
-    if [[ "$candidate" != test:* ]]; then
-      if path=$(cabal list-bin "test:${name}" 2>/dev/null); then
-        candidate="test:${name}"
-      elif path=$(cabal list-bin "exe:${name}" 2>/dev/null); then
-        candidate="exe:${name}"
-      else
-        path=""
-      fi
-    else
-      path=""
-    fi
-  fi
-
-  path=$(printf '%s\n' "$path" | head -n1)
+  path=$(cabal list-bin "$candidate" --verbose=0 2>/dev/null)
 
   if [[ -z "$path" ]]; then
     echo "[loop][error] Unable to locate binary for '${name}' via 'cabal list-bin'." >&2
@@ -154,7 +140,7 @@ get_bin_path() {
   fi
 
   BIN_NAMES+=("$name"); BIN_PATHS+=("$path")
-  # echo "$path" >&2
+  echo "$path"
 }
 
 while true; do
@@ -176,6 +162,8 @@ while true; do
       echo "[loop] Iteration ${iter} (${ts}) pattern='${pattern}' -> ${log}" | tee -a "${log}" >&2
     fi
 
+  testBinPath=$(get_bin_path "${bin_name}")
+  # echo "[loop] Using binary path: ${testBinPath}"
     # We don't fail the loop on non-zero exit (capture output then decide).
   set +e
     # HLS_TEST_HARNESS_NO_TESTDIR_CLEANUP=1 \
@@ -183,7 +171,7 @@ while true; do
     HLS_TEST_HARNESS_STDERR="${LOG_STDERR}" \
     TASTY_NUM_THREADS=1 \
   TASTY_PATTERN="${pattern}" \
-  "$(get_bin_path "${bin_name}")" +RTS -l -olhlint.eventlog -RTS >"${log}" 2>&1
+  $testBinPath +RTS -l -olhlint.eventlog -RTS >"${log}" 2>&1
     set -e
 
   if grep -aFiq -- "${BROKEN_PIPE_RE}" "${log}"; then
