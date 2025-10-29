@@ -158,6 +158,7 @@ import           Development.IDE.Graph.Internal.Types    (DBQue,
                                                           Step (..),
                                                           actionNameKey,
                                                           getShakeStep,
+                                                          runActionMonad,
                                                           shakeDataBaseQueue,
                                                           withShakeDatabaseValuesLock)
 import           Development.IDE.Graph.Rule
@@ -325,12 +326,14 @@ type IndexQueue = TaskQueue (((HieDb -> IO ()) -> IO ()) -> IO ())
 type ShakeQueue = DBQue
 type ShakeControlQueue = ShakeQueue
 type LoaderQueue = TaskQueue (IO ())
+type DiagQueue = TaskQueue (IO ())
 
 
 data ThreadQueue = ThreadQueue {
     tIndexQueue          :: IndexQueue
     , tShakeControlQueue :: ShakeControlQueue
     , tLoaderQueue       :: LoaderQueue
+    , tDiagQueue         :: DiagQueue
 }
 
 -- Note [Semantic Tokens Cache Location]
@@ -404,6 +407,7 @@ data ShakeExtras = ShakeExtras
       -- ^ Queue of restart actions to be run.
     , loaderQueue :: LoaderQueue
       -- ^ Queue of loader actions to be run.
+    , diagQueue :: DiagQueue
     }
 
 type WithProgressFunc = forall a.
@@ -739,6 +743,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
     -- see Note [Serializing runs in separate thread]
     let indexQueue = tIndexQueue threadQueue
         shakeControlQueue = tShakeControlQueue threadQueue
+        diagQueue = tDiagQueue threadQueue
         loaderQueue = tLoaderQueue threadQueue
 
     ideNc <- initNameCache 'r' knownKeyNames
@@ -1349,7 +1354,7 @@ defineEarlyCutoff'
     -> (Value v -> Action (Maybe BS.ByteString, IdeResult v))
     -> Action (RunResult (A (RuleResult k)))
 defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
-    ShakeExtras{stateValues, progress, dirtyKeys} <- getShakeExtras
+    ShakeExtras{stateValues, progress, dirtyKeys, diagQueue} <- getShakeExtras
     options <- getIdeOptions
     let trans g x =  withRunInIO $ \run -> g (run x)
     (if optSkipProgress options key then id else trans (inProgress progress file)) $ do
@@ -1361,8 +1366,12 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                     -- an existing successful result.
                     Just (v@(Succeeded _ x), diags) -> do
                         ver <- estimateFileVersionUnsafely key (Just x) file
-                        doDiagnostics (vfsVersion =<< ver) $ Vector.toList diags
-                        return $ Just $ RunResult ChangedNothing old (A v) $ return ()
+                        -- doDiagnostics (vfsVersion =<< ver) $ Vector.toList diags
+                        actionCtx <- ask
+                        return $ Just $ RunResult ChangedNothing old (A v)
+                            $ do
+                                writeTaskQueue diagQueue $ flip runActionMonad actionCtx $ doDiagnostics (vfsVersion =<< ver) $ Vector.toList diags
+                                -- return ()
                     _ -> return Nothing
             _ ->
                 -- assert that a "clean" rule is never a cache miss
@@ -1386,7 +1395,8 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                     Nothing -> do
                         pure (toShakeValue ShakeStale mbBs, staleV)
                     Just v -> pure (maybe ShakeNoCutoff ShakeResult mbBs, Succeeded ver v)
-                doDiagnostics (vfsVersion =<< ver) diags
+                -- doDiagnostics (vfsVersion =<< ver) diags
+                actionCtx <- ask
                 let eq = case (bs, fmap decodeShakeValue mbOld) of
                         (ShakeResult a, Just (ShakeResult b)) -> cmp a b
                         (ShakeStale a, Just (ShakeStale b))   -> cmp a b
@@ -1401,6 +1411,8 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
                         setValues stateValues key file res (Vector.fromList diags)
                         modifyTVar' dirtyKeys (deleteKeySet $ toKey key file)
+                        -- shakeControlQueue
+                        writeTaskQueue diagQueue $ flip runActionMonad actionCtx $ doDiagnostics (vfsVersion =<< ver) diags
         return res
   where
     -- Highly unsafe helper to compute the version of a file
@@ -1463,7 +1475,7 @@ updateFileDiagnostics :: MonadIO m
   -> ShakeExtras
   -> [FileDiagnostic] -- ^ current results
   -> m ()
-updateFileDiagnostics recorder fp ver k ShakeExtras{diagnostics, hiddenDiagnostics, publishedDiagnostics, debouncer, lspEnv, ideTesting} current0 = do
+updateFileDiagnostics recorder fp ver k ShakeExtras{diagnostics, hiddenDiagnostics, publishedDiagnostics, debouncer, lspEnv, ideTesting} current0 = void $ liftIO $ async $ do
   liftIO $ withTrace ("update diagnostics " <> fromString (fromNormalizedFilePath fp)) $ \ addTag -> do
     addTag "key" (show k)
     let (currentShown, currentHidden) = partition ((== ShowDiag) . fdShouldShowDiagnostic) current
@@ -1489,10 +1501,11 @@ updateFileDiagnostics recorder fp ver k ShakeExtras{diagnostics, hiddenDiagnosti
                 let action = when (lastPublish /= newDiags) $ case lspEnv of
                         Nothing -> -- Print an LSP event.
                             logWith recorder Info $ LogDiagsDiffButNoLspEnv newDiags
+                            -- return ()
                         Just env -> LSP.runLspT env $ do
                             liftIO $ tag "count" (show $ Prelude.length newDiags)
                             liftIO $ tag "key" (show k)
-                            -- logWith recorder Debug $ LogDiagsPublishLog k lastPublish newDiags
+                            -- logWith recorder Info $ LogDiagsPublishLog k lastPublish newDiags
                             LSP.sendNotification SMethod_TextDocumentPublishDiagnostics $
                                 LSP.PublishDiagnosticsParams (fromNormalizedUri uri') (fmap fromIntegral ver) (map fdLspDiagnostic newDiags)
                 return action
