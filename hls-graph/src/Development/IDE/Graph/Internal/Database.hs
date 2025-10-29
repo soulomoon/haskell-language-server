@@ -185,7 +185,7 @@ builderOne' parentKey db@Database {..} stack key = do
   traceEvent ("builderOne: " ++ show key) return ()
   barrier <- newEmptyMVar
   -- join is used to register the async
-  join $ restore $ atomicallyNamed "builder" $ do
+  join $ restore $ mask_ $ atomicallyNamed "builder" $ do
     dbNotLocked db
     -- Spawn the id if needed
     status <- SMap.lookup key databaseValues
