@@ -138,7 +138,7 @@ data BuildContinue = BCContinue | BCStop Key Result
 
 -- interpreBuildContinue :: BuildContinue -> IO (Key, Result)
 interpreBuildContinue :: Database -> Key -> (Key, BuildContinue) -> IO (Key, Result)
-interpreBuildContinue _db _pk (_kid, BCStop k v)     = return (k, v)
+interpreBuildContinue _db _pk (_kid, BCStop k v) = return (k, v)
 interpreBuildContinue db _pk (kid, BCContinue) = builderOneFinal db emptyStack kid
 
 
@@ -163,11 +163,11 @@ builderOneFinal Database {..} stack key = do
 builderOne' :: Key -> Database -> Stack -> Key -> IO BuildContinue
 builderOne' parentKey db@Database {..} stack key = UE.uninterruptibleMask $ \restore -> do
   traceEvent ("builderOne: " ++ show key) return ()
+  atomicallyNamed "builder" $ insertdatabaseRuntimeDep key parentKey db
   barrier <- newEmptyMVar
   -- join is used to register the async
   join $ restore $ atomicallyNamed "builder" $ do
     dbNotLocked db
-    insertdatabaseRuntimeDep key parentKey db
     status <- SMap.lookup key databaseValues
     current <- readTVar databaseStep
 
