@@ -1495,7 +1495,8 @@ updateFileDiagnostics recorder fp ver k ShakeExtras{diagnostics, hiddenDiagnosti
         _ <- liftIO $ atomicallyNamed "diagnostics - hidden" $ update (addTagUnsafe "hidden ") currentHidden hiddenDiagnostics
         let uri' = filePathToUri' fp
         let delay = if null newDiags then 0.1 else 0
-        registerEvent debouncer delay uri' $ withTrace ("report diagnostics " <> fromString (fromNormalizedFilePath fp)) $ \tag -> do
+        -- registerEvent debouncer delay uri' $ withTrace ("report diagnostics " <> fromString (fromNormalizedFilePath fp)) $ \tag -> do
+        do
             join $ mask_ $ do
                 lastPublish <- atomicallyNamed "diagnostics - publish" $ STM.focus (Focus.lookupWithDefault [] <* Focus.insert newDiags) uri' publishedDiagnostics
                 let action = when (lastPublish /= newDiags) $ case lspEnv of
@@ -1503,8 +1504,6 @@ updateFileDiagnostics recorder fp ver k ShakeExtras{diagnostics, hiddenDiagnosti
                             logWith recorder Info $ LogDiagsDiffButNoLspEnv newDiags
                             -- return ()
                         Just env -> LSP.runLspT env $ do
-                            liftIO $ tag "count" (show $ Prelude.length newDiags)
-                            liftIO $ tag "key" (show k)
                             -- logWith recorder Info $ LogDiagsPublishLog k lastPublish newDiags
                             LSP.sendNotification SMethod_TextDocumentPublishDiagnostics $
                                 LSP.PublishDiagnosticsParams (fromNormalizedUri uri') (fmap fromIntegral ver) (map fdLspDiagnostic newDiags)

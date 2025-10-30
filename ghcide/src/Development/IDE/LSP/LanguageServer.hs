@@ -369,7 +369,7 @@ runWithWorkerThreads recorder mide  dbLoc f = evalContT $ do
             (WithHieDbShield hiedb, threadQueue) <- runWithDb (cmapWithPrio LogSession recorder) dbLoc
             sessionRestartTQueue <- runShakeThread recorder mide
             sessionLoaderTQueue <- withWorkerQueueSimple (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug) "SessionLoaderTQueue"
-            sessionDiagTQueue <- withWorkerQueueSimple (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug) "sessionDiagTQueue"
+            sessionDiagTQueue <- withWorkerQueueSimple (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug) "sessionDiagTQueuet "
             liftIO $ f hiedb (ThreadQueue threadQueue sessionRestartTQueue sessionLoaderTQueue sessionDiagTQueue)
 
 -- | Runs the action until it ends or until the given MVar is put.
