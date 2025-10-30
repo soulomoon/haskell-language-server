@@ -556,7 +556,6 @@ cancellationTemplate (edit, undoEdit) mbKey = testCase (maybe "-" fst mbKey) $ r
       -- for the example above we expect one warning
       let missingSigDiags = [(DiagnosticSeverity_Warning, (3, 0), "Top-level binding", Just "GHC-38417") ]
       typeCheck doc
-      _ <- waitForDiagnosticsFrom doc
       expectCurrentDiagnostics doc missingSigDiags
 
       -- Now we edit the document and wait for the given key (if any)
@@ -569,7 +568,6 @@ cancellationTemplate (edit, undoEdit) mbKey = testCase (maybe "-" fst mbKey) $ r
       -- wait for typecheck and check that the current diagnostics are accurate
       changeDoc doc [undoEdit]
       typeCheck doc
-      _ <- waitForDiagnosticsFrom doc
       expectCurrentDiagnostics doc missingSigDiags
 
       expectNoMoreDiagnostics 0.5
@@ -584,3 +582,9 @@ cancellationTemplate (edit, undoEdit) mbKey = testCase (maybe "-" fst mbKey) $ r
         typeCheck doc = do
             WaitForIdeRuleResult {..} <- waitForAction "TypeCheck" doc
             liftIO $ assertBool "The file should typecheck" ideResultSuccess
+            diags <- getCurrentDiagnostics doc
+            when (null diags) $ void $ waitForDiagnosticsFrom doc
+            -- -- wait for the debouncer to publish diagnostics if the rule runs
+            -- liftIO $ sleep 0.5
+            -- -- flush messages to ensure current diagnostics state is updated
+            flushMessages
