@@ -1370,7 +1370,7 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                         actionCtx <- ask
                         return $ Just $ RunResult ChangedNothing old (A v)
                             $ do
-                                writeTaskQueue diagQueue $ flip runActionMonad actionCtx $ doDiagnostics (vfsVersion =<< ver) $ Vector.toList diags
+                                -- writeTaskQueue diagQueue $ flip runActionMonad actionCtx $ doDiagnostics (vfsVersion =<< ver) $ Vector.toList diags
                                 return ()
                     _ -> return Nothing
             _ ->
@@ -1496,7 +1496,6 @@ updateFileDiagnostics recorder fp ver k ShakeExtras{diagnostics, hiddenDiagnosti
         let uri' = filePathToUri' fp
         let delay = if null newDiags then 0.1 else 0
         registerEvent debouncer delay uri' $ withTrace ("report diagnostics " <> fromString (fromNormalizedFilePath fp)) $ \tag -> do
-        -- do
             join $ mask_ $ do
                 lastPublish <- atomicallyNamed "diagnostics - publish" $ STM.focus (Focus.lookupWithDefault [] <* Focus.insert newDiags) uri' publishedDiagnostics
                 let action = when (lastPublish /= newDiags) $ case lspEnv of
