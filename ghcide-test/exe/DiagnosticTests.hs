@@ -9,14 +9,12 @@ import           Control.Monad
 import           Control.Monad.IO.Class          (liftIO)
 import           Data.List.Extra
 import qualified Data.Text                       as T
-import           Development.IDE.GHC.Compat      (GhcVersion (..), ghcVersion)
 import           Development.IDE.GHC.Util
-import           Development.IDE.Test            (diagnostic,
-                                                  expectCurrentDiagnostics,
-                                                  expectDiagnostics,
+import           Development.IDE.Test            (diagnostic, expectDiagnostics,
                                                   expectDiagnosticsWithTags,
                                                   expectNoMoreDiagnostics,
-                                                  flushMessages, waitForAction)
+                                                  waitForAction,
+                                                  waitForActionWithExpectedDiagnosticsFromDocsOne)
 import           Development.IDE.Types.Location
 import qualified Language.LSP.Protocol.Lens      as L
 import           Language.LSP.Protocol.Message
@@ -28,17 +26,14 @@ import           Language.LSP.Protocol.Types     hiding
 import           Language.LSP.Test
 import           System.Directory
 import           System.FilePath
-import           System.IO.Extra                 hiding (withTempDir)
 
 import           Config
 import           Control.Lens                    ((^.))
 import           Control.Monad.Extra             (whenJust)
 import           Data.Default                    (def)
 import           Development.IDE.Plugin.Test     (WaitForIdeRuleResult (..))
-import           System.Time.Extra
-import           Test.Hls                        (TestConfig (testConfigCaps, testDirLocation, testDisableKick, testPluginDescriptor),
+import           Test.Hls                        (TestConfig (testDirLocation, testDisableKick, testPluginDescriptor),
                                                   runSessionWithTestConfig,
-                                                  waitForDiagnosticsFrom,
                                                   waitForProgressBegin)
 import           Test.Hls.FileSystem
 import           Test.Tasty
@@ -530,8 +525,8 @@ tests = testGroup "diagnostics"
 cancellationTestGroup :: TestName -> (TextDocumentContentChangeEvent, TextDocumentContentChangeEvent) -> Bool -> Bool -> Bool -> TestTree
 cancellationTestGroup name edits sessionDepsOutcome parseOutcome tcOutcome = testGroup name
     [
-        -- cancellationTemplate edits Nothing
-    cancellationTemplate edits $ Just ("GetFileContents", True)
+    cancellationTemplate edits Nothing
+    , cancellationTemplate edits $ Just ("GetFileContents", True)
     , cancellationTemplate edits $ Just ("GhcSession", True)
       -- the outcome for GetModSummary is always True because parseModuleHeader never fails (!)
     , cancellationTemplate edits $ Just ("GetModSummary", True)
@@ -554,9 +549,8 @@ cancellationTemplate (edit, undoEdit) mbKey = testCase (maybe "-" fst mbKey) $ r
             ]
 
       -- for the example above we expect one warning
-      let missingSigDiags = [(DiagnosticSeverity_Warning, (3, 0), "Top-level binding", Just "GHC-38417") ]
-      typeCheck doc
-      expectCurrentDiagnostics doc missingSigDiags
+      let missingSigDiags = (doc, [(DiagnosticSeverity_Warning, (3, 0), "Top-level binding", Just "GHC-38417")])
+      void $ waitForActionWithExpectedDiagnosticsFromDocsOne missingSigDiags (typeCheck doc)
 
       -- Now we edit the document and wait for the given key (if any)
       changeDoc doc [edit]
@@ -567,10 +561,8 @@ cancellationTemplate (edit, undoEdit) mbKey = testCase (maybe "-" fst mbKey) $ r
       -- The 2nd edit cancels the active session and unbreaks the file
       -- wait for typecheck and check that the current diagnostics are accurate
       changeDoc doc [undoEdit]
-      typeCheck doc
-      expectCurrentDiagnostics doc missingSigDiags
+      void $ waitForActionWithExpectedDiagnosticsFromDocsOne missingSigDiags (typeCheck doc)
 
-      expectNoMoreDiagnostics 0.5
     where
         runTestNoKick s =
             runSessionWithTestConfig def
@@ -582,9 +574,3 @@ cancellationTemplate (edit, undoEdit) mbKey = testCase (maybe "-" fst mbKey) $ r
         typeCheck doc = do
             WaitForIdeRuleResult {..} <- waitForAction "TypeCheck" doc
             liftIO $ assertBool "The file should typecheck" ideResultSuccess
-            diags <- getCurrentDiagnostics doc
-            when (null diags) $ void $ waitForDiagnosticsFrom doc
-            -- -- wait for the debouncer to publish diagnostics if the rule runs
-            -- liftIO $ sleep 0.5
-            -- -- flush messages to ensure current diagnostics state is updated
-            flushMessages

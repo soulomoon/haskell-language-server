@@ -33,7 +33,12 @@ module Development.IDE.Test
   , waitForGC
   , configureCheckProject
   , isReferenceReady
-  , referenceReady) where
+  , referenceReady
+  , waitForActionWithDiagnosticsFromDocs
+  , waitForActionWithExpectedDiagnosticsFromDocs
+  , waitForActionWithExpectedDiagnosticsFromDocsOne
+  , filePathTextDocumentIdentifier
+  , waitForActionWithExpectedDiagnosticsFromFilePath) where
 
 import           Control.Applicative.Combinators
 import           Control.Lens                    hiding (List)
@@ -62,6 +67,8 @@ import qualified Language.LSP.Test               as LspTest
 import           System.Directory                (canonicalizePath)
 import           System.FilePath                 (equalFilePath)
 import           System.Time.Extra
+import           Test.Hls                        (message,
+                                                  waitForDiagnosticsFrom)
 import           Test.Tasty.HUnit
 
 expectedDiagnosticWithNothing :: ExpectedDiagnostic -> ExpectedDiagnosticWithTag
@@ -126,7 +133,7 @@ expectDiagnostics
 unwrapDiagnostic :: TServerMessage Method_TextDocumentPublishDiagnostics  -> (Uri, [Diagnostic])
 unwrapDiagnostic diagsNot = (diagsNot^. L.params . L.uri, diagsNot^. L.params . L.diagnostics)
 
-expectDiagnosticsWithTags :: HasCallStack => [(String, [ExpectedDiagnosticWithTag])] -> Session ()
+expectDiagnosticsWithTags :: HasCallStack => [(FilePath, [ExpectedDiagnosticWithTag])] -> Session ()
 expectDiagnosticsWithTags expected = do
     let toSessionPath = getDocUri >=> liftIO . canonicalizeUri >=> pure . toNormalizedUri
         next = unwrapDiagnostic <$> skipManyTill anyMessage diagnostic
@@ -174,6 +181,41 @@ expectDiagnosticsWithTags' next expected = go expected
                     <> show actual
             go $ Map.delete canonUri m
 
+filePathTextDocumentIdentifier :: FilePath -> Session TextDocumentIdentifier
+filePathTextDocumentIdentifier fp =
+      TextDocumentIdentifier <$> getDocUri fp
+
+waitForActionWithExpectedDiagnosticsFromFilePath :: [(FilePath, [ExpectedDiagnostic])] -> Session b -> Session b
+waitForActionWithExpectedDiagnosticsFromFilePath xs sec = do
+     res <- forM xs $ \(fp, ed) ->  do
+        tdi <-filePathTextDocumentIdentifier fp
+        return (tdi, ed)
+     waitForActionWithExpectedDiagnosticsFromDocs res sec
+
+
+waitForActionWithExpectedDiagnosticsFromDocsOne :: HasCallStack => (TextDocumentIdentifier, [ExpectedDiagnostic]) -> Session b -> Session b
+waitForActionWithExpectedDiagnosticsFromDocsOne x = waitForActionWithExpectedDiagnosticsFromDocs [x]
+
+waitForActionWithExpectedDiagnosticsFromDocs :: HasCallStack => [(TextDocumentIdentifier, [ExpectedDiagnostic])] -> Session b -> Session b
+waitForActionWithExpectedDiagnosticsFromDocs expected action = do
+    (result, docDiags) <- waitForActionWithDiagnosticsFromDocs (map fst expected) action
+    forM_ (zip expected docDiags) $ \((doc, exDiags), diags) -> do
+        checkDiagnosticsForDoc doc exDiags diags
+    return result
+
+waitForActionWithDiagnosticsFromDocs :: HasCallStack => [TextDocumentIdentifier] -> Session a -> Session (a, [([Diagnostic])])
+waitForActionWithDiagnosticsFromDocs docs action = do
+    result <- action
+    docDiags <- mapM getOrWait docs
+    return (result, docDiags)
+    where
+        getOrWait doc = do
+            diags <- getCurrentDiagnostics doc
+            when (null diags) $ void $ waitForDiagnosticsFrom doc
+            flushMessages
+            getCurrentDiagnostics doc
+
+
 expectCurrentDiagnostics :: HasCallStack => TextDocumentIdentifier -> [ExpectedDiagnostic] -> Session ()
 expectCurrentDiagnostics doc expected = do
     diags <- getCurrentDiagnostics doc
@@ -190,6 +232,25 @@ canonicalizeUri uri = filePathToUri <$> canonicalizePath (fromJust (uriToFilePat
 
 diagnostic :: Session (TNotificationMessage Method_TextDocumentPublishDiagnostics)
 diagnostic = LspTest.message SMethod_TextDocumentPublishDiagnostics
+
+-- -- tryCallTestPlugin1 :: (A.FromJSON b) => TestRequest -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) b)
+-- tryCallTestPluginWithDiag :: (A.ToJSON a, A.FromJSON b)
+--     => a -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) b, [TNotificationMessage Method_TextDocumentPublishDiagnostics])
+-- tryCallTestPluginWithDiag cmd = do
+--     let cm = SMethod_CustomMethod (Proxy @"test")
+--     waitId <- sendRequest cm (A.toJSON cmd)
+--     let go acc = do
+--             res <- skipManyTill anyMessage $ do
+--                 (fmap Right (responseForId cm waitId) <|> fmap Left (message SMethod_TextDocumentPublishDiagnostics))
+--             case res of
+--                             Right TResponseMessage{_result} -> return (_result, acc)
+--                             Left a -> go (a:acc)
+--     (_result, diagsNots) <- go []
+--     return $ (case _result of
+--          Left e -> Left e
+--          Right json -> case A.fromJSON json of
+--              A.Success a -> Right a
+--              A.Error e   -> error e, diagsNots)
 
 tryCallTestPlugin :: (A.FromJSON b) => TestRequest -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) b)
 tryCallTestPlugin cmd = do
