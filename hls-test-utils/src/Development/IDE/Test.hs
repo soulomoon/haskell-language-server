@@ -38,7 +38,8 @@ module Development.IDE.Test
   , waitForActionWithExpectedDiagnosticsFromDocs
   , waitForActionWithExpectedDiagnosticsFromDocsOne
   , filePathTextDocumentIdentifier
-  , waitForActionWithExpectedDiagnosticsFromFilePath) where
+  , waitForActionWithExpectedDiagnosticsFromFilePath
+  , waitForActionWithDiagnosticsFromDocsOne) where
 
 import           Control.Applicative.Combinators
 import           Control.Lens                    hiding (List)
@@ -141,10 +142,10 @@ expectDiagnosticsWithTags expected = do
     expectDiagnosticsWithTags' next expected'
 
 expectDiagnosticsWithTags' ::
-  (HasCallStack, MonadIO m) =>
-  m (Uri, [Diagnostic]) ->
+  HasCallStack =>
+  Session (Uri, [Diagnostic]) ->
   Map.Map NormalizedUri [ExpectedDiagnosticWithTag] ->
-  m ()
+  Session ()
 expectDiagnosticsWithTags' next m | null m = do
     (_,actual) <- next
     case actual of
@@ -183,38 +184,41 @@ expectDiagnosticsWithTags' next expected = go expected
 
 filePathTextDocumentIdentifier :: FilePath -> Session TextDocumentIdentifier
 filePathTextDocumentIdentifier fp =
-      TextDocumentIdentifier <$> getDocUri fp
+  TextDocumentIdentifier <$> getDocUri fp
 
-waitForActionWithExpectedDiagnosticsFromFilePath :: [(FilePath, [ExpectedDiagnostic])] -> Session b -> Session b
+waitForActionWithExpectedDiagnosticsFromFilePath :: (HasCallStack) => [(FilePath, [ExpectedDiagnostic])] -> Session b -> Session b
 waitForActionWithExpectedDiagnosticsFromFilePath xs sec = do
-     res <- forM xs $ \(fp, ed) ->  do
-        tdi <-filePathTextDocumentIdentifier fp
-        return (tdi, ed)
-     waitForActionWithExpectedDiagnosticsFromDocs res sec
+  res <- forM xs $ \(fp, ed) -> do
+    tdi <- filePathTextDocumentIdentifier fp
+    return (tdi, ed)
+  waitForActionWithExpectedDiagnosticsFromDocs True res sec
 
+waitForActionWithExpectedDiagnosticsFromDocsOne :: (HasCallStack) => (TextDocumentIdentifier, [ExpectedDiagnostic]) -> Session b -> Session b
+waitForActionWithExpectedDiagnosticsFromDocsOne x = waitForActionWithExpectedDiagnosticsFromDocs False [x]
 
-waitForActionWithExpectedDiagnosticsFromDocsOne :: HasCallStack => (TextDocumentIdentifier, [ExpectedDiagnostic]) -> Session b -> Session b
-waitForActionWithExpectedDiagnosticsFromDocsOne x = waitForActionWithExpectedDiagnosticsFromDocs [x]
+waitForActionWithExpectedDiagnosticsFromDocs :: (HasCallStack) => Bool -> [(TextDocumentIdentifier, [ExpectedDiagnostic])] -> Session b -> Session b
+waitForActionWithExpectedDiagnosticsFromDocs waitFirst expected action = do
+  (result, docDiags) <- waitForActionWithDiagnosticsFromDocs waitFirst (map fst expected) action
+  forM_ (zip expected docDiags) $ \((doc, exDiags), diags) -> do
+    checkDiagnosticsForDoc doc exDiags diags
+  return result
 
-waitForActionWithExpectedDiagnosticsFromDocs :: HasCallStack => [(TextDocumentIdentifier, [ExpectedDiagnostic])] -> Session b -> Session b
-waitForActionWithExpectedDiagnosticsFromDocs expected action = do
-    (result, docDiags) <- waitForActionWithDiagnosticsFromDocs (map fst expected) action
-    forM_ (zip expected docDiags) $ \((doc, exDiags), diags) -> do
-        checkDiagnosticsForDoc doc exDiags diags
-    return result
+waitForActionWithDiagnosticsFromDocsOne :: (HasCallStack) => Bool -> TextDocumentIdentifier -> Session b -> Session (b, [Diagnostic])
+waitForActionWithDiagnosticsFromDocsOne waitFirst doc action =
+  waitForActionWithDiagnosticsFromDocs waitFirst [doc] action >>= \(res, diagsList) ->
+    return (res, head diagsList)
 
-waitForActionWithDiagnosticsFromDocs :: HasCallStack => [TextDocumentIdentifier] -> Session a -> Session (a, [([Diagnostic])])
-waitForActionWithDiagnosticsFromDocs docs action = do
-    result <- action
-    docDiags <- mapM getOrWait docs
-    return (result, docDiags)
-    where
-        getOrWait doc = do
-            diags <- getCurrentDiagnostics doc
-            when (null diags) $ void $ waitForDiagnosticsFrom doc
-            flushMessages
-            getCurrentDiagnostics doc
-
+waitForActionWithDiagnosticsFromDocs :: (HasCallStack) => Bool -> [TextDocumentIdentifier] -> Session a -> Session (a, [([Diagnostic])])
+waitForActionWithDiagnosticsFromDocs waitFirst docs action = do
+  result <- action
+  docDiags <- mapM getOrWait docs
+  return (result, docDiags)
+  where
+    getOrWait doc = do
+      diags <- getCurrentDiagnostics doc
+      when (null diags || waitFirst) $ void $ waitForDiagnosticsFrom doc
+      flushMessages
+      getCurrentDiagnostics doc
 
 expectCurrentDiagnostics :: HasCallStack => TextDocumentIdentifier -> [ExpectedDiagnostic] -> Session ()
 expectCurrentDiagnostics doc expected = do
