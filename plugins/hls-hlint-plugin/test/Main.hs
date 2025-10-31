@@ -4,7 +4,7 @@
 {-# LANGUAGE RecordWildCards   #-}
 module Main
   ( main
-  , captureHlintDiagnostics) where
+  , captureDiagnostics) where
 
 import           Control.Lens               ((^.))
 import           Control.Monad              (guard, when)
@@ -15,7 +15,8 @@ import qualified Data.Map                   as Map
 import           Data.Maybe                 (fromJust, isJust)
 import           Data.Proxy                 (Proxy (Proxy))
 import qualified Data.Text                  as T
-import           Development.IDE.Test       (waitForActionWithDiagnosticsFromDocsOne)
+import           Development.IDE.Test       (captureDiagnostics,
+                                             waitForActionWithDiagnosticsFromDocsOne)
 import           Ide.Plugin.Config          (Config (..))
 import qualified Ide.Plugin.Config          as Plugin
 import qualified Ide.Plugin.Hlint           as HLint
@@ -86,7 +87,7 @@ suggestionsTests =
   testGroup "hlint suggestions" [
     knownBrokenForGhcVersions [GHC910] "apply-refact doesn't work on 9.10" $ testCase "provides 3.8 code actions including apply all" $ runHlintSession "" $ do
         doc <- openDoc "Base.hs" "haskell"
-        diags@(reduceDiag:_) <- captureHlintDiagnostics doc
+        diags@(reduceDiag:_) <- captureDiagnostics doc
 
         liftIO $ do
             length diags @?= 2 -- "Eta Reduce" and "Redundant Id"
@@ -124,7 +125,7 @@ suggestionsTests =
             , testShiftRoot = True} $ const $ do
         doc <- openDoc "Base.hs" "haskell"
 
-        _ <- captureHlintDiagnostics doc
+        _ <- captureDiagnostics doc
 
         cars <- getAllCodeActions doc
         etaReduce <- liftIO $ inspectCommand cars ["Eta reduce"]
@@ -217,7 +218,7 @@ suggestionsTests =
 
     , testCase "applyAll is shown only when there is at least one diagnostic in range" $  runHlintSession "" $ do
         doc <- openDoc "TwoHints.hs" "haskell"
-        _ <- captureHlintDiagnostics doc
+        _ <- captureDiagnostics doc
 
         firstLine <- map fromAction <$> getCodeActions doc (mkRange 0 0 0 0)
         secondLine <- map fromAction <$> getCodeActions doc (mkRange 1 0 1 0)
@@ -233,7 +234,7 @@ suggestionsTests =
 
     , testCase "hlint should warn about unused extensions" $ runHlintSession "unusedext" $ do
         doc <- openDoc "UnusedExtension.hs" "haskell"
-        diags@(unusedExt:_) <- captureHlintDiagnostics doc
+        diags@(unusedExt:_) <- captureDiagnostics doc
 
         liftIO $ do
             length diags @?= 1
@@ -335,7 +336,7 @@ configTests = testGroup "hlint plugin config" [
         let config' = hlintConfigWithFlags ["--with-group=generalise"]
         setHlsConfig config'
 
-        diags' <- captureHlintDiagnostics doc
+        diags' <- captureDiagnostics doc
         d <- liftIO $ inspectDiagnostic diags' ["Use <>"]
 
         liftIO $ do
@@ -373,11 +374,6 @@ noHlintDiagnostics diags =
 isHlintDiagnostic :: Diagnostic -> Bool
 isHlintDiagnostic diag =
     Just "hlint" == diag ^. L.source
-
-captureHlintDiagnostics :: HasCallStack => TextDocumentIdentifier -> Session [Diagnostic]
-captureHlintDiagnostics doc = do
-    (_,diags) <- waitForActionWithDiagnosticsFromDocsOne True doc $ return ()
-    return diags
 
 testHlintDiagnostics :: HasCallStack => TextDocumentIdentifier -> Session ()
 testHlintDiagnostics doc = do
@@ -457,7 +453,7 @@ goldenTest :: TestName -> FilePath -> Point -> T.Text -> TestTree
 goldenTest testCaseName goldenFilename point hintText =
   setupGoldenHlintTest testCaseName goldenFilename codeActionNoResolveCaps $ \document -> do
     _ <- hlintCaptureKick
-    _ <- captureHlintDiagnostics document
+    _ <- captureDiagnostics document
     actions <- getCodeActions document $ pointToRange point
     case find ((== Just hintText) . getCodeActionTitle) actions of
       Just (InR codeAction) -> do
@@ -489,7 +485,7 @@ goldenResolveTest :: TestName -> FilePath -> Point -> T.Text -> TestTree
 goldenResolveTest testCaseName goldenFilename point hintText =
   setupGoldenHlintTest testCaseName goldenFilename codeActionResolveCaps $ \document -> do
     _ <- hlintCaptureKick
-    _ <- captureHlintDiagnostics document
+    _ <- captureDiagnostics document
     actions <- getAndResolveCodeActions document $ pointToRange point
     case find ((== Just hintText) . getCodeActionTitle) actions of
       Just (InR codeAction) -> executeCodeAction codeAction

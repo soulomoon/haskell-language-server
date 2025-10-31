@@ -39,7 +39,8 @@ module Development.IDE.Test
   , waitForActionWithExpectedDiagnosticsFromDocsOne
   , filePathTextDocumentIdentifier
   , waitForActionWithExpectedDiagnosticsFromFilePath
-  , waitForActionWithDiagnosticsFromDocsOne) where
+  , waitForActionWithDiagnosticsFromDocsOne
+  , captureDiagnostics) where
 
 import           Control.Applicative.Combinators
 import           Control.Lens                    hiding (List)
@@ -202,6 +203,11 @@ waitForActionWithExpectedDiagnosticsFromDocs waitFirst expected action = do
   forM_ (zip expected docDiags) $ \((doc, exDiags), diags) -> do
     checkDiagnosticsForDoc doc exDiags diags
   return result
+
+captureDiagnostics :: HasCallStack => TextDocumentIdentifier -> Session [Diagnostic]
+captureDiagnostics doc = do
+    (_,diags) <- waitForActionWithDiagnosticsFromDocsOne True doc $ return ()
+    return diags
 
 waitForActionWithDiagnosticsFromDocsOne :: (HasCallStack) => Bool -> TextDocumentIdentifier -> Session b -> Session (b, [Diagnostic])
 waitForActionWithDiagnosticsFromDocsOne waitFirst doc action =
