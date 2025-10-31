@@ -4029,7 +4029,7 @@ testSessionWithExtraFiles :: HasCallStack => FilePath -> TestName -> (FilePath -
 testSessionWithExtraFiles prefix name = testCase name . runWithExtraFiles prefix
 
 runWithExtraFiles :: HasCallStack => FilePath -> (FilePath -> Session a) -> IO a
-runWithExtraFiles prefix s = 
+runWithExtraFiles prefix s =
     runSessionWithTestConfig def
         { testDirLocation = Right $ mkVirtualFileTreeWithPrefix prefix
         , testPluginDescriptor = refactorPlugin
