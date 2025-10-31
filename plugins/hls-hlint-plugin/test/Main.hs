@@ -453,7 +453,7 @@ goldenTest :: TestName -> FilePath -> Point -> T.Text -> TestTree
 goldenTest testCaseName goldenFilename point hintText =
   setupGoldenHlintTest testCaseName goldenFilename codeActionNoResolveCaps $ \document -> do
     _ <- hlintCaptureKick
-    _ <- captureDiagnostics document
+    (_,_diags) <- waitForActionWithDiagnosticsFromDocsOne False document $ return ()
     actions <- getCodeActions document $ pointToRange point
     case find ((== Just hintText) . getCodeActionTitle) actions of
       Just (InR codeAction) -> do
@@ -485,7 +485,7 @@ goldenResolveTest :: TestName -> FilePath -> Point -> T.Text -> TestTree
 goldenResolveTest testCaseName goldenFilename point hintText =
   setupGoldenHlintTest testCaseName goldenFilename codeActionResolveCaps $ \document -> do
     _ <- hlintCaptureKick
-    _ <- captureDiagnostics document
+    (_,_diags) <- waitForActionWithDiagnosticsFromDocsOne False document $ return ()
     actions <- getAndResolveCodeActions document $ pointToRange point
     case find ((== Just hintText) . getCodeActionTitle) actions of
       Just (InR codeAction) -> executeCodeAction codeAction
