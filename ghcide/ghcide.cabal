@@ -143,7 +143,6 @@ library
     Development.IDE.Core.Shake
     Development.IDE.Core.Tracing
     Development.IDE.Core.UseStale
-    Development.IDE.Core.WorkerThread
     Development.IDE.GHC.Compat
     Development.IDE.GHC.Compat.Core
     Development.IDE.GHC.Compat.CmdLine
@@ -180,7 +179,9 @@ library
     Development.IDE.Plugin.Test
     Development.IDE.Plugin.TypeLenses
     Development.IDE.Session
+    Development.IDE.Session.Dependency
     Development.IDE.Session.Diagnostics
+    Development.IDE.Session.Ghc
     Development.IDE.Session.Implicit
     Development.IDE.Spans.AtPoint
     Development.IDE.Spans.Common
@@ -195,6 +196,7 @@ library
     Development.IDE.Types.Monitoring
     Development.IDE.Types.Options
     Development.IDE.Types.Shake
+    Development.IDE.Types.Action
     Generics.SYB.GHC
     Text.Fuzzy.Parallel
     Text.Fuzzy.Levenshtein
@@ -203,7 +205,7 @@ library
     Development.IDE.Core.FileExists
     Development.IDE.GHC.CPP
     Development.IDE.GHC.Warnings
-    Development.IDE.Types.Action
+    Development.IDE.Session.OrderedSet
 
   if flag(pedantic)
     ghc-options:
