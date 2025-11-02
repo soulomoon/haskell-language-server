@@ -4036,13 +4036,16 @@ runWithExtraFiles prefix s =
         , testConfigCaps = lspTestCaps }
         s
 
+testDataDir :: FilePath
+testDataDir = "plugins/hls-refactor-plugin/test/data"
+
 mkVirtualFileTreeWithPrefix :: FilePath -> FS.VirtualFileTree
 mkVirtualFileTreeWithPrefix prefix =
-    FS.mkVirtualFileTree ("plugins/hls-refactor-plugin/test/data") [FS.copyDir prefix]
+    FS.mkVirtualFileTree testDataDir [FS.copyDir prefix]
 
 run :: Session a -> IO a
 run s = runSessionWithTestConfig def
-    { testDirLocation = Right $ FS.mkVirtualFileTree "" []
+    { testDirLocation = Right $ FS.mkVirtualFileTree testDataDir []
     , testPluginDescriptor = refactorPlugin
     , testConfigCaps = lspTestCaps }
     (const s)
