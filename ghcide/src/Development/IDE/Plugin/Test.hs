@@ -66,6 +66,7 @@ data TestRequest
     | GetStoredKeys                  -- ^ :: [String] (list of keys in store)
     | GetFilesOfInterest             -- ^ :: [FilePath]
     | GetRebuildsCount               -- ^ :: Int (number of times we recompiled with GHC)
+    | WaitForDiagnosticPublished
     deriving Generic
     deriving anyclass (FromJSON, ToJSON)
 
@@ -133,6 +134,11 @@ testRequestHandler s GetFilesOfInterest = do
 testRequestHandler s GetRebuildsCount = do
     count <- liftIO $ runAction "get build count" s getRebuildCount
     return $ Right $ toJSON count
+testRequestHandler s WaitForDiagnosticPublished = do
+    liftIO $ runAction "wait for diagnostics published" s $ do
+        se <- getShakeExtras
+        liftIO $ waitUntilDiagnosticsPublished se
+    return $ Right A.Null
 
 getDatabaseKeys :: (Graph.Result -> Step)
     -> ShakeDatabase

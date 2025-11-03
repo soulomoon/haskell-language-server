@@ -146,31 +146,25 @@ doKick = do
 kick :: Action ()
 kick = do
     files <- HashMap.keys <$> getFilesOfInterestUntracked
-    ShakeExtras{exportsMap, ideTesting = IdeTesting testing, lspEnv, progress} <- getShakeExtras
-    let signal :: KnownSymbol s => Proxy s -> Action ()
-        signal msg = when testing $ liftIO $
-            mRunLspT lspEnv $
-                LSP.sendNotification (LSP.SMethod_CustomMethod msg) $
-                toJSON $ map fromNormalizedFilePath files
+    ShakeExtras{exportsMap, progress} <- getShakeExtras
 
-    signal (Proxy @"kick/start")
-    liftIO $ progressUpdate progress ProgressNewStarted
+    runWithSignalAction (Proxy @"kick/start") (Proxy @"kick/done") files $ do
+        liftIO $ progressUpdate progress ProgressNewStarted
 
-    -- Update the exports map
-    results <- uses GenerateCore files
-            <* uses GetHieAst files
-            -- needed to have non local completions on the first edit
-            -- when the first edit breaks the module header
-            <* uses NonLocalCompletions files
-    let mguts = catMaybes results
-    void $ liftIO $ atomically $ modifyTVar' exportsMap (updateExportsMapMg mguts)
+        -- Update the exports map
+        results <- uses GenerateCore files
+                <* uses GetHieAst files
+                -- needed to have non local completions on the first edit
+                -- when the first edit breaks the module header
+                <* uses NonLocalCompletions files
+        let mguts = catMaybes results
+        void $ liftIO $ atomically $ modifyTVar' exportsMap (updateExportsMapMg mguts)
 
-    liftIO $ progressUpdate progress ProgressCompleted
+        liftIO $ progressUpdate progress ProgressCompleted
 
-    GarbageCollectVar var <- getIdeGlobalAction
-    garbageCollectionScheduled <- liftIO $ readVar var
-    when garbageCollectionScheduled $ do
-        void garbageCollectDirtyKeys
-        liftIO $ writeVar var False
+        GarbageCollectVar var <- getIdeGlobalAction
+        garbageCollectionScheduled <- liftIO $ readVar var
+        when garbageCollectionScheduled $ do
+            void garbageCollectDirtyKeys
+            liftIO $ writeVar var False
 
-    signal (Proxy @"kick/done")

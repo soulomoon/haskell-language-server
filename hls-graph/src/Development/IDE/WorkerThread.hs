@@ -70,9 +70,9 @@ Like the db writes, session loading in session loader, shake session restarts.
 Originally we used various ways to implement this, but it was hard to maintain and error prone.
 Moreover, we can not stop these threads uniformly when we are shutting down the server.
 -}
-data TaskQueue a = TaskQueue (TQueue a)
+data TaskQueue a = TaskQueue (TQueue a) (TVar Int)
 newTaskQueueIO :: IO (TaskQueue a)
-newTaskQueueIO = TaskQueue <$> newTQueueIO
+newTaskQueueIO = TaskQueue <$> newTQueueIO <*> newTVarIO 0
 data ExitOrTask t = Exit | Task t
 type Logger = LogWorkerThread -> IO ()
 
@@ -110,7 +110,7 @@ withWorkersQueue n log title workerAction = ContT $ \mainAction -> do
   log (LogThreadEnded title)
   where
     -- writerThread :: TaskQueue t -> TMVar () -> (forall a. IO a -> IO a) -> IO ()
-    writerThread q b =
+    writerThread q@(TaskQueue _ c) b =
       -- See above: check stop flag before dequeuing, exit if set, otherwise run next job.
       do
         task <- atomically $ do
@@ -118,7 +118,7 @@ withWorkersQueue n log title workerAction = ContT $ \mainAction -> do
           isEm <- isEmptyTMVar b
           case (isEm, task) of
             (False, _)   -> return Exit -- stop flag set, exit
-            (_, Just t)  -> return $ Task t -- got a task, run it
+            (_, Just t)  -> incraseCounter c >> return (Task t) -- got a task, run it
             (_, Nothing) -> retry -- no task, wait
         case task of
           Exit -> return ()
@@ -126,6 +126,7 @@ withWorkersQueue n log title workerAction = ContT $ \mainAction -> do
                 log $ LogSingleWorkStarting title
                 workerAction t
                 log $ LogSingleWorkEnded title
+                decreaseCounter c
                 writerThread q b
 
 withAsyncs :: [IO ()] -> IO () -> IO ()
@@ -157,8 +158,13 @@ eitherWorker w1 w2 = \case
   Left a  -> w1 a
   Right b -> w2 b
 
+-- incraseCounter :: TVar Int -> STM ()
+incraseCounter counter = modifyTVar' counter (+1)
+decreaseCounter counter = atomically $ modifyTVar' counter (\x -> x -1)
+
+
 awaitRunInThread :: TaskQueue (Either Dynamic (IO ())) -> IO result -> IO result
-awaitRunInThread (TaskQueue q) act = do
+awaitRunInThread (TaskQueue q counter) act = do
   barrier <- newEmptyTMVarIO
   -- Take an action from TQueue, run it and
   -- use barrier to wait for the result
@@ -171,32 +177,37 @@ awaitRunInThread (TaskQueue q) act = do
 
 -- submitWork without waiting for the result
 submitWork :: TaskQueue arg -> arg -> IO ()
-submitWork (TaskQueue q) arg = atomically $ writeTQueue q arg
+submitWork (TaskQueue q counter) arg = atomically $ writeTQueue q arg
 
 -- submit work at the head of the queue, so it will be executed next
 submitWorkAtHead :: TaskQueue arg -> arg -> IO ()
-submitWorkAtHead (TaskQueue q) arg = do
+submitWorkAtHead (TaskQueue q counter) arg = do
   atomically $ unGetTQueue q arg
 
 writeTaskQueue :: TaskQueue a -> a -> STM ()
-writeTaskQueue (TaskQueue q) = writeTQueue q
+writeTaskQueue (TaskQueue q counter) = writeTQueue q
 
 tryReadTaskQueue :: TaskQueue a -> STM (Maybe a)
-tryReadTaskQueue (TaskQueue q) = tryReadTQueue q
+tryReadTaskQueue (TaskQueue q counter) = tryReadTQueue q
 
 isEmptyTaskQueue :: TaskQueue a -> STM Bool
-isEmptyTaskQueue (TaskQueue q) = isEmptyTQueue q
+isEmptyTaskQueue (TaskQueue q counter) = (liftA2 (&&)) (isEmptyTQueue q) (isEmptyCounter (TaskQueue q counter))
+
+isEmptyCounter :: TaskQueue a -> STM Bool
+isEmptyCounter (TaskQueue q counter) = do
+    cnt <- readTVar counter
+    return $ cnt == 0
 
 -- look and count the number of items in the queue
 -- do not remove them
 counTaskQueue :: TaskQueue a -> STM Int
-counTaskQueue (TaskQueue q) = do
+counTaskQueue (TaskQueue q counter) = do
     xs <- flushTQueue q
     mapM_ (unGetTQueue q) (reverse xs)
     return $ length xs
 
 readTaskQueue :: TaskQueue a -> STM a
-readTaskQueue (TaskQueue q) = readTQueue q
+readTaskQueue (TaskQueue q counter) = readTQueue q
 
 flushTaskQueue :: TaskQueue a -> STM [a]
-flushTaskQueue (TaskQueue q) = flushTQueue q
+flushTaskQueue (TaskQueue q counter) = flushTQueue q

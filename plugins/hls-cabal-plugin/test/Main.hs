@@ -110,16 +110,16 @@ pluginTests =
         [ testGroup
             "Diagnostics"
             [ runCabalTestCaseSession "Publishes Diagnostics on Error" "" $ do
-                doc <- openDoc "invalid.cabal" "cabal"
-                diags <- cabalCaptureKick doc
+                _ <- openDoc "invalid.cabal" "cabal"
+                diags <- cabalCaptureKick
                 unknownLicenseDiag <- liftIO $ inspectDiagnostic diags ["Unknown SPDX license identifier: 'BSD3'"]
                 liftIO $ do
                     length diags @?= 1
                     unknownLicenseDiag ^. L.range @?= Range (Position 3 24) (Position 4 0)
                     unknownLicenseDiag ^. L.severity @?= Just DiagnosticSeverity_Error
             ,   runCabalTestCaseSession "Publishes Diagnostics on unsupported cabal version as Warning" "" $ do
-                doc <- openDoc "unsupportedVersion.cabal" "cabal"
-                diags <- cabalCaptureKick doc
+                _ <- openDoc "unsupportedVersion.cabal" "cabal"
+                diags <- cabalCaptureKick
                 unknownVersionDiag <- liftIO $ inspectDiagnosticAny diags ["Unsupported cabal-version 99999.0", "Unsupported cabal format version in cabal-version field: 99999.0"]
                 liftIO $ do
                     length diags @?= 1
@@ -127,14 +127,14 @@ pluginTests =
                     unknownVersionDiag ^. L.severity @?= Just DiagnosticSeverity_Warning
             , runCabalTestCaseSession "Clears diagnostics" "" $ do
                 doc <- openDoc "invalid.cabal" "cabal"
-                diags <- cabalCaptureKick doc
+                diags <- cabalCaptureKick
                 unknownLicenseDiag <- liftIO $ inspectDiagnostic diags ["Unknown SPDX license identifier: 'BSD3'"]
                 liftIO $ do
                     length diags @?= 1
                     unknownLicenseDiag ^. L.range @?= Range (Position 3 24) (Position 4 0)
                     unknownLicenseDiag ^. L.severity @?= Just DiagnosticSeverity_Error
                 _ <- applyEdit doc $ TextEdit (Range (Position 3 20) (Position 4 0)) "BSD-3-Clause\n"
-                newDiags <- cabalCaptureKick doc
+                newDiags <- cabalCaptureKick
                 liftIO $ newDiags @?= []
             ]
         ]

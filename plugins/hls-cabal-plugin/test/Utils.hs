@@ -4,11 +4,10 @@
 
 module Utils where
 
-import           Control.Monad                     (guard, void)
+import           Control.Monad                     (guard)
 import           Data.List                         (sort)
 import           Data.Proxy                        (Proxy (Proxy))
 import qualified Data.Text                         as T
-import           Development.IDE.Test              (captureDiagnostics)
 import           Ide.Plugin.Cabal                  (descriptor,
                                                     haskellInteractionDescriptor)
 import qualified Ide.Plugin.Cabal
@@ -85,10 +84,8 @@ cabalKickDone = kick (Proxy @"kick/done/cabal") >>= guard . not . null
 cabalKickStart :: Session ()
 cabalKickStart = kick (Proxy @"kick/start/cabal") >>= guard . not . null
 
-cabalCaptureKick :: TextDocumentIdentifier -> Session [Diagnostic]
-cabalCaptureKick doc = do
-    void $ captureKickDiagnostics cabalKickStart cabalKickDone
-    captureDiagnostics doc
+cabalCaptureKick :: Session [Diagnostic]
+cabalCaptureKick = captureKickDiagnostics cabalKickStart cabalKickDone
 
 -- | list comparison where the order in the list is irrelevant
 (@?==) :: (HasCallStack, Ord a, Show a) => [a] -> [a] -> Assertion
