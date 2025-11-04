@@ -14,14 +14,16 @@ import           Completer                       (completerTests)
 import           Context                         (contextTests)
 import           Control.Lens                    ((^.))
 import           Control.Lens.Fold               ((^?))
-import           Control.Monad                   (forM_, guard)
+import           Control.Monad                   (forM, guard, void)
 import qualified Data.ByteString                 as BS
 import           Data.Either                     (isRight)
+import           Data.Maybe                      (catMaybes)
 import qualified Data.Maybe                      as Maybe
 import           Data.Text                       (Text)
 import qualified Data.Text                       as T
 import qualified Data.Text.IO                    as Text
 import           Definition                      (gotoDefinitionTests)
+import           Development.IDE.Plugin.Test     (TestRequest (WaitForDiagnosticPublished))
 import           Development.IDE.Test
 import           Ide.Plugin.Cabal.LicenseSuggest (licenseErrorSuggestion)
 import qualified Ide.Plugin.Cabal.Parse          as Lib
@@ -207,13 +209,19 @@ codeActionTests = testGroup "Code Actions"
   where
     executeFirstActionPerDiagnostic doc = do
       _ <- waitForDiagnosticsFrom doc
+      void $ callTestPluginWithDiag WaitForDiagnosticPublished
       diagnotics <- getCurrentDiagnostics doc
       -- Execute the first code action at each diagnostic point
-      forM_ diagnotics $ \diagnostic -> do
+      !cas <- catMaybes <$> forM diagnotics (\diagnostic -> do
         codeActions <- getCodeActions doc (diagnostic ^. range)
         case codeActions of
-          []     -> pure ()
-          ca : _ -> mapM_ executeCodeAction (ca ^? _R)
+          []     -> pure Nothing
+          ca : _ -> do
+            return (ca ^? _R))
+      mapM_ executeCodeAction cas
+      if cas == []
+        then pure ()
+        else executeFirstActionPerDiagnostic doc
     getLicenseAction :: T.Text -> [Command |? CodeAction] -> [CodeAction]
     getLicenseAction license codeActions = do
         InR action@CodeAction{_title} <- codeActions
