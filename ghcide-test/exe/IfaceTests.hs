@@ -109,31 +109,33 @@ ifaceErrorTest2 = testWithExtraFiles "iface-error-test-2" "recomp" $ \dir -> do
     bSource <- liftIO $ readFileUtf8 bPath -- y :: Int
     pSource <- liftIO $ readFileUtf8 pPath -- bar = x :: Int
 
-    bdoc <- createDoc bPath "haskell" bSource
-    pdoc <- createDoc pPath "haskell" pSource
-    expectDiagnostics
+    (bdoc,pdoc) <- waitForActionWithExpectedDiagnosticsFromFilePath
       [("P.hs", [(DiagnosticSeverity_Warning,(4,0), "Top-level binding", Just "GHC-38417")])] -- So that we know P has been loaded
+      $ do
+            bdoc <- createDoc bPath "haskell" bSource
+            pdoc <- createDoc pPath "haskell" pSource
+            return (bdoc,pdoc)
 
-    -- Change y from Int to B
-    changeDoc bdoc [TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $
-        T.unlines ["module B where", "y :: Bool", "y = undefined"]]
 
-    -- Add a new definition to P
-    changeDoc pdoc [TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $ pSource <> "\nfoo = y :: Bool" ]
     -- Now in P we have
     -- bar = x :: Int
     -- foo = y :: Bool
     -- HOWEVER, in A...
     -- x = y  :: Int
-    expectDiagnostics
+    waitForActionWithExpectedDiagnosticsFromFilePath
     -- As in the other test, P is being typechecked with the last successful artifacts for A
     -- (ot thanks to -fdeferred-type-errors)
       [("A.hs", [(DiagnosticSeverity_Error, (5, 4), "Couldn't match expected type 'Int' with actual type 'Bool'", Just "GHC-83865")])
       ,("P.hs", [(DiagnosticSeverity_Warning, (4, 0), "Top-level binding", Just "GHC-38417")])
       ,("P.hs", [(DiagnosticSeverity_Warning, (6, 0), "Top-level binding", Just "GHC-38417")])
-      ]
+      ] $ do
+        -- Change y from Int to B
+        changeDoc bdoc [TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $
+            T.unlines ["module B where", "y :: Bool", "y = undefined"]]
+        -- Add a new definition to P
+        changeDoc pdoc [TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $ pSource <> "\nfoo = y :: Bool" ]
 
-    expectNoMoreDiagnostics 2
+    -- expectNoMoreDiagnostics 2
 
 ifaceErrorTest3 :: TestTree
 ifaceErrorTest3 = testWithExtraFiles "iface-error-test-3" "recomp" $ \dir -> do

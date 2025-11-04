@@ -16,7 +16,8 @@ import           Development.IDE.Test            (callTestPluginWithDiag,
                                                   expectNoMoreDiagnostics,
                                                   waitForAction,
                                                   waitForActionWithDiagnosticsFromDocs,
-                                                  waitForActionWithExpectedDiagnosticsFromDocsOne)
+                                                  waitForActionWithExpectedDiagnosticsFromDocsOne,
+                                                  waitForActionWithExpectedDiagnosticsFromFilePath)
 import           Development.IDE.Types.Location
 import qualified Language.LSP.Protocol.Lens      as L
 import           Language.LSP.Protocol.Message
@@ -36,6 +37,7 @@ import           Data.Default                    (def)
 import           Development.IDE.Plugin.Test     (WaitForIdeRuleResult (..))
 import           Test.Hls                        (TestConfig (testDirLocation, testDisableKick, testPluginDescriptor),
                                                   runSessionWithTestConfig,
+                                                  waitForDiagnosticsFrom,
                                                   waitForProgressBegin)
 import           Test.Hls.FileSystem
 import           Test.Tasty
@@ -68,15 +70,21 @@ tests = testGroup "diagnostics"
       expectDiagnostics [("Testing.hs", [(DiagnosticSeverity_Error, (0, 15), "parse error", Just "GHC-58481")])]
   , testWithDummyPluginEmpty "update syntax error" $ do
       let content = T.unlines [ "module Testing(missing) where" ]
-      doc <- createDoc "Testing.hs" "haskell" content
-      expectDiagnostics [("Testing.hs", [(DiagnosticSeverity_Error, (0, 15), "Not in scope: 'missing'", Just "GHC-76037")])]
+      doc <- waitForActionWithExpectedDiagnosticsFromFilePath
+        [("Testing.hs", [(DiagnosticSeverity_Error, (0, 15), "Not in scope: 'missing'", Just "GHC-76037")])]
+        $ createDoc "Testing.hs" "haskell" content
       let change = TextDocumentContentChangeEvent $ InL TextDocumentContentChangePartial
               { _range = Range (Position 0 15) (Position 0 16)
               , _rangeLength = Nothing
               , _text = "l"
               }
-      changeDoc doc [change]
-      expectDiagnostics [("Testing.hs", [(DiagnosticSeverity_Error, (0, 15), "Not in scope: 'lissing'", Just "GHC-76037")])]
+      waitForActionWithExpectedDiagnosticsFromFilePath
+        [("Testing.hs", [(DiagnosticSeverity_Error, (0, 15), "Not in scope: 'lissing'", Just "GHC-76037")])]
+        $ do
+            changeDoc doc [change]
+            -- need to wait for new diagnostics to be published
+            void $ waitForDiagnosticsFrom doc
+
   , testWithDummyPluginEmpty "variable not in scope" $ do
       let content = T.unlines
             [ "module Testing where"

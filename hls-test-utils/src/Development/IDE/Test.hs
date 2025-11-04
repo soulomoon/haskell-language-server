@@ -188,7 +188,9 @@ filePathTextDocumentIdentifier fp =
   TextDocumentIdentifier <$> getDocUri fp
 
 waitForActionWithExpectedDiagnosticsFromFilePath :: (HasCallStack) => [(FilePath, [ExpectedDiagnostic])] -> Session b -> Session b
-waitForActionWithExpectedDiagnosticsFromFilePath xs sec = do
+waitForActionWithExpectedDiagnosticsFromFilePath oxs sec = do
+    -- merge diagnostics for same file paths
+  let xs = Map.toList $ Map.fromListWith (++) [(fp, ed) | (fp, ed) <- oxs]
   res <- forM xs $ \(fp, ed) -> do
     tdi <- filePathTextDocumentIdentifier fp
     return (tdi, ed)
@@ -213,7 +215,8 @@ waitForActionWithDiagnosticsFromDocs waitFirst docs action = do
   where
     waitUntilNonEmpty doc = do
           diags <- waitForDiagnosticsFrom doc
-          if (null diags && waitFirst)
+        --   diags <- callTestPluginWithDiag WaitForDiagnosticPublished
+          if (null diags)
                 then waitUntilNonEmpty doc
                 else return diags
 
