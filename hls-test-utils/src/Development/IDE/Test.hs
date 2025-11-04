@@ -207,6 +207,7 @@ waitForActionWithExpectedDiagnosticsFromDocs waitFirst expected action = do
 waitForActionWithDiagnosticsFromDocs :: (HasCallStack) => Bool -> [TextDocumentIdentifier] -> Session a -> Session (a, [([Diagnostic])])
 waitForActionWithDiagnosticsFromDocs waitFirst docs action = do
   result <- action
+  void $ callTestPluginWithDiag WaitForDiagnosticPublished
   docDiags <- mapM getOrWait docs
   return (result, docDiags)
   where
@@ -239,7 +240,6 @@ canonicalizeUri uri = filePathToUri <$> canonicalizePath (fromJust (uriToFilePat
 diagnostic :: Session (TNotificationMessage Method_TextDocumentPublishDiagnostics)
 diagnostic = LspTest.message SMethod_TextDocumentPublishDiagnostics
 
--- -- tryCallTestPlugin1 :: (A.FromJSON b) => TestRequest -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) b)
 callTestPluginWithDiag ::
     A.ToJSON a => a -> Session [TNotificationMessage Method_TextDocumentPublishDiagnostics]
 callTestPluginWithDiag cmd = do
