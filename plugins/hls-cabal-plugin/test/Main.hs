@@ -209,6 +209,8 @@ codeActionTests = testGroup "Code Actions"
   where
     executeFirstActionPerDiagnostic doc = do
       _ <- waitForDiagnosticsFrom doc
+      executeFirstActionPerDiagnostic' doc
+    executeFirstActionPerDiagnostic' doc = do
       void $ callTestPluginWithDiag WaitForDiagnosticPublished
       diagnotics <- getCurrentDiagnostics doc
       -- Execute the first code action at each diagnostic point
