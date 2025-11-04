@@ -39,7 +39,7 @@ module Development.IDE.Test
   , waitForActionWithExpectedDiagnosticsFromDocsOne
   , filePathTextDocumentIdentifier
   , waitForActionWithExpectedDiagnosticsFromFilePath
-  , tryCallTestPluginWithDiag) where
+  , callTestPluginWithDiag) where
 
 import           Control.Applicative.Combinators
 import           Control.Lens                    hiding (List)
@@ -195,7 +195,7 @@ waitForActionWithExpectedDiagnosticsFromFilePath xs sec = do
   waitForActionWithExpectedDiagnosticsFromDocs True res sec
 
 waitForActionWithExpectedDiagnosticsFromDocsOne :: (HasCallStack) => (TextDocumentIdentifier, [ExpectedDiagnostic]) -> Session b -> Session b
-waitForActionWithExpectedDiagnosticsFromDocsOne x = waitForActionWithExpectedDiagnosticsFromDocs False [x]
+waitForActionWithExpectedDiagnosticsFromDocsOne x = waitForActionWithExpectedDiagnosticsFromDocs True [x]
 
 waitForActionWithExpectedDiagnosticsFromDocs :: (HasCallStack) => Bool -> [(TextDocumentIdentifier, [ExpectedDiagnostic])] -> Session b -> Session b
 waitForActionWithExpectedDiagnosticsFromDocs waitFirst expected action = do
@@ -207,21 +207,18 @@ waitForActionWithExpectedDiagnosticsFromDocs waitFirst expected action = do
 waitForActionWithDiagnosticsFromDocs :: (HasCallStack) => Bool -> [TextDocumentIdentifier] -> Session a -> Session (a, [([Diagnostic])])
 waitForActionWithDiagnosticsFromDocs waitFirst docs action = do
   result <- action
---   void $ tryCallTestPluginWithDiag WaitForDiagnosticPublished
   docDiags <- mapM getOrWait docs
   return (result, docDiags)
   where
     waitUntilNonEmpty doc = do
           diags <- waitForDiagnosticsFrom doc
-        --   diags <- tryCallTestPluginWithDiag WaitForDiagnosticPublished
-          if null diags
+          if (null diags && waitFirst)
                 then waitUntilNonEmpty doc
                 else return diags
 
     getOrWait doc = do
       diags <- getCurrentDiagnostics doc
-    --   tryCallTestPluginWithDiag WaitForDiagnosticPublished
-      when (null diags || waitFirst) $ void $ waitUntilNonEmpty doc
+      when (null diags && waitFirst) $ void $ waitUntilNonEmpty doc
       flushMessages
       getCurrentDiagnostics doc
 
@@ -243,9 +240,9 @@ diagnostic :: Session (TNotificationMessage Method_TextDocumentPublishDiagnostic
 diagnostic = LspTest.message SMethod_TextDocumentPublishDiagnostics
 
 -- -- tryCallTestPlugin1 :: (A.FromJSON b) => TestRequest -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) b)
-tryCallTestPluginWithDiag ::
+callTestPluginWithDiag ::
     A.ToJSON a => a -> Session [TNotificationMessage Method_TextDocumentPublishDiagnostics]
-tryCallTestPluginWithDiag cmd = do
+callTestPluginWithDiag cmd = do
     let cm = SMethod_CustomMethod (Proxy @"test")
     waitId <- sendRequest cm (A.toJSON cmd)
     let go acc = do
@@ -254,8 +251,10 @@ tryCallTestPluginWithDiag cmd = do
             case res of
                             Right TResponseMessage{_result} -> return (_result, acc)
                             Left a -> go (a:acc)
-    (_result, diagsNots) <- go []
-    return diagsNots
+    (res, diagsNots) <- go []
+    case res of
+        Left (TResponseError t err _) -> error $ show t <> ": " <> T.unpack err
+        Right _a                      -> return diagsNots
 
 
 tryCallTestPlugin :: (A.FromJSON b) => TestRequest -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) b)

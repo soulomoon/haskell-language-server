@@ -76,7 +76,7 @@ module Development.IDE.Core.Shake(
     Log(..),
     VFSModified(..), getClientConfigAction,
     ThreadQueue(..),
-    runWithSignal, runRestartTask, runRestartTaskDyn, dynShakeRestart, waitUntilDiagnosticsPublished, runWithSignalAction
+    runWithSignal, runRestartTask, runRestartTaskDyn, dynShakeRestart, waitUntilDiagnosticsPublished, runWithSignalAction, waitUntilDiagnosticsPublishedSelf
     ) where
 
 import           Control.Concurrent.Async
@@ -154,11 +154,10 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
                                                           shakeShutDatabase)
 import           Development.IDE.Graph.Internal.Action   (pumpActionThread)
 import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
-import           Development.IDE.Graph.Internal.Types    (DBQue,
-                                                          ShakeDatabase (ShakeDatabase),
-                                                          Step (..),
+import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
                                                           actionNameKey,
                                                           getShakeStep,
+                                                          isIamOnlyActionQueueEmpty,
                                                           runActionMonad,
                                                           shakeDataBaseQueue,
                                                           withShakeDatabaseValuesLock)
@@ -421,6 +420,16 @@ waitUntilDiagnosticsPublished ShakeExtras{..} = do
         isEmpty1 <- isEmptyTaskQueue shakeControlQueue
         -- actionQueue should also be empty, otherwise there might be more diagnostics to publish
         isEmpty2 <- isActionQueueEmpty actionQueue
+        unless (isEmpty && isEmpty1 && isEmpty2) retry
+
+waitUntilDiagnosticsPublishedSelf :: ShakeExtras -> IO ()
+waitUntilDiagnosticsPublishedSelf ShakeExtras{..} = do
+    -- wait until the diag queue is empty
+    atomicallyNamed "waitUntilDiagnosticsPublished" $ do
+        isEmpty <- isEmptyTaskQueue diagQueue
+        isEmpty1 <- isEmptyTaskQueue shakeControlQueue
+        -- actionQueue should also be empty, otherwise there might be more diagnostics to publish
+        isEmpty2 <- isIamOnlyActionQueueEmpty actionQueue
         unless (isEmpty && isEmpty1 && isEmpty2) retry
 
 type WithProgressFunc = forall a.
@@ -1378,13 +1387,10 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                     -- No changes in the dependencies and we have
                     -- an existing successful result.
                     Just (v@(Succeeded _ x), diags) -> do
-                        -- ver <- estimateFileVersionUnsafely key (Just x) file
-                        -- doDiagnostics (vfsVersion =<< ver) $ Vector.toList diags
-                        -- actionCtx <- ask
+                        ver <- estimateFileVersionUnsafely key (Just x) file
+                        actionCtx <- ask
                         return $ Just $ RunResult ChangedNothing old (A v)
-                            $ do
-                                -- writeTaskQueue diagQueue $ flip runActionMonad actionCtx $ doDiagnostics (vfsVersion =<< ver) $ Vector.toList diags
-                                return ()
+                            $ writeTaskQueue diagQueue $ flip runActionMonad actionCtx $ doDiagnostics (vfsVersion =<< ver) $ Vector.toList diags
                     _ -> return Nothing
             _ ->
                 -- assert that a "clean" rule is never a cache miss

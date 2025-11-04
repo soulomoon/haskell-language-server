@@ -10,10 +10,12 @@ import           Control.Monad.IO.Class          (liftIO)
 import           Data.List.Extra
 import qualified Data.Text                       as T
 import           Development.IDE.GHC.Util
-import           Development.IDE.Test            (diagnostic, expectDiagnostics,
+import           Development.IDE.Test            (callTestPluginWithDiag,
+                                                  diagnostic, expectDiagnostics,
                                                   expectDiagnosticsWithTags,
                                                   expectNoMoreDiagnostics,
                                                   waitForAction,
+                                                  waitForActionWithDiagnosticsFromDocs,
                                                   waitForActionWithExpectedDiagnosticsFromDocsOne)
 import           Development.IDE.Types.Location
 import qualified Language.LSP.Protocol.Lens      as L

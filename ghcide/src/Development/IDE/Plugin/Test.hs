@@ -137,7 +137,7 @@ testRequestHandler s GetRebuildsCount = do
 testRequestHandler s WaitForDiagnosticPublished = do
     liftIO $ runAction "wait for diagnostics published" s $ do
         se <- getShakeExtras
-        liftIO $ waitUntilDiagnosticsPublished se
+        liftIO $ waitUntilDiagnosticsPublishedSelf se
     return $ Right A.Null
 
 getDatabaseKeys :: (Graph.Result -> Step)
