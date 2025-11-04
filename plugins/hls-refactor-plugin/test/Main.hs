@@ -33,7 +33,6 @@ import           Language.LSP.Protocol.Types              hiding
                                                            mkRange)
 import           Language.LSP.Test
 import           System.FilePath
-import           System.IO.Extra                          (readFileUtf8)
 import           System.Time.Extra
 import           Test.Tasty
 import           Test.Tasty.HUnit
