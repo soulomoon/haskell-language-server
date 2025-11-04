@@ -1,6 +1,7 @@
 module IfaceTests (tests) where
 
 import           Config
+import           Control.Monad                 (void)
 import           Control.Monad.IO.Class        (liftIO)
 import qualified Data.Text                     as T
 import           Development.IDE.GHC.Util
@@ -19,6 +20,7 @@ import           Language.LSP.Test
 import           System.Directory
 import           System.FilePath
 import           System.IO.Extra               hiding (withTempDir)
+import           Test.Hls                      (waitForDiagnosticsFrom)
 import           Test.Hls.FileSystem
 import           Test.Tasty
 import           Test.Tasty.HUnit
@@ -99,7 +101,9 @@ ifaceErrorTest = testWithExtraFiles "iface-error-test-1" "recomp" $ \dir -> do
     --   - P is being typechecked with the last successful artifacts for A.
     waitForActionWithExpectedDiagnosticsFromFilePath
       [("P.hs", [(DiagnosticSeverity_Warning,(4,0), "Top-level binding", Just "GHC-38417"), (DiagnosticSeverity_Warning,(6,0), "Top-level binding", Just "GHC-38417")])
-      ] $ changeDoc pdoc [TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $ pSource <> "\nfoo = y :: Bool" ]
+      ] $ do
+        changeDoc pdoc [TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $ pSource <> "\nfoo = y :: Bool" ]
+        void $ waitForDiagnosticsFrom pdoc
 
 ifaceErrorTest2 :: TestTree
 ifaceErrorTest2 = testWithExtraFiles "iface-error-test-2" "recomp" $ \dir -> do
