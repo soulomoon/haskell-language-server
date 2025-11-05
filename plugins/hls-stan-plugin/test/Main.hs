@@ -33,8 +33,7 @@ tests =
     , testCase "ignores diagnostics from .stan.toml" $
         runStanSession "" $ do
           doc <- openDoc ("dir" </> "configTest.hs") "haskell"
-          diags <- waitForDiagnosticsFromSource doc "stan"
-          liftIO $ length diags @?= 0
+          expectDiagnosticsEmpty doc "stan"
           return ()
     , testCase "respects LANGUAGE pragmas in the source file" $
         runStanSession "" $ do

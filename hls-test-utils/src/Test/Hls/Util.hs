@@ -53,6 +53,7 @@ module Test.Hls.Util
     -- * Extra test plugin calls
     , callTestPluginWithDiag
     , callTestPluginWithSMethod
+    , expectDiagnosticsEmpty
   )
 where
 
@@ -294,6 +295,7 @@ waitForDiagnosticsFrom doc = do
        then waitForDiagnosticsFrom doc
        else return diags
 
+
 waitForActionWithDiagnosticsFromDocs :: (HasCallStack) => Bool -> [TextDocumentIdentifier] -> Test.Session a -> Test.Session (a, [([Diagnostic])])
 waitForActionWithDiagnosticsFromDocs waitFirst docs action = do
   result <- action
@@ -328,6 +330,14 @@ waitForDiagnosticsFromSource :: TextDocumentIdentifier -> String -> Test.Session
 waitForDiagnosticsFromSource doc src = do
       diags <- concat . snd <$> waitForActionWithDiagnosticsFromDocs True [doc] (return ())
       return $ filter (\d -> d ^. L.source == Just (T.pack src)) diags
+
+expectDiagnosticsEmpty :: TextDocumentIdentifier -> String -> Test.Session ()
+expectDiagnosticsEmpty doc src = do
+    diagsA <- waitForDiagnosticsFrom doc
+    let diags = filter (\d -> d ^. L.source == Just (T.pack src)) diagsA
+    unless (null diags) $
+        liftIO $ assertFailure $ "Expected no diagnostics for " <> show (doc ^. L.uri) <>
+            " got " <> show diags
 
 -- | wait for @timeout@ seconds and report an assertion failure
 -- if any diagnostic messages arrive in that period
@@ -389,7 +399,7 @@ waitForDiagnosticsFromSourceWithTimeout timeout doc src = do
     return $ filter (\d -> d ^. L.source == Just (T.pack src)) diags
 
 
-failIfSessionTimeout :: IO a -> IO a
+failIfSessionTimeout :: HasCallStack => IO a -> IO a
 failIfSessionTimeout action = action `catch` errorHandler
     where errorHandler :: Test.SessionException -> IO a
           errorHandler e@(Test.Timeout _) = assertFailure $ show e
