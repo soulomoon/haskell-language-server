@@ -333,7 +333,7 @@ waitForDiagnosticsFromSource doc src = do
 
 expectDiagnosticsEmpty :: TextDocumentIdentifier -> String -> Test.Session ()
 expectDiagnosticsEmpty doc src = do
-    diagsA <- waitForDiagnosticsFrom doc
+    diagsA <- concat . snd <$> waitForActionWithDiagnosticsFromDocs False [doc] (return ())
     let diags = filter (\d -> d ^. L.source == Just (T.pack src)) diagsA
     unless (null diags) $
         liftIO $ assertFailure $ "Expected no diagnostics for " <> show (doc ^. L.uri) <>
