@@ -22,7 +22,6 @@ module Development.IDE.Test
   , checkDiagnosticsForDoc
   , canonicalizeUri
   , standardizeQuotes
-  , flushMessages
   , waitForAction
   , getInterfaceFilesDir
   , getFilesOfInterest
@@ -34,12 +33,10 @@ module Development.IDE.Test
   , configureCheckProject
   , isReferenceReady
   , referenceReady
-  , waitForActionWithDiagnosticsFromDocs
   , waitForActionWithExpectedDiagnosticsFromDocs
   , waitForActionWithExpectedDiagnosticsFromDocsOne
   , filePathTextDocumentIdentifier
-  , waitForActionWithExpectedDiagnosticsFromFilePath
-  , callTestPluginWithDiag) where
+  , waitForActionWithExpectedDiagnosticsFromFilePath) where
 
 import           Control.Applicative.Combinators
 import           Control.Lens                    hiding (List)
@@ -68,8 +65,10 @@ import qualified Language.LSP.Test               as LspTest
 import           System.Directory                (canonicalizePath)
 import           System.FilePath                 (equalFilePath)
 import           System.Time.Extra
-import           Test.Hls                        (message,
-                                                  waitForDiagnosticsFrom)
+import           Test.Hls                        (callTestPluginWithDiag,
+                                                  callTestPluginWithSMethod,
+                                                  message,
+                                                  waitForActionWithDiagnosticsFromDocs)
 import           Test.Tasty.HUnit
 
 expectedDiagnosticWithNothing :: ExpectedDiagnostic -> ExpectedDiagnosticWithTag
@@ -87,40 +86,23 @@ requireDiagnosticM actuals expected = case requireDiagnostic actuals expected of
 -- |wait for @timeout@ seconds and report an assertion failure
 -- if any diagnostic messages arrive in that period
 expectNoMoreDiagnostics :: HasCallStack => Seconds -> Session ()
-expectNoMoreDiagnostics timeout =
-  expectMessages SMethod_TextDocumentPublishDiagnostics timeout $ \diagsNot -> do
-    let fileUri = diagsNot ^. L.params . L.uri
-        actual = diagsNot ^. L.params . L.diagnostics
-    unless (null actual) $ liftIO $
+expectNoMoreDiagnostics _timeout = do
+    diags <- callTestPluginWithDiag WaitForDiagnosticPublished
+    unless (null diags) $ liftIO $
       assertFailure $
-        "Got unexpected diagnostics for " <> show fileUri
-          <> " got "
-          <> show actual
+        "Expected no diagnostics, but got: "
+          <> show (map unwrapDiagnostic diags)
 
 expectMessages :: SMethod m -> Seconds -> (TServerMessage m -> Session ()) -> Session ()
 expectMessages m timeout handle = do
     -- Give any further diagnostic messages time to arrive.
-    liftIO $ sleep timeout
+    i <- callTestPluginWithSMethod m WaitForDiagnosticPublished
     -- Send a dummy message to provoke a response from the server.
     -- This guarantees that we have at least one message to
     -- process, so message won't block or timeout.
-    let cm = SMethod_CustomMethod (Proxy @"test")
-    i <- sendRequest cm $ A.toJSON GetShakeSessionQueueCount
-    go cm i
-  where
-    go cm i = handleMessages
-      where
-        handleMessages = (LspTest.message m >>= handle) <|> (void $ responseForId cm i) <|> ignoreOthers
-        ignoreOthers = void anyMessage >> handleMessages
-
-flushMessages :: Session ()
-flushMessages = do
-    -- let cm = SMethod_CustomMethod (Proxy @"non-existent-method")
-    let cm = SMethod_CustomMethod (Proxy @"test")
-    i <- sendRequest cm A.Null
-    void (responseForId cm i) <|> ignoreOthers cm i
-    where
-        ignoreOthers cm i = skipManyTill anyMessage (responseForId cm i) >> flushMessages
+    -- let cm = SMethod_CustomMethod (Proxy @"test")
+    -- i <- sendRequest cm $ A.toJSON GetShakeSessionQueueCount
+    mapM_ handle i
 
 -- | It is not possible to use 'expectDiagnostics []' to assert the absence of diagnostics,
 --   only that existing diagnostics have been cleared.
@@ -206,25 +188,6 @@ waitForActionWithExpectedDiagnosticsFromDocs waitFirst expected action = do
     checkDiagnosticsForDoc doc exDiags diags
   return result
 
-waitForActionWithDiagnosticsFromDocs :: (HasCallStack) => Bool -> [TextDocumentIdentifier] -> Session a -> Session (a, [([Diagnostic])])
-waitForActionWithDiagnosticsFromDocs waitFirst docs action = do
-  result <- action
-  void $ callTestPluginWithDiag WaitForDiagnosticPublished
-  docDiags <- mapM getOrWait docs
-  return (result, docDiags)
-  where
-    waitUntilNonEmpty doc = do
-          diags <- waitForDiagnosticsFrom doc
-        --   diags <- callTestPluginWithDiag WaitForDiagnosticPublished
-          if (null diags)
-                then waitUntilNonEmpty doc
-                else return diags
-
-    getOrWait doc = do
-      diags <- getCurrentDiagnostics doc
-      when (null diags && waitFirst) $ void $ waitUntilNonEmpty doc
-      flushMessages
-      getCurrentDiagnostics doc
 
 expectCurrentDiagnostics :: HasCallStack => TextDocumentIdentifier -> [ExpectedDiagnostic] -> Session ()
 expectCurrentDiagnostics doc expected = do
@@ -242,22 +205,6 @@ canonicalizeUri uri = filePathToUri <$> canonicalizePath (fromJust (uriToFilePat
 
 diagnostic :: Session (TNotificationMessage Method_TextDocumentPublishDiagnostics)
 diagnostic = LspTest.message SMethod_TextDocumentPublishDiagnostics
-
-callTestPluginWithDiag ::
-    A.ToJSON a => a -> Session [TNotificationMessage Method_TextDocumentPublishDiagnostics]
-callTestPluginWithDiag cmd = do
-    let cm = SMethod_CustomMethod (Proxy @"test")
-    waitId <- sendRequest cm (A.toJSON cmd)
-    let go acc = do
-            res <- skipManyTill anyMessage $ do
-                (fmap Right (responseForId cm waitId) <|> fmap Left (message SMethod_TextDocumentPublishDiagnostics))
-            case res of
-                            Right TResponseMessage{_result} -> return (_result, acc)
-                            Left a -> go (a:acc)
-    (res, diagsNots) <- go []
-    case res of
-        Left (TResponseError t err _) -> error $ show t <> ": " <> T.unpack err
-        Right _a                      -> return diagsNots
 
 
 tryCallTestPlugin :: (A.FromJSON b) => TestRequest -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) b)
