@@ -831,13 +831,14 @@ runSessionWithTestConfig TestConfig{..} session =
         IDEMain.defaultMain (cmapWithPrio LogIDEMain recorderIde)
             arguments { argsHandleIn = pure inR , argsHandleOut = pure outW }
     result <- runSessionWithHandles inW outR sconf' testConfigCaps clientRoot (session root)
-    hClose inW
     timeout 3 (wait server) >>= \case
         Just () -> pure ()
         Nothing -> do
             putStrLn "Server does not exit in 3s, canceling the async task..."
             (t, _) <- duration $ cancel server
             putStrLn $ "Finishing canceling (took " <> showDuration t <> "s)"
+    hClose inR
+    hClose outW
     pure result
 
     where
