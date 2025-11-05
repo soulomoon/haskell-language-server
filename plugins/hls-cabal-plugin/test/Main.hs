@@ -221,9 +221,6 @@ codeActionTests = testGroup "Code Actions"
           ca : _ -> do
             return (ca ^? _R))
       mapM_ executeCodeAction cas
-      if cas == []
-        then pure ()
-        else executeFirstActionPerDiagnostic doc
     getLicenseAction :: T.Text -> [Command |? CodeAction] -> [CodeAction]
     getLicenseAction license codeActions = do
         InR action@CodeAction{_title} <- codeActions
