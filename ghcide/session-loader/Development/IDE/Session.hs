@@ -101,7 +101,8 @@ import qualified System.Random                       as Random
 import           System.Random                       (RandomGen)
 import           Text.ParserCombinators.ReadP        (readP_to_S)
 
-import           Control.Concurrent.STM              (STM, TVar)
+import           Control.Concurrent.STM              (STM, TVar, newTVar,
+                                                      newTVarIO)
 import qualified Control.Monad.STM                   as STM
 import           Control.Monad.Trans.Reader
 import qualified Development.IDE.Session.Ghc         as Ghc
@@ -437,7 +438,7 @@ data SessionState = SessionState
     hscEnvs      :: !(Var HieMap),
     fileToFlags  :: !FlagsMap,
     filesMap     :: !FilesMap,
-    version      :: !(Var Int),
+    version      :: !(TVar Int),
     sessionLoadingPreferenceConfig :: !(Var (Maybe SessionLoadingPreferenceConfig))
   }
 
@@ -506,7 +507,10 @@ insertAllFileMappings state mappings =
 
 -- | Increment the version counter
 incrementVersion :: SessionState -> IO Int
-incrementVersion state = modifyVar' (version state) succ
+incrementVersion state =
+    atomically $ do
+        modifyTVar' (version state) succ
+        readTVar (version state)
 
 -- | Get files from the pending file set
 getPendingFiles :: SessionState -> IO (HashSet FilePath)
@@ -573,7 +577,7 @@ newSessionState = do
     <*> newVar Map.empty            -- hscEnvs
     <*> STM.newIO                   -- fileToFlags
     <*> STM.newIO                   -- filesMap
-    <*> newVar 0                    -- version
+    <*> newTVarIO 0                    -- version
     <*> newVar Nothing              -- sessionLoadingPreferenceConfig
   return sessionState
 
@@ -596,7 +600,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
   let toAbsolutePath = toAbsolute rootDir -- see Note [Root Directory]
 
   sessionState <- newSessionState
-  let returnWithVersion fun = IdeGhcSession fun <$> liftIO (readVar (version sessionState))
+  let returnWithVersion fun =
+        return $ IdeGhcSession fun (readTVar $ version sessionState) (S.size $ pendingFiles sessionState)
 
   -- This caches the mapping from Mod.hs -> hie.yaml
   cradleLoc <- liftIO $ memoIO $ \v -> do

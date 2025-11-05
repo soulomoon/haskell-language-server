@@ -52,3 +52,7 @@ delete a (OrderedSet _ s) = S.delete a s
 
 toHashSet :: Hashable a => OrderedSet a -> STM (Data.HashSet.HashSet a)
 toHashSet (OrderedSet _ s) = Data.HashSet.fromList <$> LT.toList (S.listT s)
+
+size :: Hashable a => OrderedSet a -> STM Int
+size (OrderedSet _ s) = S.size s
+

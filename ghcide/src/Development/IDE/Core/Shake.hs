@@ -412,10 +412,14 @@ data ShakeExtras = ShakeExtras
     , diagQueue :: DiagQueue
     }
 
-waitUntilDiagnosticsPublished :: ShakeExtras -> IO ()
+waitUntilDiagnosticsPublished :: ShakeExtras -> Action ()
 waitUntilDiagnosticsPublished ShakeExtras{..} = do
     -- wait until the diag queue is empty
-    atomicallyNamed "waitUntilDiagnosticsPublished" $ do
+    opts <- getIdeOptions
+    res <- optGhcSession opts
+    liftIO $ atomicallyNamed "waitUntilDiagnosticsPublished" $ do
+        pdc <- pendingFilesCount res
+        check (pdc == 0)
         isEmpty <- isEmptyTaskQueue diagQueue
         isEmpty1 <- isEmptyTaskQueue shakeControlQueue
         -- actionQueue should also be empty, otherwise there might be more diagnostics to publish
@@ -1620,7 +1624,7 @@ updatePositionMappingHelper ver changes mappingForUri = snd $
 kickSignal :: KnownSymbol s => Bool -> Maybe (LSP.LanguageContextEnv c) -> [NormalizedFilePath] -> Proxy s -> Action ()
 kickSignal testing lspEnv files msg = when testing $ do
     se <- getShakeExtras
-    liftIO $ waitUntilDiagnosticsPublished se
+    waitUntilDiagnosticsPublished se
     liftIO $ mRunLspT lspEnv $
         LSP.sendNotification (LSP.SMethod_CustomMethod msg) $ toJSON $ map fromNormalizedFilePath files
 

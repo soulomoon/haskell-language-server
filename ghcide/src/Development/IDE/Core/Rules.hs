@@ -681,12 +681,13 @@ loadGhcSession recorder ghcSessionDepsConfig = do
     -- to the version of the collection of HscEnv's.
     defineEarlyCutOffNoFile (cmapWithPrio LogShake recorder) $ \GhcSessionIO -> do
         alwaysRerun
-        opts <- getIdeOptions
         config <- getClientConfigAction
+        opts <- getIdeOptions
         res <- optGhcSession opts
 
+        version <- liftIO $ atomically $ sessionVersion res
         let fingerprint = LBS.toStrict $ LBS.concat
-                [ B.encode (hash (sessionVersion res))
+                [ B.encode (hash version)
                 -- When the session version changes, reload all session
                 -- hsc env sessions
                 , B.encode (show (sessionLoading config))
