@@ -104,9 +104,9 @@ testRequestHandler s GetShakeSessionQueueCount = liftIO $ do
     n <- atomically $ countQueue $ actionQueue $ shakeExtras s
     return $ Right (toJSON n)
 testRequestHandler s WaitForShakeQueue = liftIO $ do
-    liftIO $ runAction "wait for diagnostics published" s $ do
-        se <- getShakeExtras
-        liftIO $ waitUntilDiagnosticsPublishedSelf se
+    atomically $ do
+        n <- countQueue $ actionQueue $ shakeExtras s
+        when (n>0) retry
     return $ Right A.Null
 testRequestHandler s (WaitForIdeRule k file) = liftIO $ do
     let nfp = fromUri $ toNormalizedUri file
@@ -134,10 +134,14 @@ testRequestHandler s GetFilesOfInterest = do
 testRequestHandler s GetRebuildsCount = do
     count <- liftIO $ runAction "get build count" s getRebuildCount
     return $ Right $ toJSON count
-testRequestHandler s WaitForDiagnosticPublished = do
-    liftIO $ runAction "wait for diagnostics published" s $ do
-        se <- getShakeExtras
-        liftIO $ waitUntilDiagnosticsPublishedSelf se
+testRequestHandler s WaitForDiagnosticPublished = waitForIdeIdle s
+
+waitForIdeIdle ::  IdeState
+                -> HandlerM config (Either PluginError Value)
+waitForIdeIdle s =
+    liftIO $ do
+    waitUntilIdle <- runAction "wait for diagnostics published" s $ waitUntilDiagnosticsPublished
+    waitUntilIdle
     return $ Right A.Null
 
 getDatabaseKeys :: (Graph.Result -> Step)

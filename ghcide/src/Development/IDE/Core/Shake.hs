@@ -76,7 +76,7 @@ module Development.IDE.Core.Shake(
     Log(..),
     VFSModified(..), getClientConfigAction,
     ThreadQueue(..),
-    runWithSignal, runRestartTask, runRestartTaskDyn, dynShakeRestart, waitUntilDiagnosticsPublished, runWithSignalAction, waitUntilDiagnosticsPublishedSelf
+    runWithSignal, runRestartTask, runRestartTaskDyn, dynShakeRestart, waitUntilDiagnosticsPublished, runWithSignalAction, waitUntilDiagnosticsPublishedAction
     ) where
 
 import           Control.Concurrent.Async
@@ -412,12 +412,13 @@ data ShakeExtras = ShakeExtras
     , diagQueue :: DiagQueue
     }
 
-waitUntilDiagnosticsPublished :: ShakeExtras -> Action ()
-waitUntilDiagnosticsPublished ShakeExtras{..} = do
+waitUntilDiagnosticsPublished :: Action (IO ())
+waitUntilDiagnosticsPublished = do
     -- wait until the diag queue is empty
+    ShakeExtras{..} <- getShakeExtras
     opts <- getIdeOptions
     res <- optGhcSession opts
-    liftIO $ atomicallyNamed "waitUntilDiagnosticsPublished" $ do
+    return $ atomicallyNamed "waitUntilDiagnosticsPublished" $ do
         pdc <- pendingFilesCount res
         check (pdc == 0)
         isEmpty <- isEmptyTaskQueue diagQueue
@@ -426,15 +427,9 @@ waitUntilDiagnosticsPublished ShakeExtras{..} = do
         isEmpty2 <- isActionQueueEmpty actionQueue
         unless (isEmpty && isEmpty1 && isEmpty2) retry
 
-waitUntilDiagnosticsPublishedSelf :: ShakeExtras -> IO ()
-waitUntilDiagnosticsPublishedSelf ShakeExtras{..} = do
-    -- wait until the diag queue is empty
-    atomicallyNamed "waitUntilDiagnosticsPublished" $ do
-        isEmpty <- isEmptyTaskQueue diagQueue
-        isEmpty1 <- isEmptyTaskQueue shakeControlQueue
-        -- actionQueue should also be empty, otherwise there might be more diagnostics to publish
-        isEmpty2 <- isIamOnlyActionQueueEmpty actionQueue
-        unless (isEmpty && isEmpty1 && isEmpty2) retry
+waitUntilDiagnosticsPublishedAction :: Action ()
+waitUntilDiagnosticsPublishedAction = do
+    waitUntilDiagnosticsPublished >>= liftIO
 
 type WithProgressFunc = forall a.
     T.Text -> LSP.ProgressCancellable -> ((LSP.ProgressAmount -> IO ()) -> IO a) -> IO a
@@ -1623,8 +1618,7 @@ updatePositionMappingHelper ver changes mappingForUri = snd $
 -- to look for file diagnostics
 kickSignal :: KnownSymbol s => Bool -> Maybe (LSP.LanguageContextEnv c) -> [NormalizedFilePath] -> Proxy s -> Action ()
 kickSignal testing lspEnv files msg = when testing $ do
-    se <- getShakeExtras
-    waitUntilDiagnosticsPublished se
+    waitUntilDiagnosticsPublishedAction
     liftIO $ mRunLspT lspEnv $
         LSP.sendNotification (LSP.SMethod_CustomMethod msg) $ toJSON $ map fromNormalizedFilePath files
 
