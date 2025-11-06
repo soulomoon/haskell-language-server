@@ -17,6 +17,7 @@ import           Control.Lens.Fold               ((^?))
 import           Control.Monad                   (forM, guard, void)
 import qualified Data.ByteString                 as BS
 import           Data.Either                     (isRight)
+import           Data.List                       (nub)
 import           Data.Maybe                      (catMaybes)
 import qualified Data.Maybe                      as Maybe
 import           Data.Text                       (Text)
@@ -220,7 +221,7 @@ codeActionTests = testGroup "Code Actions"
           []     -> pure Nothing
           ca : _ -> do
             return (ca ^? _R))
-      mapM_ executeCodeAction cas
+      mapM_ executeCodeAction $ nub cas
     getLicenseAction :: T.Text -> [Command |? CodeAction] -> [CodeAction]
     getLicenseAction license codeActions = do
         InR action@CodeAction{_title} <- codeActions
