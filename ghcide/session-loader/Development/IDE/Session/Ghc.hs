@@ -422,9 +422,9 @@ getCacheDirsDefault root prefix opts = do
     where
         -- Create a unique folder per set of different GHC options, assuming that each different set of
         -- GHC options will create incompatible interface files.
-        -- opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
+        opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
         -- opts_hash = "fixed"
-        opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack [root])
+        -- opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack [root])
 
 getOptionHash :: [String] -> String
 getOptionHash opts = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
