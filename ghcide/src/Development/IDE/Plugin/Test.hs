@@ -104,9 +104,9 @@ testRequestHandler s GetShakeSessionQueueCount = liftIO $ do
     n <- atomically $ countQueue $ actionQueue $ shakeExtras s
     return $ Right (toJSON n)
 testRequestHandler s WaitForShakeQueue = liftIO $ do
-    atomically $ do
-        n <- countQueue $ actionQueue $ shakeExtras s
-        when (n>0) retry
+    liftIO $ runAction "wait for diagnostics published" s $ do
+        se <- getShakeExtras
+        liftIO $ waitUntilDiagnosticsPublishedSelf se
     return $ Right A.Null
 testRequestHandler s (WaitForIdeRule k file) = liftIO $ do
     let nfp = fromUri $ toNormalizedUri file
