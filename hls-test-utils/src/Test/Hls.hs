@@ -882,21 +882,22 @@ waitForProgressBegin = skipManyTill anyMessage $ satisfyMaybe $ \case
 
 -- | Wait for the next progress end step
 waitForProgressDone :: Session ()
-waitForProgressDone = skipManyTill anyMessage $ satisfyMaybe $ \case
-  FromServerMess  SMethod_Progress  (TNotificationMessage _ _ (ProgressParams _ v)) | is _workDoneProgressEnd v-> Just ()
-  _ -> Nothing
+waitForProgressDone = void $ waitForBuildQueue
+--     skipManyTill anyMessage $ satisfyMaybe $ \case
+--   FromServerMess  SMethod_Progress  (TNotificationMessage _ _ (ProgressParams _ v)) | is _workDoneProgressEnd v-> Just ()
+--   _ -> Nothing
 
 -- | Wait for all progress to be done
 -- Needs at least one progress done notification to return
 waitForAllProgressDone :: Session ()
-waitForAllProgressDone = loop
-  where
-    loop = do
-      ~() <- skipManyTill anyMessage $ satisfyMaybe $ \case
-        FromServerMess  SMethod_Progress  (TNotificationMessage _ _ (ProgressParams _ v)) | is _workDoneProgressEnd v -> Just ()
-        _ -> Nothing
-      done <- null <$> getIncompleteProgressSessions
-      unless done loop
+waitForAllProgressDone = void $ waitForBuildQueue
+--   where
+--     loop = do
+--       ~() <- skipManyTill anyMessage $ satisfyMaybe $ \case
+--         FromServerMess  SMethod_Progress  (TNotificationMessage _ _ (ProgressParams _ v)) | is _workDoneProgressEnd v -> Just ()
+--         _ -> Nothing
+--       done <- null <$> getIncompleteProgressSessions
+--       unless done loop
 
 -- | Wait for the build queue to be empty
 waitForBuildQueue :: Session Seconds
@@ -956,7 +957,9 @@ captureKickDiagnostics start done = do
             _ -> Nothing
 
 waitForKickDone :: Session ()
-waitForKickDone = void $ skipManyTill anyMessage nonTrivialKickDone
+waitForKickDone =
+    -- void $ skipManyTill anyMessage nonTrivialKickDone
+    void $ waitForBuildQueue
 
 waitForKickStart :: Session ()
 waitForKickStart = void $ skipManyTill anyMessage nonTrivialKickStart
