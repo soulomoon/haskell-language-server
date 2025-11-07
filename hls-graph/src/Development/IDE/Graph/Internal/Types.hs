@@ -223,12 +223,6 @@ isActionQueueEmpty ActionQueue {..} = do
         inProg <- Set.null <$> readTVar inProgress
         return (emptyQueue && inProg)
 
-isIamOnlyActionQueueEmpty :: ActionQueue -> STM Bool
-isIamOnlyActionQueueEmpty ActionQueue {..} = do
-        emptyQueue <- isEmptyTQueue newActions
-        inProg <- Set.size <$> readTVar inProgress
-        return (emptyQueue && 1 == inProg)
-
 data ShakeDatabase = ShakeDatabase !Int [Action ()] Database
 
 newtype Step = Step Int

@@ -157,7 +157,6 @@ import           Development.IDE.Graph.Internal.Database (AsyncParentKill (Async
 import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
                                                           actionNameKey,
                                                           getShakeStep,
-                                                          isIamOnlyActionQueueEmpty,
                                                           runActionMonad,
                                                           shakeDataBaseQueue,
                                                           withShakeDatabaseValuesLock)
