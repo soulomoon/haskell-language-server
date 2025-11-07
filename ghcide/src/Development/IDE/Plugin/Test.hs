@@ -103,11 +103,7 @@ testRequestHandler s (GetInterfaceFilesDir file) = liftIO $ do
 testRequestHandler s GetShakeSessionQueueCount = liftIO $ do
     n <- atomically $ countQueue $ actionQueue $ shakeExtras s
     return $ Right (toJSON n)
-testRequestHandler s WaitForShakeQueue = liftIO $ do
-    atomically $ do
-        n <- countQueue $ actionQueue $ shakeExtras s
-        when (n>0) retry
-    return $ Right A.Null
+testRequestHandler s WaitForShakeQueue = waitForIdeIdle s
 testRequestHandler s (WaitForIdeRule k file) = liftIO $ do
     let nfp = fromUri $ toNormalizedUri file
     success <- runAction ("WaitForIdeRule " <> k <> " " <> show file) s $ parseAction (fromString k) nfp
