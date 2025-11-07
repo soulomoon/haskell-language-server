@@ -67,7 +67,8 @@ module Test.Hls
     Priority(..),
     captureKickDiagnostics,
     kick,
-    TestConfig(..)
+    TestConfig(..),
+    waitForDiagsAndBuildQueue
     )
 where
 
@@ -909,6 +910,11 @@ waitForBuildQueue = do
         TResponseMessage{_result=Right Null} -> return td
         -- assume a ghcide binary lacking the WaitForShakeQueue method
         _                                    -> return 0
+
+waitForDiagsAndBuildQueue :: TextDocumentIdentifier -> Session Seconds
+waitForDiagsAndBuildQueue doc = do
+      _ <- waitForDiagnosticsFromSource doc ""
+      waitForBuildQueue
 
 callTestPlugin :: (A.FromJSON b) => TestRequest -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) b)
 callTestPlugin cmd = do

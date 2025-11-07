@@ -326,6 +326,7 @@ flushMessages = do
     where
         ignoreOthers cm i = skipManyTill Test.anyMessage (Test.responseForId cm i) >> flushMessages
 
+
 waitForDiagnosticsFromSource :: TextDocumentIdentifier -> String -> Test.Session [Diagnostic]
 waitForDiagnosticsFromSource doc src = do
       diags <- concat . snd <$> waitForActionWithDiagnosticsFromDocs True [doc] (return ())

@@ -103,7 +103,7 @@ codeActionTests' :: TestTree
 codeActionTests' =
   testGroup "additional code actions"
   [ goldenWithPragmas pragmasSuggestPlugin "no duplication" "NamedFieldPuns" $ \doc -> do
-      _ <- waitForDiagnosticsFrom doc
+      waitForDiagsAndBuildQueue doc
       cas <- map fromAction <$> getCodeActions doc (Range (Position 8 9) (Position 8 9))
       ca <- liftIO $ case cas of
         [ca] -> pure ca
@@ -111,12 +111,12 @@ codeActionTests' =
       liftIO $ (ca ^. L.title == "Add \"NamedFieldPuns\"") @? "NamedFieldPuns code action"
       executeCodeAction ca
   , goldenWithPragmas pragmasDisableWarningPlugin "doesn't suggest disabling type errors" "DeferredTypeErrors" $ \doc -> do
-      _ <- waitForDiagnosticsFrom doc
+      waitForDiagsAndBuildQueue doc
       cas <- map fromAction <$> getAllCodeActions doc
       liftIO $ "Disable \"deferred-type-errors\" warnings" `notElem` map (^. L.title) cas @? "Doesn't contain deferred-type-errors code action"
       liftIO $ length cas == 0 @? "Expected no code actions, but got: " <> show cas
   , goldenWithPragmas pragmasDisableWarningPlugin "doesn't suggest disabling out of scope variables" "DeferredOutOfScopeVariables" $ \doc -> do
-      _ <- waitForDiagnosticsFrom doc
+      waitForDiagsAndBuildQueue doc
       cas <- map fromAction <$> getAllCodeActions doc
       liftIO $ "Disable \"deferred-out-of-scope-variables\" warnings" `notElem` map (^. L.title) cas @? "Doesn't contain deferred-out-of-scope-variables code action"
       liftIO $ length cas == 0 @? "Expected no code actions, but got: " <> show cas
