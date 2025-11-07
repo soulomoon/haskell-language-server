@@ -137,10 +137,10 @@ codeActionBreakFile fp l c = goldenWithImportActions " code action" fp codeActio
 
 codeActionStaleAction :: FilePath -> Int -> Int -> TestTree
 codeActionStaleAction fp l c = goldenWithImportActions " code action" fp codeActionResolveCaps $ \doc -> do
-  _ <- waitForDiagnostics
+  waitForDiagsAndBuildQueue doc
   actions <- getCodeActions doc (pointRange l c)
   changeDoc doc [edit]
-  _ <- waitForDiagnostics
+  waitForDiagsAndBuildQueue doc
   case find ((== Just "Make this import explicit") . caTitle) actions of
     Just (InR x) ->
       maybeResolveCodeAction x >>=
@@ -221,6 +221,7 @@ notRefineImports _ = True
 inlayHintsTest :: ClientCapabilities -> String -> FilePath -> UInt -> ([InlayHint] -> Assertion) -> TestTree
 inlayHintsTest configCaps postfix fp line assert = testCase (fp ++ postfix) $ run $ \_ -> do
   doc <- openDoc (fp ++ ".hs") "haskell"
+  waitForDiagsAndBuildQueue doc
   inlayHints <- getInlayHints doc (lineRange line)
   liftIO $ assert inlayHints
   where
