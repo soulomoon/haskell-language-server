@@ -71,7 +71,7 @@ genericConfigTests = testGroup "generic plugin config"
         runConfigSession subdir session = do
           failIfSessionTimeout $
             runSessionWithTestConfig def
-                { testConfigSession=def {ignoreConfigurationRequests=False}, testShiftRoot=True
+                { testConfigSession=def {ignoreConfigurationRequests=False}
                 , testPluginDescriptor=plugin, testDirLocation=Left ("test/testdata" </> subdir) }
                 (const session)
 
