@@ -118,9 +118,9 @@ suggestionsTests =
     , knownBrokenForGhcVersions [GHC910] "apply-refact doesn't work on 9.10" $ testCase "falls back to pre 3.8 code actions" $
         runSessionWithTestConfig def
             { testConfigCaps = noLiteralCaps
-            , testDirLocation = Left testDir
+            , testDirLocation = VirtualFileTree [copyDir "./"] testDir
             , testPluginDescriptor = hlintPlugin
-            , testShiftRoot = True} $ const $ do
+            } $ const $ do
         doc <- openDoc "Base.hs" "haskell"
 
         _ <- hlintCaptureKick
@@ -350,8 +350,7 @@ runHlintSession :: FilePath -> Session a -> IO a
 runHlintSession subdir = failIfSessionTimeout .
     runSessionWithTestConfig def
       { testConfigCaps = codeActionNoResolveCaps
-      , testShiftRoot = True
-      , testDirLocation = Left (testDir </> subdir)
+      , testDirLocation = VirtualFileTree [copyDir "./"] (testDir </> subdir)
       , testPluginDescriptor = hlintPlugin
       }
     . const
@@ -466,9 +465,8 @@ setupGoldenHlintTest :: TestName -> FilePath -> ClientCapabilities -> (TextDocum
 setupGoldenHlintTest testName path config =
     goldenWithTestConfig def
     { testConfigCaps = config
-    , testShiftRoot = True
     , testPluginDescriptor = hlintPlugin
-    , testDirLocation = Right tree
+    , testDirLocation = tree
     } testName tree path "expected" "hs"
   where tree = mkVirtualFileTree testDir (directProject (path <.> "hs"))
 

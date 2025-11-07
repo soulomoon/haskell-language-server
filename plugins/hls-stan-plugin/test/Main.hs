@@ -77,7 +77,6 @@ runStanSession subdir =
   failIfSessionTimeout
   . runSessionWithTestConfig def{
     testConfigCaps=codeActionNoResolveCaps
-    , testShiftRoot=True
     , testPluginDescriptor=stanPlugin
     , testDirLocation=Left (testDir </> subdir)
     }

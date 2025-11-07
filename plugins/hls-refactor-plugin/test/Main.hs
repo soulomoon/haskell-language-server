@@ -4063,10 +4063,9 @@ run' = runInDir (VirtualFileTree [] "")
 runInDir :: VirtualFileTree -> (FilePath -> Session a) -> IO a
 runInDir vft act =
     runSessionWithTestConfig def
-        { testDirLocation = Right vft
+        { testDirLocation = vft
         , testPluginDescriptor = refactorPlugin
         , testConfigCaps = lspTestCaps
-        , testShiftRoot = True
         }
         $ act
 

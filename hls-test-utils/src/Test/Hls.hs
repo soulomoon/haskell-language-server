@@ -233,7 +233,7 @@ goldenWithHaskellAndCaps
 goldenWithHaskellAndCaps config clientCaps plugin title testDataDir path desc ext act =
   goldenGitDiff title (testDataDir </> path <.> desc <.> ext)
   $ runSessionWithTestConfig def {
-    testDirLocation = Left testDataDir,
+    testDirLocation = VirtualFileTree [copy "./"] testDataDir,
     testConfigCaps = clientCaps,
     testLspConfig = config,
     testPluginDescriptor = plugin
@@ -283,7 +283,7 @@ goldenWithHaskellAndCapsInTmpDir config clientCaps plugin title tree path desc e
   goldenGitDiff title (vftOriginalRoot tree </> path <.> desc <.> ext)
   $
   runSessionWithTestConfig def {
-    testDirLocation = Right tree,
+    testDirLocation = tree,
     testConfigCaps = clientCaps,
     testLspConfig = config,
     testPluginDescriptor = plugin
@@ -507,7 +507,7 @@ initializeTestRecorder envVars = do
 runSessionWithServerInTmpDir :: Pretty b => Config -> PluginTestDescriptor b -> VirtualFileTree -> Session a -> IO a
 runSessionWithServerInTmpDir config plugin tree act =
     runSessionWithTestConfig def
-    {testLspConfig=config, testPluginDescriptor = plugin,  testDirLocation=Right tree}
+    {testLspConfig=config, testPluginDescriptor = plugin, testDirLocation=tree}
     (const act)
 
 -- | Same as 'withTemporaryDataAndCacheDirectory', but materialises the given
@@ -583,8 +583,7 @@ runSessionWithServer config plugin fp act =
     runSessionWithTestConfig def {
         testLspConfig=config
         , testPluginDescriptor=plugin
-        , testDirLocation = Right $ VirtualFileTree [copyDir "./"] fp
-        , testShiftRoot = True
+        , testDirLocation = VirtualFileTree [copyDir "./"] fp
         } (const act)
 
 
@@ -593,8 +592,7 @@ runSessionWithServer' config plugin fp act =
     runSessionWithTestConfig def {
         testLspConfig=config
         , testPluginDescriptor=plugin
-        , testDirLocation = Right $ VirtualFileTree [copyDir "./"] fp
-        , testShiftRoot = True
+        , testDirLocation = VirtualFileTree [copyDir "./"] fp
         } act
 
 runSessionWithServerEmptyDir :: Pretty b => Config -> PluginTestDescriptor b -> (FilePath -> Session a) -> IO a
@@ -602,17 +600,15 @@ runSessionWithServerEmptyDir config plugin act =
     runSessionWithTestConfig def {
         testLspConfig=config
         , testPluginDescriptor=plugin
-        , testDirLocation = Right $ VirtualFileTree [] ""
-        , testShiftRoot = True
+        , testDirLocation = VirtualFileTree [] ""
         } act
 
 
 instance Default (TestConfig b) where
   def = TestConfig {
-    testDirLocation = Right $ VirtualFileTree [] "",
+    testDirLocation = VirtualFileTree [] "",
     testClientRoot = Nothing,
     testServerRoot = Nothing,
-    testShiftRoot = False,
     testDisableKick = False,
     testDisableDefaultPlugin = False,
     testPluginDescriptor = mempty,
@@ -755,7 +751,7 @@ lockForTempDirs = unsafePerformIO newLock
 
 data TestConfig b = TestConfig
   {
-    testDirLocation          :: Either FilePath VirtualFileTree
+    testDirLocation          :: VirtualFileTree
     -- ^ The file tree to use for the test, either a directory or a virtual file tree
     -- if using a virtual file tree,
     -- Creates a temporary directory, and materializes the VirtualFileTree
@@ -774,8 +770,6 @@ data TestConfig b = TestConfig
     -- Don't forget to use 'TASTY_PATTERN' to debug only a subset of tests.
     --
     -- For plugin test logs, look at the documentation of 'mkPluginTestDescriptor'.
-  , testShiftRoot            :: Bool
-    -- ^ Whether to shift the current directory to the root of the project
   , testClientRoot           :: Maybe FilePath
     -- ^ Specify the root of (the client or LSP context),
     -- if Nothing it is the same as the testDirLocation
@@ -865,14 +859,8 @@ runSessionWithTestConfig TestConfig{..} session =
     pure result
 
     where
-        shiftRoot shiftTarget f  =
-            if testShiftRoot
-                then withLock lock $ keepCurrentDirectory $ setCurrentDirectory shiftTarget >> f
-                else f
-        runSessionInVFS (Left testConfigRoot) act = do
-            root <- makeAbsolute testConfigRoot
-            withTemporaryDataAndCacheDirectory (const $ act root)
-        runSessionInVFS (Right vfs) act =
+        shiftRoot shiftTarget f  = withLock lock $ keepCurrentDirectory $ setCurrentDirectory shiftTarget >> f
+        runSessionInVFS vfs act =
             withVfsTestDataDirectory vfs $ \fs -> do
                 act (fsRoot fs)
         testingArgs prjRoot recorderIde plugins =

@@ -18,6 +18,8 @@ import qualified Language.LSP.Protocol.Lens    as L
 import           Language.LSP.Protocol.Message
 import           System.FilePath               ((</>))
 import           Test.Hls
+import           Test.Hls.FileSystem           (VirtualFileTree (VirtualFileTree),
+                                                copyDir)
 
 explicitImportsPlugin :: PluginTestDescriptor ExplicitImports.Log
 explicitImportsPlugin = mkPluginTestDescriptor ExplicitImports.descriptor "explicitImports"
@@ -205,7 +207,7 @@ noCodeLensTest caps fp = do
       liftIO (assertFailure "Unexpected code lens")
   where
     run = runSessionWithTestConfig def
-         { testDirLocation = Left testDataDir
+         { testDirLocation = VirtualFileTree [copyDir "./"] testDataDir
          , testConfigCaps = caps
          , testLspConfig = def
          , testPluginDescriptor = explicitImportsPlugin
@@ -229,7 +231,7 @@ inlayHintsTest configCaps postfix fp line assert = testCase (fp ++ postfix) $ ru
     -- zero-based position
     lineRange line = Range (Position line 0) (Position line 1000)
     run = runSessionWithTestConfig def
-        { testDirLocation = Left testDataDir
+        { testDirLocation = VirtualFileTree [copyDir "./"] testDataDir
         , testPluginDescriptor = explicitImportsPlugin
         , testConfigCaps = configCaps
         }

@@ -152,7 +152,7 @@ semanticTokensConfigTest =
             { ignoreConfigurationRequests = False
             }
           , testConfigCaps = fullLatestClientCaps
-          , testDirLocation = Right fs
+          , testDirLocation = fs
           , testLspConfig = mkSemanticConfig funcVar
           }
         $ const $ do

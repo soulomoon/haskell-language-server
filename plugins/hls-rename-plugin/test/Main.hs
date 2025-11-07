@@ -13,6 +13,7 @@ import qualified Ide.Plugin.Rename          as Rename
 import qualified Language.LSP.Protocol.Lens as L
 import           System.FilePath
 import           Test.Hls
+import           Test.Hls.FileSystem        (VirtualFileTree (..), copyDir)
 
 main :: IO ()
 main = defaultTestRunner tests
@@ -146,7 +147,7 @@ expectRenameError doc pos newName = do
 runRenameSession :: FilePath -> Session a -> IO a
 runRenameSession subdir = failIfSessionTimeout
   .  runSessionWithTestConfig def
-  { testDirLocation = Left $ testDataDir </> subdir
+  { testDirLocation = VirtualFileTree [copyDir "./"] (testDataDir </> subdir)
   , testPluginDescriptor = renamePlugin
   , testConfigCaps = codeActionNoResolveCaps }
   . const
