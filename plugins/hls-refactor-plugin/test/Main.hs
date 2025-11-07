@@ -24,7 +24,9 @@ import           Data.Maybe
 import qualified Data.Text                                as T
 import           Development.IDE.GHC.Util
 import           Development.IDE.Plugin.Completions.Types (extendImportCommandId)
-import           Development.IDE.Test
+import           Development.IDE.Test                     hiding
+                                                          (waitForBuildQueue,
+                                                           waitForTypecheck)
 import           Development.IDE.Types.Location
 import           Development.Shake                        (getDirectoryFilesIO)
 import qualified Language.LSP.Protocol.Lens               as L
@@ -630,12 +632,13 @@ renameActionTests = testGroup "rename actions"
         ]
   ]
   where
-    check :: TestName -> [T.Text] -> (T.Text, Range) -> [T.Text] -> TestTree
+    check :: HasCallStack => TestName -> [T.Text] -> (T.Text, Range) -> [T.Text] -> TestTree
     check testName linesOrig (actionTitle, actionRange) linesExpected  =
       testSession testName $ do
         let contentBefore = T.unlines linesOrig
         doc <- createDoc "Testing.hs" "haskell" contentBefore
         _ <- waitForDiagnostics
+        waitForBuildQueue
         action <- pickActionWithTitle actionTitle =<< getCodeActions doc actionRange
         executeCodeAction action
         contentAfter <- documentContents doc
@@ -3987,7 +3990,7 @@ extendImportTestsRegEx = testGroup "regex parsing"
         template message expected = do
             liftIO $ expected @=? matchRegExMultipleImports message
 
-pickActionWithTitle :: T.Text -> [Command |? CodeAction] -> Session CodeAction
+pickActionWithTitle :: HasCallStack => T.Text -> [Command |? CodeAction] -> Session CodeAction
 pickActionWithTitle title actions =
   case matches of
     [] -> liftIO . assertFailure $ "CodeAction with title " <> show title <> " not found in " <> show titles

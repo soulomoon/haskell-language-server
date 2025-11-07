@@ -23,8 +23,8 @@ tests = let
   tst (get, check) pos sfp targetRange title =
     testWithDummyPlugin title (mkIdeTestFs [copyDir "hover"]) $ do
         doc <- openDoc sfp "haskell"
-        waitForProgressDone
         _x <- waitForTypecheck doc
+        waitForProgressDone
         found <- get doc pos
         check found targetRange
 
