@@ -88,8 +88,7 @@ codeActionTestWithDisableWarning = codeActionTestWith pragmasDisableWarningPlugi
 codeActionTestWith :: PluginTestDescriptor () -> String -> FilePath -> [(T.Text, String)] -> TestTree
 codeActionTestWith descriptor testComment fp actions =
   goldenWithPragmas descriptor testComment fp $ \doc -> do
-    -- _ <- waitForDiagnosticsFrom doc
-    waitForBuildQueue
+    waitForDiagsAndBuildQueue doc
     cas <- map fromAction <$> getAllCodeActions doc
     mapM_ (\(action, contains) -> go action contains cas) actions
     action <- case cas of
