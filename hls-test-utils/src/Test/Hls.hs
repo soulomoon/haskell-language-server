@@ -68,7 +68,9 @@ module Test.Hls
     captureKickDiagnostics,
     kick,
     TestConfig(..),
-    waitForDiagsAndBuildQueue
+    waitForDiagsAndBuildQueue,
+    runSessionWithServerEmptyDir,
+    runSessionWithServer'
     )
 where
 
@@ -584,6 +586,25 @@ runSessionWithServer config plugin fp act =
         , testDirLocation = Right $ VirtualFileTree [copyDir "./"] fp
         , testShiftRoot = True
         } (const act)
+
+
+runSessionWithServer' :: Pretty b => Config -> PluginTestDescriptor b -> FilePath -> (FilePath -> Session a) -> IO a
+runSessionWithServer' config plugin fp act =
+    runSessionWithTestConfig def {
+        testLspConfig=config
+        , testPluginDescriptor=plugin
+        , testDirLocation = Right $ VirtualFileTree [copyDir "./"] fp
+        , testShiftRoot = True
+        } act
+
+runSessionWithServerEmptyDir :: Pretty b => Config -> PluginTestDescriptor b -> (FilePath -> Session a) -> IO a
+runSessionWithServerEmptyDir config plugin act =
+    runSessionWithTestConfig def {
+        testLspConfig=config
+        , testPluginDescriptor=plugin
+        , testDirLocation = Right $ VirtualFileTree [] ""
+        , testShiftRoot = True
+        } act
 
 
 instance Default (TestConfig b) where
