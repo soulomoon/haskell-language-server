@@ -63,6 +63,7 @@ main = defaultTestRunner $ testGroup "import-actions"
     , testCase "No CodeLens when exported" $
       runSessionWithServer def explicitImportsPlugin testDataDir $ do
         doc <- openDoc "ExplicitExported.hs" "haskell"
+        waitForBuildQueue
         lenses <- getCodeLenses doc
         liftIO $ lenses @?= []
     , testCase "No InlayHints when exported" $
@@ -221,7 +222,7 @@ notRefineImports _ = True
 inlayHintsTest :: ClientCapabilities -> String -> FilePath -> UInt -> ([InlayHint] -> Assertion) -> TestTree
 inlayHintsTest configCaps postfix fp line assert = testCase (fp ++ postfix) $ run $ \_ -> do
   doc <- openDoc (fp ++ ".hs") "haskell"
-  waitForDiagsAndBuildQueue doc
+  waitForBuildQueue
   inlayHints <- getInlayHints doc (lineRange line)
   liftIO $ assert inlayHints
   where

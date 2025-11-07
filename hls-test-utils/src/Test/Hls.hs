@@ -581,7 +581,8 @@ runSessionWithServer config plugin fp act =
     runSessionWithTestConfig def {
         testLspConfig=config
         , testPluginDescriptor=plugin
-        , testDirLocation = Left fp
+        , testDirLocation = Right $ VirtualFileTree [copyDir "./"] fp
+        , testShiftRoot = True
         } (const act)
 
 
