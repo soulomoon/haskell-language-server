@@ -55,6 +55,7 @@ mkGoldenAddArgTest' :: FilePath -> Range -> T.Text -> TestTree
 mkGoldenAddArgTest' testFileName range varName = do
     let action docB = do
           _ <- waitForDiagnostics
+          waitForBuildQueue
           let matchAction a = case a of
                 InR CodeAction {_title = t} -> "Add" `T.isPrefixOf` t
                 _                           -> False
