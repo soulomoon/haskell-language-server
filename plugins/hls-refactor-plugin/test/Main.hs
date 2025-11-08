@@ -26,17 +26,13 @@ import           Development.IDE.GHC.Util
 import           Development.IDE.Plugin.Completions.Types (extendImportCommandId)
 import           Development.IDE.Test
 import           Development.IDE.Types.Location
-import           Development.Shake                        (getDirectoryFilesIO)
 import qualified Language.LSP.Protocol.Lens               as L
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Protocol.Types              hiding
                                                           (SemanticTokensEdit (_start),
                                                            mkRange)
 import           Language.LSP.Test
-import           System.Directory
 import           System.FilePath
-import qualified System.IO.Extra
-import           System.IO.Extra                          hiding (withTempDir)
 import           System.Time.Extra
 import           Test.Tasty
 import           Test.Tasty.HUnit
@@ -45,6 +41,7 @@ import           Text.Regex.TDFA                          ((=~))
 
 import           Development.IDE.Plugin.CodeAction        (matchRegExMultipleImports)
 import           Test.Hls
+import qualified Test.Hls.FileSystem                      as FS
 
 import qualified Development.IDE.GHC.ExactPrint
 import           Development.IDE.Plugin.CodeAction        (NotInScope (..))
@@ -4031,40 +4028,29 @@ testSessionWithExtraFiles :: HasCallStack => FilePath -> TestName -> (FilePath -
 testSessionWithExtraFiles prefix name = testCase name . runWithExtraFiles prefix
 
 runWithExtraFiles :: HasCallStack => FilePath -> (FilePath -> Session a) -> IO a
-runWithExtraFiles prefix s = withTempDir $ \dir -> do
-  copyTestDataFiles dir prefix
-  runInDir dir (s dir)
-
-copyTestDataFiles :: HasCallStack => FilePath -> FilePath -> IO ()
-copyTestDataFiles dir prefix = do
-  -- Copy all the test data files to the temporary workspace
-  testDataFiles <- getDirectoryFilesIO ("plugins/hls-refactor-plugin/test/data" </> prefix) ["//*"]
-  for_ testDataFiles $ \f -> do
-    createDirectoryIfMissing True $ dir </> takeDirectory f
-    copyFile ("plugins/hls-refactor-plugin/test/data" </> prefix </> f) (dir </> f)
-
-run :: Session a -> IO a
-run s = run' (const s)
-
-run' :: (FilePath -> Session a) -> IO a
-run' s = withTempDir $ \dir -> runInDir dir (s dir)
-
-runInDir :: FilePath -> Session a -> IO a
-runInDir dir act =
+runWithExtraFiles prefix s =
     runSessionWithTestConfig def
-        { testDirLocation = Left dir
+        { testDirLocation = Right $ mkVirtualFileTreeWithPrefix prefix
         , testPluginDescriptor = refactorPlugin
         , testConfigCaps = lspTestCaps }
-        $ const act
+        s
+
+testDataDir :: FilePath
+testDataDir = "plugins/hls-refactor-plugin/test/data"
+
+mkVirtualFileTreeWithPrefix :: FilePath -> FS.VirtualFileTree
+mkVirtualFileTreeWithPrefix prefix =
+    FS.mkVirtualFileTree testDataDir [FS.copyDir prefix]
+
+run :: Session a -> IO a
+run s = runSessionWithTestConfig def
+    { testDirLocation = Right $ FS.mkVirtualFileTree testDataDir []
+    , testPluginDescriptor = refactorPlugin
+    , testConfigCaps = lspTestCaps }
+    (const s)
 
 lspTestCaps :: ClientCapabilities
 lspTestCaps = fullLatestClientCaps { _window = Just $ WindowClientCapabilities (Just True) Nothing Nothing }
 
 pattern R :: UInt -> UInt -> UInt -> UInt -> Range
 pattern R x y x' y' = Range (Position x y) (Position x' y')
-
--- | Version of 'System.IO.Extra.withTempDir' that canonicalizes the path
--- Which we need to do on macOS since the $TMPDIR can be in @/private/var@ or
--- @/var@
-withTempDir :: (FilePath -> IO a) -> IO a
-withTempDir f = System.IO.Extra.withTempDir $ (canonicalizePath >=> f)
