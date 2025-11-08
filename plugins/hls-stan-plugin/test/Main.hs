@@ -10,6 +10,7 @@ import           Ide.Types
 import qualified Language.LSP.Protocol.Lens as L
 import           System.FilePath
 import           Test.Hls
+import           Test.Hls.FileSystem        (VirtualFileTree (..), copyDir)
 
 main :: IO ()
 main = defaultTestRunner tests
@@ -78,6 +79,6 @@ runStanSession subdir =
   . runSessionWithTestConfig def{
     testConfigCaps=codeActionNoResolveCaps
     , testPluginDescriptor=stanPlugin
-    , testDirLocation=Left (testDir </> subdir)
+    , testDirLocation= VirtualFileTree [copyDir "./"] $ testDir </> subdir
     }
   . const
