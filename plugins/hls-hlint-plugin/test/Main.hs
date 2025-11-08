@@ -452,6 +452,7 @@ goldenTest :: TestName -> FilePath -> Point -> T.Text -> TestTree
 goldenTest testCaseName goldenFilename point hintText =
   setupGoldenHlintTest testCaseName goldenFilename codeActionNoResolveCaps $ \document -> do
     _ <- hlintCaptureKick
+    waitForBuildQueue
     actions <- getCodeActions document $ pointToRange point
     case find ((== Just hintText) . getCodeActionTitle) actions of
       Just (InR codeAction) -> do
