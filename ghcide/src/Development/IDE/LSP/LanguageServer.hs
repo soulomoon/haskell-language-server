@@ -40,6 +40,7 @@ import qualified Colog.Core                            as Colog
 import           Control.Concurrent.Extra              (newBarrier,
                                                         signalBarrier,
                                                         waitBarrier)
+import           Control.Exception                     (throw)
 import           Control.Monad.IO.Unlift               (MonadUnliftIO)
 import           Control.Monad.Trans.Cont              (ContT, evalContT)
 import           Development.IDE.Core.IdeConfiguration
@@ -309,7 +310,8 @@ handleInit initParams env (TRequestMessage _ _ m params) = otTracedHandler "Init
                 Left e -> do
                     lifetimeConfirm ("due to exception in reactor thread: " <> T.pack (displayException e))
                     logWith recorder Error $ LogReactorThreadException e
-                    ctxForceShutdown initParams
+                    -- ctxForceShutdown initParams
+                    throw e
                 _ -> do
                     lifetimeConfirm "due to shutdown message"
                     return ()
