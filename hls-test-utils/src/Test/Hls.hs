@@ -233,7 +233,7 @@ goldenWithHaskellAndCaps
 goldenWithHaskellAndCaps config clientCaps plugin title testDataDir path desc ext act =
   goldenGitDiff title (testDataDir </> path <.> desc <.> ext)
   $ runSessionWithTestConfig def {
-    testDirLocation = VirtualFileTree [copy "./"] testDataDir,
+    testDirLocation = VirtualFileTree [copyDir "./"] testDataDir,
     testConfigCaps = clientCaps,
     testLspConfig = config,
     testPluginDescriptor = plugin
