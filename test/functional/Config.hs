@@ -19,6 +19,7 @@ import           Ide.Types
 import           Language.LSP.Test    as Test
 import           System.FilePath      ((</>))
 import           Test.Hls
+import           Test.Hls.FileSystem  (VirtualFileTree (..), copyDir)
 
 {-# ANN module ("HLint: ignore Reduce duplication"::String) #-}
 
@@ -72,7 +73,8 @@ genericConfigTests = testGroup "generic plugin config"
           failIfSessionTimeout $
             runSessionWithTestConfig def
                 { testConfigSession=def {ignoreConfigurationRequests=False}
-                , testPluginDescriptor=plugin, testDirLocation=Left ("test/testdata" </> subdir) }
+                , testPluginDescriptor=plugin, testDirLocation= VirtualFileTree [copyDir "./"] $ "test/testdata" </> subdir
+                }
                 (const session)
 
         testPluginId = "testplugin"
