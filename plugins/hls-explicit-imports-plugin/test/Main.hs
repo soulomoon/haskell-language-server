@@ -224,7 +224,6 @@ notRefineImports _ = True
 inlayHintsTest :: ClientCapabilities -> String -> FilePath -> UInt -> ([InlayHint] -> Assertion) -> TestTree
 inlayHintsTest configCaps postfix fp line assert = testCase (fp ++ postfix) $ run $ \_ -> do
   doc <- openDoc (fp ++ ".hs") "haskell"
-  waitForDiagsAndBuildQueue doc
   inlayHints <- getInlayHints doc (lineRange line)
   liftIO $ assert inlayHints
   where
