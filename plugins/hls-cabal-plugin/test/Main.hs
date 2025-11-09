@@ -112,7 +112,7 @@ pluginTests =
         "Plugin Tests"
         [ testGroup
             "Diagnostics"
-            [ runCabalTestCaseSession "Publishes Diagnostics on Error" "" $ do
+            [ runCabalTestCaseSession "Publishes Diagnostics on Error" "" $ \_ -> do
                 _ <- openDoc "invalid.cabal" "cabal"
                 diags <- cabalCaptureKick
                 unknownLicenseDiag <- liftIO $ inspectDiagnostic diags ["Unknown SPDX license identifier: 'BSD3'"]
@@ -120,7 +120,7 @@ pluginTests =
                     length diags @?= 1
                     unknownLicenseDiag ^. L.range @?= Range (Position 3 24) (Position 4 0)
                     unknownLicenseDiag ^. L.severity @?= Just DiagnosticSeverity_Error
-            ,   runCabalTestCaseSession "Publishes Diagnostics on unsupported cabal version as Warning" "" $ do
+            ,   runCabalTestCaseSession "Publishes Diagnostics on unsupported cabal version as Warning" "" $ \_ -> do
                 _ <- openDoc "unsupportedVersion.cabal" "cabal"
                 diags <- cabalCaptureKick
                 unknownVersionDiag <- liftIO $ inspectDiagnosticAny diags ["Unsupported cabal-version 99999.0", "Unsupported cabal format version in cabal-version field: 99999.0"]
@@ -128,7 +128,7 @@ pluginTests =
                     length diags @?= 1
                     unknownVersionDiag ^. L.range @?= Range (Position 0 0) (Position 1 0)
                     unknownVersionDiag ^. L.severity @?= Just DiagnosticSeverity_Warning
-            , runCabalTestCaseSession "Clears diagnostics" "" $ do
+            , runCabalTestCaseSession "Clears diagnostics" "" $ \_ -> do
                 doc <- openDoc "invalid.cabal" "cabal"
                 diags <- cabalCaptureKick
                 unknownLicenseDiag <- liftIO $ inspectDiagnostic diags ["Unknown SPDX license identifier: 'BSD3'"]
@@ -147,7 +147,7 @@ pluginTests =
 
 codeActionTests :: TestTree
 codeActionTests = testGroup "Code Actions"
-    [ runCabalTestCaseSession "BSD-3" "" $ do
+    [ runCabalTestCaseSession "BSD-3" "" $ \_ -> do
         doc <- openDoc "licenseCodeAction.cabal" "cabal"
         diags <- waitForDiagnosticsFromSource doc "cabal"
         reduceDiag <- liftIO $ inspectDiagnostic diags ["Unknown SPDX license identifier: 'BSD3'"]
@@ -170,7 +170,7 @@ codeActionTests = testGroup "Code Actions"
                     , "    build-depends:    base"
                     , "    default-language: Haskell2010"
                     ]
-    , runCabalTestCaseSession "Apache-2.0" "" $ do
+    , runCabalTestCaseSession "Apache-2.0" "" $ \_ -> do
         doc <- openDoc "licenseCodeAction2.cabal" "cabal"
         diags <- waitForDiagnosticsFromSource doc "cabal"
         -- test if it supports typos in license name, here 'apahe'
@@ -250,7 +250,7 @@ hoverOnDependencyTests = testGroup "Hover Dependency"
     where
         hoverContainsTest :: TestName -> FilePath -> Position -> T.Text -> TestTree
         hoverContainsTest testName cabalFile pos containedText =
-            runCabalTestCaseSession testName "hover" $ do
+            runCabalTestCaseSession testName "hover" $ \_ -> do
                 doc <- openDoc cabalFile "cabal"
                 h <- getHover doc pos
                 case h of
@@ -265,7 +265,7 @@ hoverOnDependencyTests = testGroup "Hover Dependency"
 
         hoverIsNullTest :: TestName -> FilePath -> Position -> TestTree
         hoverIsNullTest testName cabalFile pos =
-            runCabalTestCaseSession testName "hover" $ do
+            runCabalTestCaseSession testName "hover" $ \_ -> do
                 doc <- openDoc cabalFile "cabal"
                 h <- getHover doc pos
                 liftIO $ assertBool ("Found hover `" <> show h <> "`") $ Maybe.isNothing h

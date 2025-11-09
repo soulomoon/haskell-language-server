@@ -101,8 +101,7 @@ import qualified System.Random                       as Random
 import           System.Random                       (RandomGen)
 import           Text.ParserCombinators.ReadP        (readP_to_S)
 
-import           Control.Concurrent.STM              (STM, TVar, newTVar,
-                                                      newTVarIO)
+import           Control.Concurrent.STM              (STM, TVar, newTVarIO)
 import qualified Control.Monad.STM                   as STM
 import           Control.Monad.Trans.Reader
 import qualified Development.IDE.Session.Ghc         as Ghc

@@ -51,23 +51,23 @@ basicCompleterTests :: TestTree
 basicCompleterTests =
   testGroup
     "Basic Completer Tests"
-    [ runCabalTestCaseSession "In stanza context - stanza should not be suggested" "" $ do
+    [ runCabalTestCaseSession "In stanza context - stanza should not be suggested" "" $ \_ -> do
         doc <- openDoc "completer.cabal" "cabal"
         compls <- getCompletions doc (Position 11 7)
         let complTexts = getTextEditTexts compls
         liftIO $ assertBool "does not suggest library" $ "library" `notElem` complTexts
         liftIO $ assertBool "suggests library keyword" $ "extra-libraries:" `elem` complTexts
-    , runCabalTestCaseSession "In top level context - stanza should be suggested" "" $ do
+    , runCabalTestCaseSession "In top level context - stanza should be suggested" "" $ \_ -> do
         doc <- openDoc "completer.cabal" "cabal"
         compls <- getCompletions doc (Position 8 2)
         let complTexts = getTextEditTexts compls
         liftIO $ assertBool "suggests benchmark" $ "benchmark" `elem` complTexts
-    , runCabalTestCaseSession "In top level context - stanza should be suggested" "" $ do
+    , runCabalTestCaseSession "In top level context - stanza should be suggested" "" $ \_ -> do
         doc <- openDoc "completer.cabal" "cabal"
         compls <- getCompletions doc (Position 13 2)
         let complTexts = getTextEditTexts compls
         liftIO $ assertBool "suggests common" $ "common" `elem` complTexts
-    , runCabalTestCaseSession "Main-is completions should be relative to hs-source-dirs of same stanza" "filepath-completions" $ do
+    , runCabalTestCaseSession "Main-is completions should be relative to hs-source-dirs of same stanza" "filepath-completions" $ \_ -> do
         doc <- openDoc "main-is.cabal" "cabal"
         compls <- getCompletions doc (Position 10 12)
         let complTexts = getTextEditTexts compls
@@ -352,7 +352,7 @@ autogenFieldCompletionTests =
 
   where
     testAutogenField :: String -> FilePath -> Position -> [T.Text] -> TestTree
-    testAutogenField section file pos expected = runCabalTestCaseSession ("autogen-modules completion in " <> section) "" $ do
+    testAutogenField section file pos expected = runCabalTestCaseSession ("autogen-modules completion in " <> section) "" $ \_ -> do
       doc <- openDoc file "cabal"
       items <- getCompletions doc pos
       let labels = map (^. L.label) items
