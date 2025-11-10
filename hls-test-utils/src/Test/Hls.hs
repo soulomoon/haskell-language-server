@@ -973,8 +973,8 @@ captureKickDiagnostics start done = do
             _ -> Nothing
 
 waitForKickDone :: Session ()
-waitForKickDone =
-    -- void $ skipManyTill anyMessage nonTrivialKickDone
+waitForKickDone = do
+    void $ skipManyTill anyMessage nonTrivialKickDone
     void $ waitForBuildQueue
 
 waitForKickStart :: Session ()

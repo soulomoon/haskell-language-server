@@ -210,7 +210,6 @@ codeActionTests = testGroup "Code Actions"
   where
     executeFirstActionPerDiagnostic doc = do
       _ <- waitForDiagsAndBuildQueue doc
-      liftIO $ traceIO "Executing code actions for all diagnostics"
       executeFirstActionPerDiagnostic' doc
     executeFirstActionPerDiagnostic' doc = do
       diagnotics <- getCurrentDiagnostics doc
