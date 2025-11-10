@@ -14,7 +14,7 @@ import           Completer                       (completerTests)
 import           Context                         (contextTests)
 import           Control.Lens                    ((^.))
 import           Control.Lens.Fold               ((^?))
-import           Control.Monad                   (forM, guard, void)
+import           Control.Monad                   (forM, guard)
 import qualified Data.ByteString                 as BS
 import           Data.Either                     (isRight)
 import           Data.List                       (nub)
@@ -23,8 +23,8 @@ import qualified Data.Maybe                      as Maybe
 import           Data.Text                       (Text)
 import qualified Data.Text                       as T
 import qualified Data.Text.IO                    as Text
+import           Debug.Trace                     (traceIO)
 import           Definition                      (gotoDefinitionTests)
-import           Development.IDE.Plugin.Test     (TestRequest (WaitForDiagnosticPublished))
 import           Development.IDE.Test
 import           Ide.Plugin.Cabal.LicenseSuggest (licenseErrorSuggestion)
 import qualified Ide.Plugin.Cabal.Parse          as Lib
@@ -209,10 +209,10 @@ codeActionTests = testGroup "Code Actions"
     ]
   where
     executeFirstActionPerDiagnostic doc = do
-      _ <- waitForDiagnosticsFrom doc
+      _ <- waitForDiagsAndBuildQueue doc
+      liftIO $ traceIO "Executing code actions for all diagnostics"
       executeFirstActionPerDiagnostic' doc
     executeFirstActionPerDiagnostic' doc = do
-      void $ callTestPluginWithDiag WaitForDiagnosticPublished
       diagnotics <- getCurrentDiagnostics doc
       -- Execute the first code action at each diagnostic point
       !cas <- catMaybes <$> forM diagnotics (\diagnostic -> do
