@@ -464,11 +464,11 @@ goldenTest testCaseName goldenFilename point hintText =
 
 setupGoldenHlintTest :: TestName -> FilePath -> ClientCapabilities -> (TextDocumentIdentifier -> Session ()) -> TestTree
 setupGoldenHlintTest testName path config =
-    goldenWithTestConfig def
+    goldenWithTestConfigWithCustomWait def
     { testConfigCaps = config
     , testPluginDescriptor = hlintPlugin
     , testDirLocation = tree
-    } testName tree path "expected" "hs"
+    } testName tree path "expected" "hs" (Just $ return ())
   where tree = mkVirtualFileTree testDir (directProject (path <.> "hs"))
 
 ignoreHintGoldenResolveTest :: TestName -> FilePath -> Point -> T.Text -> TestTree

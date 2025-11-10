@@ -70,7 +70,8 @@ module Test.Hls
     TestConfig(..),
     waitForDiagsAndBuildQueue,
     runSessionWithServerEmptyDir,
-    runSessionWithServer'
+    runSessionWithServer',
+    goldenWithTestConfigWithCustomWait
     )
 where
 
@@ -258,12 +259,29 @@ goldenWithTestConfig
   -> (TextDocumentIdentifier -> Session ())
   -> TestTree
 goldenWithTestConfig config title tree path desc ext act =
+    goldenWithTestConfigWithCustomWait config title tree path desc ext Nothing act
+
+
+goldenWithTestConfigWithCustomWait
+  :: Pretty b
+  => TestConfig b
+  -> TestName
+  -> VirtualFileTree
+  -> FilePath
+  -> FilePath
+  -> FilePath
+  -> Maybe (Session ())
+  -> (TextDocumentIdentifier -> Session ())
+  -> TestTree
+goldenWithTestConfigWithCustomWait config title tree path desc ext mWait act =
   goldenGitDiff title (vftOriginalRoot tree </> path <.> desc <.> ext)
   $ runSessionWithTestConfig config $ const
   $ TL.encodeUtf8 . TL.fromStrict
   <$> do
     doc <- openDoc (path <.> ext) "haskell"
-    void waitForBuildQueue
+    case mWait of
+      Just waitAction -> waitAction
+      Nothing         -> void waitForBuildQueue
     act doc
     documentContents doc
 
