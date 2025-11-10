@@ -1,5 +1,6 @@
 module Main (main) where
 
+import           Data.List           (sort)
 import           Ide.Plugin.Notes    (Log, descriptor)
 import           System.FilePath     ((</>))
 import           Test.Hls
@@ -31,7 +32,7 @@ noteReferenceTests = testGroup "Note References"
         waitForKickDone
         refs <- getReferences doc (Position 21 15) False
         let fp = dir </> "NoteDef.hs"
-        liftIO $ refs @?= [
+        liftIO $ sort refs @?= sort [
             Location (filePathToUri (dir </> "Other.hs")) (Range (Position 6 13) (Position 6 13)),
             Location (filePathToUri fp) (Range (Position 9 9) (Position 9 9)),
             Location (filePathToUri fp) (Range (Position 5 67) (Position 5 67))
