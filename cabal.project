@@ -62,3 +62,8 @@ source-repository-package
   location: https://github.com/soulomoon/lsp.git
   tag: 6e784f92bad00879ee3de43863cd918cc0a9c5f1
   subdir: lsp lsp-types lsp-test
+
+source-repository-package
+  type: git
+  location: https://github.com/haskell/hie-bios.git
+  tag: f37d841ad7f42e4488e3f17ab124322ef1cb2e42
