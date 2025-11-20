@@ -14,8 +14,8 @@ import           Development.IDE.Test            (diagnostic, expectDiagnostics,
                                                   expectDiagnosticsWithTags,
                                                   expectNoMoreDiagnostics,
                                                   waitForAction,
-                                                  waitForActionWithExpectedDiagnosticsFromDocsOne,
-                                                  waitForActionWithExpectedDiagnosticsFromFilePath)
+                                                  waitForExpectedDiagnosticsFromDocsOne,
+                                                  waitForExpectedDiagnosticsFromFilePath)
 import           Development.IDE.Types.Location
 import qualified Language.LSP.Protocol.Lens      as L
 import           Language.LSP.Protocol.Message
@@ -68,20 +68,19 @@ tests = testGroup "diagnostics"
       expectDiagnostics [("Testing.hs", [(DiagnosticSeverity_Error, (0, 15), "parse error", Just "GHC-58481")])]
   , testWithDummyPluginEmpty "update syntax error" $ do
       let content = T.unlines [ "module Testing(missing) where" ]
-      doc <- waitForActionWithExpectedDiagnosticsFromFilePath
+      doc <- createDoc "Testing.hs" "haskell" content
+      waitForExpectedDiagnosticsFromFilePath
         [("Testing.hs", [(DiagnosticSeverity_Error, (0, 15), "Not in scope: 'missing'", Just "GHC-76037")])]
-        $ createDoc "Testing.hs" "haskell" content
       let change = TextDocumentContentChangeEvent $ InL TextDocumentContentChangePartial
               { _range = Range (Position 0 15) (Position 0 16)
               , _rangeLength = Nothing
               , _text = "l"
               }
-      waitForActionWithExpectedDiagnosticsFromFilePath
+      changeDoc doc [change]
+      -- need to wait for new diagnostics to be published
+      void $ waitForDiagnosticsFrom doc
+      waitForExpectedDiagnosticsFromFilePath
         [("Testing.hs", [(DiagnosticSeverity_Error, (0, 15), "Not in scope: 'lissing'", Just "GHC-76037")])]
-        $ do
-            changeDoc doc [change]
-            -- need to wait for new diagnostics to be published
-            void $ waitForDiagnosticsFrom doc
 
   , testWithDummyPluginEmpty "variable not in scope" $ do
       let content = T.unlines
@@ -558,7 +557,8 @@ cancellationTemplate (edit, undoEdit) mbKey = testCase (maybe "-" fst mbKey) $ r
 
       -- for the example above we expect one warning
       let missingSigDiags = (doc, [(DiagnosticSeverity_Warning, (3, 0), "Top-level binding", Just "GHC-38417")])
-      void $ waitForActionWithExpectedDiagnosticsFromDocsOne missingSigDiags (typeCheck doc)
+      typeCheck doc
+      void $ waitForExpectedDiagnosticsFromDocsOne missingSigDiags
 
       -- Now we edit the document and wait for the given key (if any)
       changeDoc doc [edit]
@@ -569,7 +569,8 @@ cancellationTemplate (edit, undoEdit) mbKey = testCase (maybe "-" fst mbKey) $ r
       -- The 2nd edit cancels the active session and unbreaks the file
       -- wait for typecheck and check that the current diagnostics are accurate
       changeDoc doc [undoEdit]
-      void $ waitForActionWithExpectedDiagnosticsFromDocsOne missingSigDiags (typeCheck doc)
+      typeCheck doc
+      void $ waitForExpectedDiagnosticsFromDocsOne missingSigDiags
 
     where
         runTestNoKick s =

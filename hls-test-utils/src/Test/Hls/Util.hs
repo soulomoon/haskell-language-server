@@ -296,12 +296,10 @@ waitForDiagnosticsFrom doc = do
        else return diags
 
 
-waitForActionWithDiagnosticsFromDocs :: (HasCallStack) => Bool -> [TextDocumentIdentifier] -> Test.Session a -> Test.Session (a, [([Diagnostic])])
-waitForActionWithDiagnosticsFromDocs waitFirst docs action = do
-  result <- action
+waitForActionWithDiagnosticsFromDocs :: (HasCallStack) => Bool -> [TextDocumentIdentifier] -> Test.Session [[Diagnostic]]
+waitForActionWithDiagnosticsFromDocs waitFirst docs = do
   void $ callTestPluginWithDiag WaitForDiagnosticPublished
-  docDiags <- mapM getOrWait docs
-  return (result, docDiags)
+  mapM getOrWait docs
   where
     waitUntilNonEmpty doc = do
           void $ waitForDiagnosticsFrom doc
@@ -329,12 +327,12 @@ flushMessages = do
 
 waitForDiagnosticsFromSource :: TextDocumentIdentifier -> String -> Test.Session [Diagnostic]
 waitForDiagnosticsFromSource doc src = do
-      diags <- concat . snd <$> waitForActionWithDiagnosticsFromDocs True [doc] (return ())
+      diags <- concat <$> waitForActionWithDiagnosticsFromDocs True [doc]
       return $ filter (\d -> d ^. L.source == Just (T.pack src)) diags
 
 expectDiagnosticsEmpty :: TextDocumentIdentifier -> String -> Test.Session ()
 expectDiagnosticsEmpty doc src = do
-    diagsA <- concat . snd <$> waitForActionWithDiagnosticsFromDocs False [doc] (return ())
+    diagsA <- concat <$> waitForActionWithDiagnosticsFromDocs False [doc]
     let diags = filter (\d -> d ^. L.source == Just (T.pack src)) diagsA
     unless (null diags) $
         liftIO $ assertFailure $ "Expected no diagnostics for " <> show (doc ^. L.uri) <>
@@ -396,7 +394,7 @@ waitForDiagnosticsFromSourceWithTimeout timeout doc src = do
         -- Send a dummy message to provoke a response from the server.
         -- This guarantees that we have at least one message to
         -- process, so message won't block or timeout.
-    diags <- concat . snd <$> waitForActionWithDiagnosticsFromDocs False [doc] (return ())
+    diags <- concat <$> waitForActionWithDiagnosticsFromDocs False [doc]
     return $ filter (\d -> d ^. L.source == Just (T.pack src)) diags
 
 
