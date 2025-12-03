@@ -40,6 +40,8 @@ module Test.Hls.Util
     , waitForDiagnosticsFrom
     , waitForDiagnosticsFromSource
     , waitForDiagnosticsFromSourceWithTimeout
+    , waitForActionWithDiagnosticsFromDocs
+    , flushMessages
     -- * Temporary directories
     , withCurrentDirectoryInTmp
     , withCurrentDirectoryInTmp'
@@ -48,6 +50,10 @@ module Test.Hls.Util
     , extractCursorPositions
     , mkParameterisedLabel
     , __i
+    -- * Extra test plugin calls
+    , callTestPluginWithDiag
+    , callTestPluginWithSMethod
+    , expectDiagnosticsEmpty
   )
 where
 
@@ -78,14 +84,17 @@ import           System.Time.Extra                        (Seconds, sleep)
 import           Test.Tasty                               (TestTree)
 import           Test.Tasty.ExpectedFailure               (expectFailBecause,
                                                            ignoreTestBecause)
-import           Test.Tasty.HUnit                         (assertFailure)
+import           Test.Tasty.HUnit                         (HasCallStack,
+                                                           assertFailure)
 
 import qualified Data.List                                as List
+import           Data.Maybe                               (mapMaybe)
 import           Data.String.Interpolate                  (__i)
 import qualified Data.Text.Internal.Search                as T
 import qualified Data.Text.Utf16.Rope.Mixed               as Rope
 import           Development.IDE.Plugin.Completions.Logic (getCompletionPrefixFromRope)
 import           Development.IDE.Plugin.Completions.Types (PosPrefixInfo (..))
+import           Development.IDE.Plugin.Test              (TestRequest (WaitForDiagnosticPublished))
 
 noLiteralCaps :: ClientCapabilities
 noLiteralCaps = def & L.textDocument ?~ textDocumentCaps
@@ -286,8 +295,48 @@ waitForDiagnosticsFrom doc = do
        then waitForDiagnosticsFrom doc
        else return diags
 
+
+waitForActionWithDiagnosticsFromDocs :: (HasCallStack) => Bool -> [TextDocumentIdentifier] -> Test.Session [[Diagnostic]]
+waitForActionWithDiagnosticsFromDocs waitFirst docs = do
+  void $ callTestPluginWithDiag WaitForDiagnosticPublished
+  mapM getOrWait docs
+  where
+    waitUntilNonEmpty doc = do
+          void $ waitForDiagnosticsFrom doc
+          void $ callTestPluginWithDiag WaitForDiagnosticPublished
+          diags <- Test.getCurrentDiagnostics doc
+          if (null diags)
+                then waitUntilNonEmpty doc
+                else return diags
+
+    getOrWait doc = do
+      diags <- Test.getCurrentDiagnostics doc
+      when (null diags && waitFirst) $ void $ waitUntilNonEmpty doc
+      flushMessages
+      Test.getCurrentDiagnostics doc
+
+flushMessages :: Test.Session ()
+flushMessages = do
+    -- let cm = SMethod_CustomMethod (Proxy @"non-existent-method")
+    let cm = SMethod_CustomMethod (Proxy @"test")
+    i <- Test.sendRequest cm A.Null
+    void (Test.responseForId cm i) <|> ignoreOthers cm i
+    where
+        ignoreOthers cm i = skipManyTill Test.anyMessage (Test.responseForId cm i) >> flushMessages
+
+
 waitForDiagnosticsFromSource :: TextDocumentIdentifier -> String -> Test.Session [Diagnostic]
-waitForDiagnosticsFromSource = waitForDiagnosticsFromSourceWithTimeout 5
+waitForDiagnosticsFromSource doc src = do
+      diags <- concat <$> waitForActionWithDiagnosticsFromDocs True [doc]
+      return $ filter (\d -> d ^. L.source == Just (T.pack src)) diags
+
+expectDiagnosticsEmpty :: TextDocumentIdentifier -> String -> Test.Session ()
+expectDiagnosticsEmpty doc src = do
+    diagsA <- concat <$> waitForActionWithDiagnosticsFromDocs False [doc]
+    let diags = filter (\d -> d ^. L.source == Just (T.pack src)) diagsA
+    unless (null diags) $
+        liftIO $ assertFailure $ "Expected no diagnostics for " <> show (doc ^. L.uri) <>
+            " got " <> show diags
 
 -- | wait for @timeout@ seconds and report an assertion failure
 -- if any diagnostic messages arrive in that period
@@ -299,37 +348,57 @@ expectNoMoreDiagnostics timeout doc src = do
             "Got unexpected diagnostics for " <> show (doc ^. L.uri) <>
             " got " <> show diags
 
+callTestPluginWithSMethod ::
+    forall {t :: MessageKind} {a} {m :: Method ServerToClient t}.
+    A.ToJSON a => SServerMethod m -> a -> Test.Session [TMessage m]
+callTestPluginWithSMethod sm cmd = do
+    let cm = SMethod_CustomMethod (Proxy @"test")
+    waitId <- Test.sendRequest cm (A.toJSON cmd)
+    let go acc = do
+            res <- skipManyTill Test.anyMessage $ do
+
+                (fmap Right (Test.responseForId cm waitId) <|> fmap Left (Test.message sm))
+            case res of
+                            Right TResponseMessage{_result} -> return (_result, acc)
+                            Left a -> go (a:acc)
+    (res, diagsNots) <- go []
+    case res of
+        Left (TResponseError t err _) -> error $ show t <> ": " <> T.unpack err
+        Right _a                      -> return diagsNots
+
+
+callTestPluginWithDiag ::
+    A.ToJSON a => a -> Test.Session [TNotificationMessage Method_TextDocumentPublishDiagnostics]
+callTestPluginWithDiag = callTestPluginWithSMethod SMethod_TextDocumentPublishDiagnostics
+-- callTestPluginWithDiag cmd = do
+--     let cm = SMethod_CustomMethod (Proxy @"test")
+--     waitId <- Test.sendRequest cm (A.toJSON cmd)
+--     let go acc = do
+--             res <- skipManyTill Test.anyMessage $ do
+--                 (fmap Right (Test.responseForId cm waitId) <|> fmap Left (Test.message SMethod_TextDocumentPublishDiagnostics))
+--             case res of
+--                             Right TResponseMessage{_result} -> return (_result, acc)
+--                             Left a -> go (a:acc)
+--     (res, diagsNots) <- go []
+--     case res of
+--         Left (TResponseError t err _) -> error $ show t <> ": " <> T.unpack err
+--         Right _a                      -> return diagsNots
+
 -- | wait for @timeout@ seconds and return diagnostics for the given @document and @source.
 -- If timeout is 0 it will wait until the session timeout
 waitForDiagnosticsFromSourceWithTimeout :: Seconds -> TextDocumentIdentifier -> String -> Test.Session [Diagnostic]
-waitForDiagnosticsFromSourceWithTimeout timeout document source = do
+waitForDiagnosticsFromSourceWithTimeout timeout doc src = do
     when (timeout > 0) $
         -- Give any further diagnostic messages time to arrive.
         liftIO $ sleep timeout
         -- Send a dummy message to provoke a response from the server.
         -- This guarantees that we have at least one message to
         -- process, so message won't block or timeout.
-    testId <- Test.sendRequest (SMethod_CustomMethod (Proxy @"test")) A.Null
-    handleMessages testId
-  where
-    matches :: Diagnostic -> Bool
-    matches d = d ^. L.source == Just (T.pack source)
+    diags <- concat <$> waitForActionWithDiagnosticsFromDocs False [doc]
+    return $ filter (\d -> d ^. L.source == Just (T.pack src)) diags
 
-    handleMessages testId = handleDiagnostic testId <|> handleMethod_CustomMethodResponse testId <|> ignoreOthers testId
-    handleDiagnostic testId = do
-        diagsNot <- Test.message SMethod_TextDocumentPublishDiagnostics
-        let fileUri = diagsNot ^. L.params . L.uri
-            diags = diagsNot ^. L.params . L.diagnostics
-            res = filter matches diags
-        if fileUri == document ^. L.uri && not (null res)
-            then return res else handleMessages testId
-    handleMethod_CustomMethodResponse testId = do
-        _ <- Test.responseForId (SMethod_CustomMethod (Proxy @"test")) testId
-        pure []
 
-    ignoreOthers testId = void Test.anyMessage >> handleMessages testId
-
-failIfSessionTimeout :: IO a -> IO a
+failIfSessionTimeout :: HasCallStack => IO a -> IO a
 failIfSessionTimeout action = action `catch` errorHandler
     where errorHandler :: Test.SessionException -> IO a
           errorHandler e@(Test.Timeout _) = assertFailure $ show e

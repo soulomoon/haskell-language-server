@@ -48,15 +48,15 @@ simpleCabalPrefixInfoFromFp prefix fp =
 filePathComplTestDir :: FilePath
 filePathComplTestDir = addTrailingPathSeparator $ testDataDir </> "filepath-completions"
 
-runCabalTestCaseSession :: TestName -> FilePath -> Session () -> TestTree
+runCabalTestCaseSession :: TestName -> FilePath -> (FilePath -> Session ()) -> TestTree
 runCabalTestCaseSession title subdir = testCase title . runCabalSession subdir
 
 runHaskellTestCaseSession :: TestName -> FilePath -> Session () -> TestTree
 runHaskellTestCaseSession title subdir = testCase title . runHaskellAndCabalSession subdir
 
-runCabalSession :: FilePath -> Session a -> IO a
+runCabalSession :: FilePath -> (FilePath -> Session a) -> IO a
 runCabalSession subdir =
-    failIfSessionTimeout . runSessionWithServer def cabalPlugin (testDataDir </> subdir)
+    failIfSessionTimeout . runSessionWithServer' def cabalPlugin (testDataDir </> subdir)
 
 runCabalTestCaseSessionVft :: TestName -> VirtualFileTree -> Session () -> TestTree
 runCabalTestCaseSessionVft title vft = testCase title . runCabalSessionVft vft

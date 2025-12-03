@@ -46,11 +46,11 @@ import           Development.IDE.Core.PositionMapping
 import           Development.IDE.Core.Service         (runAction)
 import           Development.IDE.Core.Shake           (IdeAction, IdeRule,
                                                        IdeState (shakeExtras),
-                                                       mkDelayedAction,
                                                        shakeEnqueue)
 import qualified Development.IDE.Core.Shake           as Shake
 import           Development.IDE.GHC.Orphans          ()
 import           Development.IDE.Graph                hiding (ShakeValue)
+import           Development.IDE.Graph.Database       (mkDelayedAction)
 import           Development.IDE.Types.Diagnostics
 import           Development.IDE.Types.Location       (NormalizedFilePath)
 import qualified Development.IDE.Types.Location       as Location
@@ -71,13 +71,13 @@ import qualified StmContainers.Map                    as STM
 runActionE :: MonadIO m => String -> IdeState -> ExceptT e Action a -> ExceptT e m a
 runActionE herald ide act =
   mapExceptT liftIO . ExceptT $
-    join $ shakeEnqueue (shakeExtras ide) (mkDelayedAction herald Logger.Debug $ runExceptT act)
+    join $ shakeEnqueue (shakeExtras ide) =<< (mkDelayedAction herald Logger.Debug $ runExceptT act)
 
 -- |MaybeT version of `runAction`, takes a MaybeT Action
 runActionMT :: MonadIO m => String -> IdeState -> MaybeT Action a -> MaybeT m a
 runActionMT herald ide act =
   mapMaybeT liftIO . MaybeT $
-    join $ shakeEnqueue (shakeExtras ide) (mkDelayedAction herald Logger.Debug $ runMaybeT act)
+    join $ shakeEnqueue (shakeExtras ide) =<< (mkDelayedAction herald Logger.Debug $ runMaybeT act)
 
 -- |ExceptT version of `use` that throws a PluginRuleFailed upon failure
 useE :: IdeRule k v => k -> NormalizedFilePath -> ExceptT PluginError Action v

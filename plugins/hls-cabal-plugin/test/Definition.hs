@@ -62,7 +62,7 @@ gotoModuleDefinitionTests = testGroup "Goto Module Definition"
 
         testGoToDefinitionLink :: TestName -> FilePath -> FilePath -> Position -> FilePath -> TestTree
         testGoToDefinitionLink testName testDir cabalFile cursorPos expectedFilePath =
-            runCabalTestCaseSession testName testDir $ do
+            runCabalTestCaseSession testName testDir $ \testDir -> do
                 doc <- openDoc cabalFile "cabal"
                 definitions <- getDefinitions doc cursorPos
                 let uri = getUriFromDefinition definitions
@@ -77,7 +77,7 @@ gotoModuleDefinitionTests = testGroup "Goto Module Definition"
 
         testGoToDefinitionLinkNoLocation :: TestName -> FilePath -> FilePath -> Position -> TestTree
         testGoToDefinitionLinkNoLocation testName testDir cabalFile cursorPos =
-            runCabalTestCaseSession testName testDir $ do
+            runCabalTestCaseSession testName testDir $ \_ -> do
                 doc <- openDoc cabalFile "cabal"
                 empty <- getDefinitions doc cursorPos
                 liftIO $ empty @?= (InR $ InR LSP.Null)
@@ -108,7 +108,7 @@ gotoCommonSectionDefinitionTests = testGroup "Goto Common Section Definition"
         -- The test emulates a goto-definition request of an actual definition.
         positiveTest :: TestName -> Position -> Range -> TestTree
         positiveTest testName cursorPos expectedRange =
-            runCabalTestCaseSession testName ("goto-definition" </> "common-section") $ do
+            runCabalTestCaseSession testName ("goto-definition" </> "common-section") $ \_ -> do
                 doc <- openDoc "simple-with-common.cabal" "cabal"
                 definitions <- getDefinitions doc cursorPos
                 let range = getRangeFromDefinition definitions
@@ -120,7 +120,7 @@ gotoCommonSectionDefinitionTests = testGroup "Goto Common Section Definition"
         -- actual definition.
         negativeTest :: TestName -> Position -> TestTree
         negativeTest testName cursorPos =
-            runCabalTestCaseSession testName ("goto-definition" </> "common-section") $ do
+            runCabalTestCaseSession testName ("goto-definition" </> "common-section") $ \_ -> do
                 doc <- openDoc "simple-with-common.cabal" "cabal"
                 empty <- getDefinitions doc cursorPos
                 liftIO $ empty @?= (InR $ InR LSP.Null)

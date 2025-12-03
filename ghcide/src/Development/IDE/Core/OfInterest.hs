@@ -15,7 +15,7 @@ module Development.IDE.Core.OfInterest(
     kick, FileOfInterestStatus(..),
     OfInterestVar(..),
     scheduleGarbageCollection,
-    Log(..)
+    Log(..), doKick
     ) where
 
 import           Control.Concurrent.Strict
@@ -39,7 +39,7 @@ import           Development.IDE.Plugin.Completions.Types
 import           Development.IDE.Types.Exports
 import           Development.IDE.Types.Location
 import           Development.IDE.Types.Options            (IdeTesting (..))
-import           Development.IDE.Types.Shake              (toKey)
+import           Development.IDE.Types.Shake              (toKey, toNoFileKey)
 import           GHC.TypeLits                             (KnownSymbol)
 import           Ide.Logger                               (Pretty (pretty),
                                                            Priority (..),
@@ -66,6 +66,10 @@ ofInterestRules :: Recorder (WithPriority Log) -> Rules ()
 ofInterestRules recorder = do
     addIdeGlobal . OfInterestVar =<< liftIO (newVar HashMap.empty)
     addIdeGlobal . GarbageCollectVar =<< liftIO (newVar False)
+    -- A no-file rule to perform the global kick action
+    defineEarlyCutOffNoFile (cmapWithPrio LogShake recorder) $ \Kick -> do
+        kick
+        pure ("", ())
     defineEarlyCutoff (cmapWithPrio LogShake recorder) $ RuleNoDiagnostics $ \IsFileOfInterest f -> do
         alwaysRerun
         filesOfInterest <- getFilesOfInterestUntracked
@@ -113,7 +117,7 @@ addFileOfInterest state f v = do
     then do
         logWith (ideLogger state) Debug $
             LogSetFilesOfInterest (HashMap.toList files)
-        return [toKey IsFileOfInterest f]
+        return [toKey IsFileOfInterest f, toNoFileKey Kick]
     else return []
 
 deleteFileOfInterest :: IdeState -> NormalizedFilePath -> IO [Key]
@@ -122,42 +126,45 @@ deleteFileOfInterest state f = do
     files <- modifyVar' var $ HashMap.delete f
     logWith (ideLogger state) Debug $
         LogSetFilesOfInterest (HashMap.toList files)
-    return [toKey IsFileOfInterest f]
+    return [toKey IsFileOfInterest f, toNoFileKey Kick]
 scheduleGarbageCollection :: IdeState -> IO ()
 scheduleGarbageCollection state = do
     GarbageCollectVar var <- getIdeGlobalState state
     writeVar var True
+
+doKick :: Action ()
+doKick = do
+    ShakeExtras{ideTesting = IdeTesting testing} <- getShakeExtras
+    -- only kick always if testing, otherwise we rely on the kick rule
+    if testing
+      then kick
+      else void $ useNoFile Kick
+
 
 -- | Typecheck all the files of interest.
 --   Could be improved
 kick :: Action ()
 kick = do
     files <- HashMap.keys <$> getFilesOfInterestUntracked
-    ShakeExtras{exportsMap, ideTesting = IdeTesting testing, lspEnv, progress} <- getShakeExtras
-    let signal :: KnownSymbol s => Proxy s -> Action ()
-        signal msg = when testing $ liftIO $
-            mRunLspT lspEnv $
-                LSP.sendNotification (LSP.SMethod_CustomMethod msg) $
-                toJSON $ map fromNormalizedFilePath files
+    ShakeExtras{exportsMap, progress} <- getShakeExtras
 
-    signal (Proxy @"kick/start")
-    liftIO $ progressUpdate progress ProgressNewStarted
+    runWithSignalAction (Proxy @"kick/start") (Proxy @"kick/done") files $ do
+        liftIO $ progressUpdate progress ProgressNewStarted
 
-    -- Update the exports map
-    results <- uses GenerateCore files
-            <* uses GetHieAst files
-            -- needed to have non local completions on the first edit
-            -- when the first edit breaks the module header
-            <* uses NonLocalCompletions files
-    let mguts = catMaybes results
-    void $ liftIO $ atomically $ modifyTVar' exportsMap (updateExportsMapMg mguts)
+        -- Update the exports map
+        results <- uses GenerateCore files
+                <* uses GetHieAst files
+                -- needed to have non local completions on the first edit
+                -- when the first edit breaks the module header
+                <* uses NonLocalCompletions files
+        let mguts = catMaybes results
+        void $ liftIO $ atomically $ modifyTVar' exportsMap (updateExportsMapMg mguts)
 
-    liftIO $ progressUpdate progress ProgressCompleted
+        liftIO $ progressUpdate progress ProgressCompleted
 
-    GarbageCollectVar var <- getIdeGlobalAction
-    garbageCollectionScheduled <- liftIO $ readVar var
-    when garbageCollectionScheduled $ do
-        void garbageCollectDirtyKeys
-        liftIO $ writeVar var False
+        GarbageCollectVar var <- getIdeGlobalAction
+        garbageCollectionScheduled <- liftIO $ readVar var
+        when garbageCollectionScheduled $ do
+            void garbageCollectDirtyKeys
+            liftIO $ writeVar var False
 
-    signal (Proxy @"kick/done")

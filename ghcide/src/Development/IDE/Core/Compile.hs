@@ -114,10 +114,14 @@ import qualified GHC.Runtime.Loader                           as Loader
 import           GHC.Tc.Gen.Splice
 import           GHC.Types.Error
 import           GHC.Types.ForeignStubs
-import           GHC.Types.HpcInfo
 import           GHC.Types.TypeEnv
+import           Development.IDE.WorkerThread (writeTaskQueue)
 
 -- See Note [Guidelines For Using CPP In GHCIDE Import Statements]
+
+#if !MIN_VERSION_ghc(9,11,0)
+import           GHC.Types.HpcInfo
+#endif
 
 #if MIN_VERSION_ghc(9,7,0)
 import           Data.Foldable                                (toList)
@@ -793,7 +797,8 @@ atomicFileWrite se targetPath write = do
   let dir = takeDirectory targetPath
   createDirectoryIfMissing True dir
   (tempFilePath, cleanUp) <- newTempFileWithin dir
-  (write tempFilePath >>= \x -> renameFile tempFilePath targetPath >> atomically (resetInterfaceStore se (toNormalizedFilePath' targetPath)) >> pure x)
+  (write tempFilePath >>= \x -> renameFile tempFilePath targetPath >>
+    atomically (resetInterfaceStore se (toNormalizedFilePath' targetPath)) >> pure x)
     `onException` cleanUp
 
 generateHieAsts :: HscEnv -> TcModuleResult
@@ -882,7 +887,7 @@ indexHieFile se mod_summary srcPath !hash hf = do
       -- hiedb doesn't use the Haskell src, so we clear it to avoid unnecessarily keeping it around
       let !hf' = hf{hie_hs_src = mempty}
       modifyTVar' indexPending $ HashMap.insert srcPath hash
-      writeTQueue indexQueue $ \withHieDb -> do
+      writeTaskQueue indexQueue $ \withHieDb -> do
         -- We are now in the worker thread
         -- Check if a newer index of this file has been scheduled, and if so skip this one
         newerScheduled <- atomically $ do
@@ -1070,12 +1075,13 @@ withBootSuffix _          = id
 --   Runs preprocessors as needed.
 getModSummaryFromImports
   :: HscEnv
+  -> String
   -> FilePath
   -> UTCTime
   -> Maybe Util.StringBuffer
   -> ExceptT [FileDiagnostic] IO ModSummaryResult
 -- modTime is only used in GHC < 9.4
-getModSummaryFromImports env fp _modTime mContents = do
+getModSummaryFromImports env hscOptionHash fp _modTime mContents = do
 -- src_hash is only used in GHC >= 9.4
     (contents, opts, ppEnv, _src_hash) <- preprocessor env fp mContents
 
@@ -1170,6 +1176,9 @@ getModSummaryFromImports env fp _modTime mContents = do
                     [ Util.fingerprintString fp
                     , fingerPrintImports
                     , modLocationFingerprint ms_location
+                    , Util.fingerprintString hscOptionHash
+                    -- this is necessary to account for the original hsc options, since now we
+                    -- do not include optionHash in the cache dir.
                     ] ++ map Util.fingerprintString opts
 
         modLocationFingerprint :: ModLocation -> Util.Fingerprint

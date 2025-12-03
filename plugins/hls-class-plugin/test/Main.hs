@@ -161,7 +161,7 @@ goldenCodeLens title path idx =
 goldenWithClass ::TestName -> FilePath -> FilePath -> ([CodeAction] -> Session CodeAction) -> TestTree
 goldenWithClass title path desc findAction =
   goldenWithHaskellDoc def classPlugin title testDataDir path (desc <.> "expected") "hs" $ \doc -> do
-    _ <- waitForDiagnosticsFrom doc
+    _ <- waitForDiagsAndBuildQueue doc
     actions <- concatMap (^.. _CACodeAction) <$> getAllCodeActions doc
     action <- findAction actions
     executeCodeAction action
