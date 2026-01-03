@@ -77,6 +77,7 @@ module Development.IDE.Core.Shake(
     VFSModified(..), getClientConfigAction,
     ThreadQueue(..),
     runWithSignal, runRestartTask, runRestartTaskDyn, dynShakeRestart, waitUntilDiagnosticsPublished, runWithSignalAction, waitUntilDiagnosticsPublishedAction
+    askShake
     ) where
 
 import           Control.Concurrent.Async
