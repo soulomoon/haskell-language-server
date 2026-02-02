@@ -76,7 +76,7 @@ module Development.IDE.Core.Shake(
     Log(..),
     VFSModified(..), getClientConfigAction,
     ThreadQueue(..),
-    runWithSignal, runRestartTask, runRestartTaskDyn, dynShakeRestart, waitUntilDiagnosticsPublished, runWithSignalAction, waitUntilDiagnosticsPublishedAction
+    runWithSignal, runRestartTask, runRestartTaskDyn, dynShakeRestart, waitUntilDiagnosticsPublished, runWithSignalAction, waitUntilDiagnosticsPublishedAction,
     askShake
     ) where
 
