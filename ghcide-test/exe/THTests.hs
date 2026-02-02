@@ -7,7 +7,8 @@ import qualified Data.Text                   as T
 import           Development.IDE.GHC.Util
 import           Development.IDE.Test        (expectCurrentDiagnostics,
                                               expectDiagnostics,
-                                              expectNoMoreDiagnostics)
+                                              expectNoMoreDiagnostics,
+                                              waitForExpectedDiagnosticsFromDocsOne)
 import           Language.LSP.Protocol.Types hiding (SemanticTokenAbsolute (..),
                                               SemanticTokenRelative (..),
                                               SemanticTokensEdit (..), mkRange)
@@ -177,10 +178,11 @@ thLinkingTest unboxed = testCase name $ runWithExtraFiles dir $ \dir -> do
 
     -- modify b too
     let bSource' = T.unlines $ init (T.lines bSource) ++ ["$th"]
-    changeDoc bdoc [TextDocumentContentChangeEvent . InR $ TextDocumentContentChangeWholeDocument bSource']
-    _ <- waitForDiagnostics
+    -- _ <- waitForDiagnostics
 
-    expectCurrentDiagnostics bdoc [(DiagnosticSeverity_Warning, (4,1), "Top-level binding", Just "GHC-38417")]
+    changeDoc bdoc [TextDocumentContentChangeEvent . InR $ TextDocumentContentChangeWholeDocument bSource']
+    waitForExpectedDiagnosticsFromDocsOne (bdoc, [(DiagnosticSeverity_Warning, (4,1), "Top-level binding", Just "GHC-38417")])
+    -- expectCurrentDiagnostics bdoc [(DiagnosticSeverity_Warning, (4,1), "Top-level binding", Just "GHC-38417")]
 
     closeDoc adoc
     closeDoc bdoc

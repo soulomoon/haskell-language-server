@@ -22,10 +22,8 @@ module Development.IDE.Test
   , checkDiagnosticsForDoc
   , canonicalizeUri
   , standardizeQuotes
-  , flushMessages
   , waitForAction
   , getInterfaceFilesDir
-  , garbageCollectDirtyKeys
   , getFilesOfInterest
   , waitForTypecheck
   , waitForBuildQueue
@@ -34,7 +32,11 @@ module Development.IDE.Test
   , waitForGC
   , configureCheckProject
   , isReferenceReady
-  , referenceReady) where
+  , referenceReady
+  , waitForExpectedDiagnosticsFromDocs
+  , waitForExpectedDiagnosticsFromDocsOne
+  , filePathTextDocumentIdentifier
+  , waitForExpectedDiagnosticsFromFilePath) where
 
 import           Control.Applicative.Combinators
 import           Control.Lens                    hiding (List)
@@ -63,6 +65,10 @@ import qualified Language.LSP.Test               as LspTest
 import           System.Directory                (canonicalizePath)
 import           System.FilePath                 (equalFilePath)
 import           System.Time.Extra
+import           Test.Hls                        (callTestPluginWithDiag,
+                                                  callTestPluginWithSMethod,
+                                                  message,
+                                                  waitForActionWithDiagnosticsFromDocs)
 import           Test.Tasty.HUnit
 
 expectedDiagnosticWithNothing :: ExpectedDiagnostic -> ExpectedDiagnosticWithTag
@@ -80,39 +86,23 @@ requireDiagnosticM actuals expected = case requireDiagnostic actuals expected of
 -- |wait for @timeout@ seconds and report an assertion failure
 -- if any diagnostic messages arrive in that period
 expectNoMoreDiagnostics :: HasCallStack => Seconds -> Session ()
-expectNoMoreDiagnostics timeout =
-  expectMessages SMethod_TextDocumentPublishDiagnostics timeout $ \diagsNot -> do
-    let fileUri = diagsNot ^. L.params . L.uri
-        actual = diagsNot ^. L.params . L.diagnostics
-    unless (null actual) $ liftIO $
+expectNoMoreDiagnostics _timeout = do
+    diags <- callTestPluginWithDiag WaitForDiagnosticPublished
+    unless (null diags) $ liftIO $
       assertFailure $
-        "Got unexpected diagnostics for " <> show fileUri
-          <> " got "
-          <> show actual
+        "Expected no diagnostics, but got: "
+          <> show (map unwrapDiagnostic diags)
 
 expectMessages :: SMethod m -> Seconds -> (TServerMessage m -> Session ()) -> Session ()
 expectMessages m timeout handle = do
     -- Give any further diagnostic messages time to arrive.
-    liftIO $ sleep timeout
+    i <- callTestPluginWithSMethod m WaitForDiagnosticPublished
     -- Send a dummy message to provoke a response from the server.
     -- This guarantees that we have at least one message to
     -- process, so message won't block or timeout.
-    let cm = SMethod_CustomMethod (Proxy @"test")
-    i <- sendRequest cm $ A.toJSON GetShakeSessionQueueCount
-    go cm i
-  where
-    go cm i = handleMessages
-      where
-        handleMessages = (LspTest.message m >>= handle) <|> (void $ responseForId cm i) <|> ignoreOthers
-        ignoreOthers = void anyMessage >> handleMessages
-
-flushMessages :: Session ()
-flushMessages = do
-    let cm = SMethod_CustomMethod (Proxy @"non-existent-method")
-    i <- sendRequest cm A.Null
-    void (responseForId cm i) <|> ignoreOthers cm i
-    where
-        ignoreOthers cm i = skipManyTill anyMessage (responseForId cm i) >> flushMessages
+    -- let cm = SMethod_CustomMethod (Proxy @"test")
+    -- i <- sendRequest cm $ A.toJSON GetShakeSessionQueueCount
+    mapM_ handle i
 
 -- | It is not possible to use 'expectDiagnostics []' to assert the absence of diagnostics,
 --   only that existing diagnostics have been cleared.
@@ -127,7 +117,7 @@ expectDiagnostics
 unwrapDiagnostic :: TServerMessage Method_TextDocumentPublishDiagnostics  -> (Uri, [Diagnostic])
 unwrapDiagnostic diagsNot = (diagsNot^. L.params . L.uri, diagsNot^. L.params . L.diagnostics)
 
-expectDiagnosticsWithTags :: HasCallStack => [(String, [ExpectedDiagnosticWithTag])] -> Session ()
+expectDiagnosticsWithTags :: HasCallStack => [(FilePath, [ExpectedDiagnosticWithTag])] -> Session ()
 expectDiagnosticsWithTags expected = do
     let toSessionPath = getDocUri >=> liftIO . canonicalizeUri >=> pure . toNormalizedUri
         next = unwrapDiagnostic <$> skipManyTill anyMessage diagnostic
@@ -135,10 +125,10 @@ expectDiagnosticsWithTags expected = do
     expectDiagnosticsWithTags' next expected'
 
 expectDiagnosticsWithTags' ::
-  (HasCallStack, MonadIO m) =>
-  m (Uri, [Diagnostic]) ->
+  HasCallStack =>
+  Session (Uri, [Diagnostic]) ->
   Map.Map NormalizedUri [ExpectedDiagnosticWithTag] ->
-  m ()
+  Session ()
 expectDiagnosticsWithTags' next m | null m = do
     (_,actual) <- next
     case actual of
@@ -175,6 +165,29 @@ expectDiagnosticsWithTags' next expected = go expected
                     <> show actual
             go $ Map.delete canonUri m
 
+filePathTextDocumentIdentifier :: FilePath -> Session TextDocumentIdentifier
+filePathTextDocumentIdentifier fp =
+  TextDocumentIdentifier <$> getDocUri fp
+
+waitForExpectedDiagnosticsFromFilePath :: (HasCallStack) => [(FilePath, [ExpectedDiagnostic])] -> Session ()
+waitForExpectedDiagnosticsFromFilePath oxs = do
+    -- merge diagnostics for same file paths
+  let xs = Map.toList $ Map.fromListWith (++) [(fp, ed) | (fp, ed) <- oxs]
+  res <- forM xs $ \(fp, ed) -> do
+    tdi <- filePathTextDocumentIdentifier fp
+    return (tdi, ed)
+  waitForExpectedDiagnosticsFromDocs True res
+
+waitForExpectedDiagnosticsFromDocsOne :: (HasCallStack) => (TextDocumentIdentifier, [ExpectedDiagnostic]) -> Session ()
+waitForExpectedDiagnosticsFromDocsOne x = waitForExpectedDiagnosticsFromDocs True [x]
+
+waitForExpectedDiagnosticsFromDocs :: (HasCallStack) => Bool -> [(TextDocumentIdentifier, [ExpectedDiagnostic])] -> Session ()
+waitForExpectedDiagnosticsFromDocs waitFirst expected = do
+  docDiags <- waitForActionWithDiagnosticsFromDocs waitFirst (map fst expected)
+  forM_ (zip expected docDiags) $ \((doc, exDiags), diags) -> do
+    checkDiagnosticsForDoc doc exDiags diags
+
+
 expectCurrentDiagnostics :: HasCallStack => TextDocumentIdentifier -> [ExpectedDiagnostic] -> Session ()
 expectCurrentDiagnostics doc expected = do
     diags <- getCurrentDiagnostics doc
@@ -191,6 +204,7 @@ canonicalizeUri uri = filePathToUri <$> canonicalizePath (fromJust (uriToFilePat
 
 diagnostic :: Session (TNotificationMessage Method_TextDocumentPublishDiagnostics)
 diagnostic = LspTest.message SMethod_TextDocumentPublishDiagnostics
+
 
 tryCallTestPlugin :: (A.FromJSON b) => TestRequest -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) b)
 tryCallTestPlugin cmd = do
@@ -218,8 +232,8 @@ waitForAction key TextDocumentIdentifier{_uri} =
 getInterfaceFilesDir :: TextDocumentIdentifier -> Session FilePath
 getInterfaceFilesDir TextDocumentIdentifier{_uri} = callTestPlugin (GetInterfaceFilesDir _uri)
 
-garbageCollectDirtyKeys :: CheckParents -> Int -> Session [String]
-garbageCollectDirtyKeys parents age = callTestPlugin (GarbageCollectDirtyKeys parents age)
+-- garbageCollectDirtyKeys :: CheckParents -> Int -> Session [String]
+-- garbageCollectDirtyKeys parents age = callTestPlugin (GarbageCollectDirtyKeys parents age)
 
 getStoredKeys :: Session [Text]
 getStoredKeys = callTestPlugin GetStoredKeys

@@ -10,6 +10,7 @@ import           Ide.Types
 import qualified Language.LSP.Protocol.Lens as L
 import           System.FilePath
 import           Test.Hls
+import           Test.Hls.FileSystem        (VirtualFileTree (..), copyDir)
 
 main :: IO ()
 main = defaultTestRunner tests
@@ -33,8 +34,7 @@ tests =
     , testCase "ignores diagnostics from .stan.toml" $
         runStanSession "" $ do
           doc <- openDoc ("dir" </> "configTest.hs") "haskell"
-          diags <- waitForDiagnosticsFromSource doc "stan"
-          liftIO $ length diags @?= 0
+          expectDiagnosticsEmpty doc "stan"
           return ()
     , testCase "respects LANGUAGE pragmas in the source file" $
         runStanSession "" $ do
@@ -78,8 +78,7 @@ runStanSession subdir =
   failIfSessionTimeout
   . runSessionWithTestConfig def{
     testConfigCaps=codeActionNoResolveCaps
-    , testShiftRoot=True
     , testPluginDescriptor=stanPlugin
-    , testDirLocation=Left (testDir </> subdir)
+    , testDirLocation= VirtualFileTree [copyDir "./"] $ testDir </> subdir
     }
   . const

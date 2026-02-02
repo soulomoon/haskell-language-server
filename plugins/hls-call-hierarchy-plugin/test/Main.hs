@@ -192,9 +192,9 @@ incomingCallsTests =
   testGroup "Incoming Calls"
   [ testGroup "single file"
     [ testCase "xdata unavailable" $
-        runSessionWithServer def plugin testDataDir $ do
+        runSessionWithServer' def plugin testDataDir $ \runDir -> do
           doc <- createDoc "A.hs" "haskell" $ T.unlines ["a=3", "b=a"]
-          waitForIndex (testDataDir </> "A.hs")
+          waitForIndex (runDir </> "A.hs")
           item <- expectOneElement =<< Test.prepareCallHierarchy (mkPrepareCallHierarchyParam doc 1 0)
           let expected = [CallHierarchyIncomingCall item [mkRange 1 2 1 3]]
           item' <- expectOneElement =<< Test.prepareCallHierarchy (mkPrepareCallHierarchyParam doc 0 0)
@@ -312,8 +312,8 @@ outgoingCallsTests :: TestTree
 outgoingCallsTests =
   testGroup "Outgoing Calls"
   [ testGroup "single file"
-    [ testCase "xdata unavailable" $ withCanonicalTempDir $ \dir ->
-        runSessionWithServer def plugin dir $ do
+    [ testCase "xdata unavailable" $
+        runSessionWithServerEmptyDir def plugin $ \dir -> do
           doc <- createDoc "A.hs" "haskell" $ T.unlines ["a=3", "b=a"]
           waitForIndex (dir </> "A.hs")
           item <- expectOneElement =<< Test.prepareCallHierarchy (mkPrepareCallHierarchyParam doc 0 1)
@@ -411,8 +411,8 @@ outgoingCallsTests =
 
 
 incomingCallTestCase :: T.Text -> Int -> Int -> [(Int, Int)] -> [Range] -> Assertion
-incomingCallTestCase contents queryX queryY positions ranges = withCanonicalTempDir $ \dir ->
-  runSessionWithServer def plugin dir $ do
+incomingCallTestCase contents queryX queryY positions ranges =
+  runSessionWithServerEmptyDir def plugin $ \dir -> do
     doc <- createDoc "A.hs" "haskell" contents
     waitForIndex (dir </> "A.hs")
     items <- concatMapM (\((x, y), range) ->
@@ -428,9 +428,9 @@ incomingCallTestCase contents queryX queryY positions ranges = withCanonicalTemp
 
 incomingCallMultiFileTestCase :: FilePath -> Int -> Int -> M.Map FilePath [((Int, Int), Range)] -> Assertion
 incomingCallMultiFileTestCase filepath queryX queryY mp =
-  runSessionWithServer def plugin testDataDir $ do
+  runSessionWithServer' def plugin testDataDir $ \runDir -> do
     doc <- openDoc filepath "haskell"
-    waitForIndex (testDataDir </> filepath)
+    waitForIndex (runDir </> filepath)
     items <- fmap concat $ sequence $ M.elems $ M.mapWithKey (\fp pr -> do
               p <- openDoc fp "haskell"
               waitForKickDone
@@ -445,8 +445,8 @@ incomingCallMultiFileTestCase filepath queryX queryY mp =
     closeDoc doc
 
 outgoingCallTestCase :: T.Text -> Int -> Int -> [(Int, Int)] -> [Range] -> Assertion
-outgoingCallTestCase contents queryX queryY positions ranges = withCanonicalTempDir $ \dir ->
-  runSessionWithServer def plugin dir $ do
+outgoingCallTestCase contents queryX queryY positions ranges =
+  runSessionWithServerEmptyDir def plugin $ \dir -> do
     doc <- createDoc "A.hs" "haskell" contents
     waitForIndex (dir </> "A.hs")
     items <- concatMapM (\((x, y), range) ->
@@ -462,9 +462,9 @@ outgoingCallTestCase contents queryX queryY positions ranges = withCanonicalTemp
 
 outgoingCallMultiFileTestCase :: FilePath -> Int -> Int -> M.Map FilePath [((Int, Int), Range)] -> Assertion
 outgoingCallMultiFileTestCase filepath queryX queryY mp =
-  runSessionWithServer def plugin testDataDir $ do
+  runSessionWithServer' def plugin testDataDir $ \runDir -> do
     doc <- openDoc filepath "haskell"
-    waitForIndex (testDataDir </> filepath)
+    waitForIndex (runDir </> filepath)
     items <- fmap concat $ sequence $ M.elems $ M.mapWithKey (\fp pr -> do
               p <- openDoc fp "haskell"
               waitForKickDone
@@ -479,8 +479,8 @@ outgoingCallMultiFileTestCase filepath queryX queryY mp =
     closeDoc doc
 
 oneCaseWithCreate :: T.Text -> Int -> Int -> (Uri -> CallHierarchyItem -> Assertion) -> Assertion
-oneCaseWithCreate contents queryX queryY expected = withCanonicalTempDir $ \dir ->
-  runSessionWithServer def plugin dir $ do
+oneCaseWithCreate contents queryX queryY expected =
+  runSessionWithServerEmptyDir def plugin $ \dir -> do
     doc <- createDoc "A.hs" "haskell" contents
     waitForIndex (dir </> "A.hs")
     item <- expectOneElement =<< Test.prepareCallHierarchy (mkPrepareCallHierarchyParam doc queryX queryY)
