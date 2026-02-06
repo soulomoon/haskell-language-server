@@ -998,7 +998,6 @@ emptyHscEnvM libDir = do
 toFlagsMap :: TargetDetails -> [(NormalizedFilePath, (IdeResult HscEnvEq, DependencyInfo))]
 toFlagsMap TargetDetails{..} =
     [ (l, (targetEnv, targetDepends)) | l <-  targetLocations]
-
 -- See Note [Multi Cradle Dependency Info]
 type HieMap = Map.Map (Maybe FilePath) [RawComponentInfo]
 -- | Maps a "hie.yaml" location to all its Target Filepaths and options.

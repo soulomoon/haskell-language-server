@@ -91,13 +91,6 @@
             },
             "globalOn": true
         },
-        "hlint": {
-            "codeActionsOn": true,
-            "config": {
-                "flags": []
-            },
-            "diagnosticsOn": true
-        },
         "importLens": {
             "codeActionsOn": true,
             "codeLensOn": true,
@@ -105,6 +98,10 @@
         },
         "moduleName": {
             "globalOn": true
+        },
+        "notes": {
+            "completionOn": true,
+            "hoverOn": true
         },
         "ormolu": {
             "config": {
@@ -128,7 +125,7 @@
         },
         "rename": {
             "config": {
-                "crossModule": false
+                "crossModule": true
             },
             "globalOn": true
         },
@@ -149,6 +146,9 @@
                 "variableToken": "variable"
             },
             "globalOn": false
+        },
+        "signatureHelp": {
+            "globalOn": true
         },
         "stan": {
             "globalOn": false

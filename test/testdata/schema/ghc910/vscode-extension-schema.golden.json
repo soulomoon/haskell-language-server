@@ -213,24 +213,6 @@
         "scope": "resource",
         "type": "boolean"
     },
-    "haskell.plugin.hlint.codeActionsOn": {
-        "default": true,
-        "description": "Enables hlint code actions",
-        "scope": "resource",
-        "type": "boolean"
-    },
-    "haskell.plugin.hlint.config.flags": {
-        "default": [],
-        "markdownDescription": "Flags used by hlint",
-        "scope": "resource",
-        "type": "array"
-    },
-    "haskell.plugin.hlint.diagnosticsOn": {
-        "default": true,
-        "description": "Enables hlint diagnostics",
-        "scope": "resource",
-        "type": "boolean"
-    },
     "haskell.plugin.importLens.codeActionsOn": {
         "default": true,
         "description": "Enables importLens code actions",
@@ -252,6 +234,18 @@
     "haskell.plugin.moduleName.globalOn": {
         "default": true,
         "description": "Enables moduleName plugin",
+        "scope": "resource",
+        "type": "boolean"
+    },
+    "haskell.plugin.notes.completionOn": {
+        "default": true,
+        "description": "Enables notes completions",
+        "scope": "resource",
+        "type": "boolean"
+    },
+    "haskell.plugin.notes.hoverOn": {
+        "default": true,
+        "description": "Enables notes hover",
         "scope": "resource",
         "type": "boolean"
     },
@@ -292,7 +286,7 @@
         "type": "boolean"
     },
     "haskell.plugin.rename.config.crossModule": {
-        "default": false,
+        "default": true,
         "markdownDescription": "Enable experimental cross-module renaming",
         "scope": "resource",
         "type": "boolean"
@@ -1034,6 +1028,12 @@
     "haskell.plugin.semanticTokens.globalOn": {
         "default": false,
         "description": "Enables semanticTokens plugin",
+        "scope": "resource",
+        "type": "boolean"
+    },
+    "haskell.plugin.signatureHelp.globalOn": {
+        "default": true,
+        "description": "Enables signatureHelp plugin",
         "scope": "resource",
         "type": "boolean"
     },

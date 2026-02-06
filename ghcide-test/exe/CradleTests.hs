@@ -3,7 +3,7 @@
 
 module CradleTests (tests) where
 
-import           Config                          (checkDefs, mkL, runInDir,
+import           Config                          (checkDefs, mkL,
                                                   runWithExtraFiles,
                                                   testWithDummyPluginEmpty')
 import           Control.Applicative.Combinators
@@ -29,6 +29,7 @@ import           Language.LSP.Protocol.Types     hiding
 import           Language.LSP.Test
 import           System.FilePath
 import           System.IO.Extra                 hiding (withTempDir)
+import           Test.Hls.FileSystem
 import           Test.Hls.Util                   (EnvSpec (..), OS (..),
                                                   ignoreInEnv)
 import           Test.Tasty
@@ -53,7 +54,7 @@ loadCradleOnlyonce = testGroup "load cradle only once"
     ]
     where
         direct dir = do
-            liftIO $ writeFileUTF8 (dir </> "hie.yaml")
+            liftIO $ atomicFileWriteStringUTF8 (dir </> "hie.yaml")
                 "cradle: {direct: {arguments: []}}"
             test dir
         implicit dir = test dir
@@ -73,7 +74,7 @@ retryFailedCradle = testWithDummyPluginEmpty' "retry failed" $ \dir -> do
   -- The false cradle always fails
   let hieContents = "cradle: {bios: {shell: \"false\"}}"
       hiePath = dir </> "hie.yaml"
-  liftIO $ writeFile hiePath hieContents
+  liftIO $ atomicFileWriteString hiePath hieContents
   let aPath = dir </> "A.hs"
   doc <- createDoc aPath "haskell" "main = return ()"
   WaitForIdeRuleResult {..} <- waitForAction "TypeCheck" doc
@@ -81,7 +82,7 @@ retryFailedCradle = testWithDummyPluginEmpty' "retry failed" $ \dir -> do
 
   -- Fix the cradle and typecheck again
   let validCradle = "cradle: {bios: {shell: \"echo A.hs\"}}"
-  liftIO $ writeFileUTF8 hiePath $ T.unpack validCradle
+  liftIO $ atomicFileWriteStringUTF8 hiePath $ T.unpack validCradle
   sendNotification SMethod_WorkspaceDidChangeWatchedFiles $ DidChangeWatchedFilesParams
          [FileEvent (filePathToUri $ dir </> "hie.yaml") FileChangeType_Changed ]
 
@@ -179,12 +180,9 @@ simpleMultiDefTest variant = ignoreForWindows $ testCase testName $
     runWithExtraFiles variant $ \dir -> do
     let aPath = dir </> "a/A.hs"
         bPath = dir </> "b/B.hs"
-    adoc <- liftIO $ runInDir dir $ do
-      aSource <- liftIO $ readFileUtf8 aPath
-      adoc <- createDoc aPath "haskell" aSource
-      skipManyTill anyMessage $ isReferenceReady aPath
-      closeDoc adoc
-      pure adoc
+    adoc <- openDoc aPath "haskell"
+    skipManyTill anyMessage $ isReferenceReady aPath
+    closeDoc adoc
     bSource <- liftIO $ readFileUtf8 bPath
     bdoc <- createDoc bPath "haskell" bSource
     locs <- getDefinitions bdoc (Position 2 7)
@@ -214,7 +212,7 @@ sessionDepsArePickedUp = testWithDummyPluginEmpty'
   "session-deps-are-picked-up"
   $ \dir -> do
     liftIO $
-      writeFileUTF8
+      atomicFileWriteStringUTF8
         (dir </> "hie.yaml")
         "cradle: {direct: {arguments: []}}"
     -- Open without OverloadedStrings and expect an error.
@@ -223,7 +221,7 @@ sessionDepsArePickedUp = testWithDummyPluginEmpty'
 
     -- Update hie.yaml to enable OverloadedStrings.
     liftIO $
-      writeFileUTF8
+      atomicFileWriteStringUTF8
         (dir </> "hie.yaml")
         "cradle: {direct: {arguments: [-XOverloadedStrings]}}"
     sendNotification SMethod_WorkspaceDidChangeWatchedFiles $ DidChangeWatchedFilesParams

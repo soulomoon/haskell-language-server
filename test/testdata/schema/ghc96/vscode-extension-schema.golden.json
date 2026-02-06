@@ -255,6 +255,18 @@
         "scope": "resource",
         "type": "boolean"
     },
+    "haskell.plugin.notes.completionOn": {
+        "default": true,
+        "description": "Enables notes completions",
+        "scope": "resource",
+        "type": "boolean"
+    },
+    "haskell.plugin.notes.hoverOn": {
+        "default": true,
+        "description": "Enables notes hover",
+        "scope": "resource",
+        "type": "boolean"
+    },
     "haskell.plugin.ormolu.config.external": {
         "default": false,
         "markdownDescription": "Call out to an external \"ormolu\" executable, rather than using the bundled library",
@@ -292,7 +304,7 @@
         "type": "boolean"
     },
     "haskell.plugin.rename.config.crossModule": {
-        "default": false,
+        "default": true,
         "markdownDescription": "Enable experimental cross-module renaming",
         "scope": "resource",
         "type": "boolean"
@@ -1040,6 +1052,12 @@
     "haskell.plugin.semanticTokens.globalOn": {
         "default": false,
         "description": "Enables semanticTokens plugin",
+        "scope": "resource",
+        "type": "boolean"
+    },
+    "haskell.plugin.signatureHelp.globalOn": {
+        "default": true,
+        "description": "Enables signatureHelp plugin",
         "scope": "resource",
         "type": "boolean"
     },

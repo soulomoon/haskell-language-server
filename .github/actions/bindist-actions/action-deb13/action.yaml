@@ -1,4 +1,4 @@
-description: Container for ubuntu1804
+description: Container for deb13
 inputs:
   stage:
     description: which stage to build
@@ -6,7 +6,7 @@ inputs:
   version:
     description: which GHC version to build/test
     required: false
-name: action-ubuntu1804
+name: action-deb13
 runs:
   entrypoint: .github/scripts/entrypoint.sh
   env:
@@ -14,8 +14,7 @@ runs:
     INSTALL: apt-get update && apt-get install -y
     STAGE: ${{ inputs.stage }}
     TOOLS: libnuma-dev zlib1g-dev libgmp-dev libgmp10 libssl-dev liblzma-dev libbz2-dev
-      git wget lsb-release software-properties-common gnupg2 apt-transport-https gcc
-      autoconf automake build-essential curl ghc gzip libffi-dev libncurses-dev libncurses5
-      libtinfo5 patchelf
-  image: ubuntu:18.04
+      git wget lsb-release gnupg2 apt-transport-https gcc autoconf automake build-essential
+      curl ghc gzip libffi-dev libncurses-dev patchelf
+  image: debian:13
   using: docker

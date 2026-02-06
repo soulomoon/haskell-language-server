@@ -58,6 +58,10 @@ import           GHC.Types.Error                    (errMsgDiagnostic,
                                                      singleMessage)
 import           GHC.Unit.State
 
+#if MIN_VERSION_ghc(9,13,0)
+import           GHC.Driver.Make                    (checkHomeUnitsClosed)
+#endif
+
 data Log
   = LogInterfaceFilesCacheDir !FilePath
   | LogMakingNewHscEnv ![UnitId]
@@ -146,7 +150,12 @@ newComponentCache recorder exts _cfp hsc_env old_cis new_cis = do
     hscEnv' <- -- Set up a multi component session with the other units on GHC 9.4
               Compat.initUnits dfs hsc_env
 
+#if MIN_VERSION_ghc(9,13,0)
+    let closure_errs_raw = checkHomeUnitsClosed' (hsc_unit_env hscEnv') (hsc_all_home_unit_ids hscEnv')
+        closure_errs = concatMap (Compat.bagToList . Compat.getMessages) closure_errs_raw
+#else
     let closure_errs = maybeToList $ checkHomeUnitsClosed' (hsc_unit_env hscEnv') (hsc_all_home_unit_ids hscEnv')
+#endif
         closure_err_to_multi_err err =
             ideErrorWithSource
                 (Just "cradle") (Just DiagnosticSeverity_Warning) _cfp
