@@ -848,12 +848,13 @@ addRelativeImport fp modu dflags = dflags
 
 -- | Also resets the interface store
 atomicFileWrite :: ShakeExtras -> FilePath -> (FilePath -> IO a) -> IO a
-atomicFileWrite se targetPath write = do
-  let dir = takeDirectory targetPath
-  createDirectoryIfMissing True dir
-  (tempFilePath, cleanUp) <- newTempFileWithin dir
-  (write tempFilePath >>= \x -> renameFile tempFilePath targetPath >> atomically (resetInterfaceStore se (toNormalizedFilePath' targetPath)) >> pure x)
-    `onException` cleanUp
+atomicFileWrite se targetPath write =
+  uninterruptibleMask_ $ do
+    let dir = takeDirectory targetPath
+    createDirectoryIfMissing True dir
+    (tempFilePath, cleanUp) <- newTempFileWithin dir
+    (write tempFilePath >>= \x -> renameFile tempFilePath targetPath >> atomically (resetInterfaceStore se (toNormalizedFilePath' targetPath)) >> pure x)
+      `onException` cleanUp
 
 generateHieAsts :: HscEnv -> TcModuleResult
 #if MIN_VERSION_ghc(9,11,0)
