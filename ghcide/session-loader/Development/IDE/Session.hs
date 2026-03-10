@@ -11,6 +11,9 @@ module Development.IDE.Session
   ,getHieDbLoc
   ,retryOnSqliteBusy
   ,retryOnException
+  ,SessionLoaderPendingBarrierVar(..)
+  ,setSessionLoaderPendingBarrier
+  ,clearSessionLoaderPendingBarrier
   ,Log(..)
   ,runWithDb
   ) where
@@ -357,7 +360,7 @@ runWithDb recorder fp = ContT $ \k -> do
     -- instantiate tyvar `a` to `()`
     let withWriteDbRetryable :: WithHieDb
         withWriteDbRetryable = makeWithHieDbRetryable recorder rng writedb
-    withWriteDbRetryable initConn
+    withWriteDbRetryable (setupHieDb . getConn)
 
 
     -- Clear the index of any files that might have been deleted since the last run
@@ -440,6 +443,31 @@ data SessionState = SessionState
     version      :: !(TVar Int),
     sessionLoadingPreferenceConfig :: !(Var (Maybe SessionLoadingPreferenceConfig))
   }
+
+newtype SessionLoaderPendingBarrierVar = SessionLoaderPendingBarrierVar (TVar (Maybe Int))
+instance IsIdeGlobal SessionLoaderPendingBarrierVar
+
+setSessionLoaderPendingBarrier :: IdeState -> Int -> IO ()
+setSessionLoaderPendingBarrier ideState n = do
+  SessionLoaderPendingBarrierVar barrier <- getIdeGlobalState ideState
+  atomically $ writeTVar barrier (Just n)
+
+clearSessionLoaderPendingBarrier :: IdeState -> IO ()
+clearSessionLoaderPendingBarrier ideState = do
+  SessionLoaderPendingBarrierVar barrier <- getIdeGlobalState ideState
+  atomically $ writeTVar barrier Nothing
+
+waitForSessionLoaderPendingBarrier :: TVar (Maybe Int) -> SessionState -> IO ()
+waitForSessionLoaderPendingBarrier barrier state =
+  atomically $ do
+    mTarget <- readTVar barrier
+    case mTarget of
+      Nothing -> pure ()
+      Just targetSize -> do
+        pending <- S.toHashSet (pendingFiles state)
+        if Set.size pending < targetSize
+          then STM.retry
+          else writeTVar barrier Nothing
 
 -- | Helper functions for SessionState management
 -- These functions encapsulate common operations on the SessionState
@@ -613,6 +641,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
 
   return $ do
     clientConfig <- getClientConfigAction
+    SessionLoaderPendingBarrierVar pendingBarrier <- getIdeGlobalAction
     extras@ShakeExtras{ideNc, knownTargetsVar
                       } <- getShakeExtras
     let invalidateShakeCache = do
@@ -637,6 +666,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
             { sessionLspContext = lspEnv extras
             , sessionRootDir = rootDir
             , sessionIdeOptions = ideOptions
+            , sessionPendingBarrier = pendingBarrier
             , sessionClientConfig = clientConfig
             , sessionSharedNameCache = ideNc
             , sessionLoadingOptions = newSessionLoadingOptions
@@ -697,6 +727,7 @@ data SessionEnv = SessionEnv
   { sessionLspContext      :: Maybe (LanguageContextEnv Config)
   , sessionRootDir         :: FilePath
   , sessionIdeOptions      :: IdeOptions
+  , sessionPendingBarrier  :: TVar (Maybe Int)
   , sessionClientConfig    :: Config
   , sessionSharedNameCache :: NameCache
   , sessionLoadingOptions  :: SessionLoadingOptions
@@ -714,16 +745,25 @@ type SessionM = ReaderT SessionEnv IO
 -- 3.2.1. If we need to reload, remove the
 getOptionsLoop :: Recorder (WithPriority Log) -> SessionShake -> SessionState -> TVar (Hashed KnownTargets) -> SessionM ()
 getOptionsLoop recorder sessionShake sessionState knownTargetsVar = forever $ do
+  pendingBarrier <- asks sessionPendingBarrier
+  IdeTesting isTestMode <- asks (optTesting . sessionIdeOptions)
+  when isTestMode $
+    liftIO $ waitForSessionLoaderPendingBarrier pendingBarrier sessionState
+
   -- Get the next file to load
   file <- liftIO $ atomically $ S.readQueue (pendingFiles sessionState)
   logWith recorder Debug (LogGetOptionsLoop file)
-  let ncfp = toNormalizedFilePath' file
-  cachedHieYamlLocation <- join <$> liftIO (atomically (STM.lookup ncfp (filesMap sessionState)))
-  sessionLoadingOptions <- asks sessionLoadingOptions
-  hieYaml <- liftIO $ findCradle sessionLoadingOptions file
-  let hieLoc = cachedHieYamlLocation <|> hieYaml
+  hieLoc <- findHieYamlForTarget (filesMap sessionState) file
   sessionOpts recorder sessionShake sessionState knownTargetsVar (hieLoc, file)
     `Safe.catch` handleSingleFileProcessingError' sessionState hieLoc file
+
+findHieYamlForTarget :: FilesMap -> FilePath -> SessionM (Maybe FilePath)
+findHieYamlForTarget filesMapping file = do
+  let ncfp = toNormalizedFilePath' file
+  cachedHieYamlLocation <- join <$> liftIO (atomically (STM.lookup ncfp filesMapping))
+  sessionLoadingOptions <- asks sessionLoadingOptions
+  hieYaml <- liftIO $ findCradle sessionLoadingOptions file
+  pure $ cachedHieYamlLocation <|> hieYaml
 
 -- | This caches the mapping from hie.yaml + Mod.hs -> [String]
 -- Returns the Ghc session and the cradle dependencies

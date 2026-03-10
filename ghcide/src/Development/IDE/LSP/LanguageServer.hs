@@ -303,38 +303,41 @@ handleInit initParams env (TRequestMessage _ _ m params) = otTracedHandler "Init
     logWith recorder Info $ LogRegisteringIdeConfig initConfig
     ideMVar <- newEmptyMVar
 
-    let handleServerExceptionOrShutDown me = do
-            -- shutdown shake
-            tryReadMVar ideMVar >>= mapM_ shutdown
-            case me of
-                Left e -> do
-                    lifetimeConfirm ("due to exception in reactor thread: " <> T.pack (displayException e))
-                    logWith recorder Error $ LogReactorThreadException e
-                    -- ctxForceShutdown initParams
-                    throw e
-                _ -> do
-                    lifetimeConfirm "due to shutdown message"
-                    return ()
+    let
+      handleServerExceptionOrShutDown me = do
+        -- shutdown shake
+        tryReadMVar ideMVar >>= mapM_ shutdown
+        case me of
+          Left e -> do
+            lifetimeConfirm ("due to exception in reactor thread: " <> T.pack (displayException e))
+            logWith recorder Error $ LogReactorThreadException e
+            -- ctxForceShutdown initParams
+            throw e
+          _ -> do
+            lifetimeConfirm "due to shutdown message"
+            return ()
 
-        exceptionInHandler e = do
-            logWith recorder Error $ LogReactorMessageActionException e
+      exceptionInHandler e = do
+        logWith recorder Error $ LogReactorMessageActionException e
 
-        checkCancelled :: forall m . LspId m -> IO () -> (TResponseError m -> IO ()) -> IO ()
-        checkCancelled _id act k =
-            let sid = SomeLspId _id
-            in flip finally (ctxClearReqId initParams sid) $
-                catch (do
-                    -- We could optimize this by first checking if the id
-                    -- is in the cancelled set. However, this is unlikely to be a
-                    -- bottleneck and the additional check might hide
-                    -- issues with async exceptions that need to be fixed.
-                    cancelOrRes <- race (ctxWaitForCancel initParams sid) act
-                    case cancelOrRes of
-                        Left () -> do
-                            logWith recorder Debug $ LogCancelledRequest sid
-                            k $ TResponseError (InL LSPErrorCodes_RequestCancelled) "" Nothing
-                        Right res -> pure res
-                ) $ \(e :: SomeException) -> do
+      checkCancelled :: forall m . LspId m -> IO () -> (TResponseError m -> IO ()) -> IO ()
+      checkCancelled _id act k =
+        let sid = SomeLspId _id
+         in flip finally (ctxClearReqId initParams sid) $
+              catch
+                (do
+                  -- We could optimize this by first checking if the id
+                  -- is in the cancelled set. However, this is unlikely to be a
+                  -- bottleneck and the additional check might hide
+                  -- issues with async exceptions that need to be fixed.
+                  cancelOrRes <- race (ctxWaitForCancel initParams sid) act
+                  case cancelOrRes of
+                    Left () -> do
+                      logWith recorder Debug $ LogCancelledRequest sid
+                      k $ TResponseError (InL LSPErrorCodes_RequestCancelled) "" Nothing
+                    Right res -> pure res
+                )
+                $ \(e :: SomeException) -> do
                     exceptionInHandler e
                     k $ TResponseError (InR ErrorCodes_InternalError) (T.pack $ show e) Nothing
     _ <- flip forkFinally handleServerExceptionOrShutDown $ do
@@ -412,4 +415,3 @@ modifyOptions x = x{ LSP.optTextDocumentSync   = Just $ tweakTDS origTDS
         tweakTDS tds = tds{_openClose=Just True, _change=Just TextDocumentSyncKind_Incremental, _save=Just $ InR $ SaveOptions Nothing}
         origTDS = fromMaybe tdsDefault $ LSP.optTextDocumentSync x
         tdsDefault = TextDocumentSyncOptions Nothing Nothing Nothing Nothing Nothing
-

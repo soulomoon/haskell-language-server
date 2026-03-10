@@ -6,8 +6,7 @@ packages:
          ./hls-plugin-api
          ./hls-test-utils
 
-
-index-state: 2025-08-08T12:31:54Z
+index-state: 2026-02-24T00:00:00Z
 
 tests: True
 test-show-details: direct
@@ -41,6 +40,7 @@ constraints:
   -- We want to be able to benefit from the performance optimisations
   -- in the future, thus: TODO: remove this flag.
   bitvec -simd,
+  monad-control >=1.0.3,
 
 
 -- Some of the formatters need the latest Cabal-syntax version,
@@ -57,13 +57,38 @@ if impl(ghc >= 9.13)
     cabal-install-parsers:base,
     cabal-install-parsers:time,
 
-source-repository-package
-  type: git
-  location: https://github.com/soulomoon/lsp.git
-  tag: 6e784f92bad00879ee3de43863cd918cc0a9c5f1
-  subdir: lsp lsp-types lsp-test
-
-source-repository-package
-  type: git
-  location: https://github.com/haskell/hie-bios.git
-  tag: f37d841ad7f42e4488e3f17ab124322ef1cb2e42
+if impl(ghc >= 9.14)
+  allow-newer:
+    indexed-traversable:containers,
+    quickcheck-instances:containers,
+    dependent-map:containers,
+    aeson:containers,
+    semialign:containers,
+    string-interpolate:template-haskell,
+    tasty-hspec:base,
+    tagged:template-haskell,
+    indexed-traversable:base,
+    quickcheck-instances:base,
+    time-compat:base,
+    time-compat:time,
+    these:base,
+    some:base,
+    boring:base,
+    indexed-traversable-instances:base,
+    uuid-types:template-haskell,
+    hie-compat:base,
+    ghc-trace-events:base,
+    constraints-extras:template-haskell,
+    aeson:time,
+    text-iso8601:time,
+    semialign:base,
+    aeson:template-haskell,
+    lukko:base,
+    binary-instances:base,
+    binary-orphans:base,
+    cabal-install-parsers:containers,
+    haddock-library:base,
+    websockets:containers,
+    monad-control:transformers,
+    mmorph:transformers-compat,
+    binary-instances:tagged,

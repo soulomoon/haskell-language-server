@@ -767,7 +767,11 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         diagQueue = tDiagQueue threadQueue
         loaderQueue = tLoaderQueue threadQueue
 
+#if MIN_VERSION_ghc(9,13,0)
+    ideNc <- newNameCache
+#else
     ideNc <- initNameCache 'r' knownKeyNames
+#endif
     shakeExtras <- do
         globals <- newTVarIO HMap.empty
         stateValues <- STM.newIO

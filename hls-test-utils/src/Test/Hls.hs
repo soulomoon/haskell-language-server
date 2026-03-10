@@ -29,6 +29,7 @@ module Test.Hls
     goldenWithCabalDocFormatter,
     goldenWithCabalDocFormatterInTmpDir,
     goldenWithTestConfig,
+    hlsHelperTestRecorder,
     def,
     -- * Running HLS for integration tests
     runSessionWithServer,
@@ -147,6 +148,8 @@ import           System.Process.Extra                     (createPipe)
 import           System.Time.Extra
 import qualified Test.Hls.FileSystem                      as FS
 import           Test.Hls.FileSystem
+import           Test.Hls.TestEnv                         (hlsTestOptions,
+                                                           wrapCliTestOptions)
 import           Test.Hls.Util
 import           Test.Tasty                               hiding (Timeout)
 import           Test.Tasty.ExpectedFailure
@@ -157,6 +160,17 @@ import           Test.Tasty.Ingredients.Rerun
 data Log
   = LogIDEMain IDEMain.Log
   | LogTestHarness LogTestHarness
+
+data TestRunLog
+  = TestRunFinished
+  | TestServerExitTimeoutSeconds Int
+  | TestServerCancelFinished String
+
+instance Pretty TestRunLog where
+    pretty :: TestRunLog -> Logger.Doc ann
+    pretty TestRunFinished = "Test run finished"
+    pretty (TestServerExitTimeoutSeconds secs) = "Server does not exit in " <> pretty secs <> "s, canceling the async task..."
+    pretty (TestServerCancelFinished took) = "Finishing canceling (took " <> pretty took <> "s)"
 
 instance Pretty Log where
   pretty = \case
@@ -184,9 +198,12 @@ data ExpectBroken (k :: BrokenBehavior) a where
 unCurrent :: ExpectBroken 'Current a -> a
 unCurrent (BrokenCurrent a) = a
 
--- | Run 'defaultMainWithRerun', limiting each single test case running at most 10 minutes
+-- | Run main with rerun, limiting each single test case running at most 10 minutes
 defaultTestRunner :: TestTree -> IO ()
-defaultTestRunner = defaultMainWithRerun . adjustOption (const $ mkTimeout 600000000)
+defaultTestRunner = defaultMainWithIngredients ingredientsWithRerun . wrapCliTestOptions . adjustOption (const $ mkTimeout 600000000)
+  where
+    ingredients = includingOptions hlsTestOptions : defaultIngredients
+    ingredientsWithRerun = [rerunningTests ingredients]
 
 gitDiff :: FilePath -> FilePath -> [String]
 gitDiff fRef fNew = ["git", "-c", "core.fileMode=false", "diff", "--no-index", "--text", "--exit-code", fRef, fNew]
@@ -855,6 +872,7 @@ runSessionWithTestConfig TestConfig{..} session =
 
     (recorder, cb1) <- wrapClientLogger =<< hlsPluginTestRecorder
     (recorderIde, cb2) <- wrapClientLogger =<< hlsHelperTestRecorder
+    testRecorder <- hlsHelperTestRecorder
     -- This plugin just installs a handler for the `initialized` notification, which then
     -- picks up the LSP environment and feeds it to our recorders
     let lspRecorderPlugin = pluginDescToIdePlugins [(defaultPluginDescriptor "LSPRecorderCallback" "Internal plugin")
@@ -877,11 +895,12 @@ runSessionWithTestConfig TestConfig{..} session =
     timeout 3 (wait server) >>= \case
         Just () -> pure ()
         Nothing -> do
-            putStrLn "Server does not exit in 3s, canceling the async task..."
+            logWith testRecorder Info (TestServerExitTimeoutSeconds 3)
             (t, _) <- duration $ cancel server
-            putStrLn $ "Finishing canceling (took " <> showDuration t <> "s)"
+            logWith testRecorder Info (TestServerCancelFinished (showDuration t))
     hClose inR
     hClose outW
+    logWith testRecorder Info TestRunFinished
     pure result
 
     where

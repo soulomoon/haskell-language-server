@@ -86,7 +86,7 @@ import           Data.IntMap.Strict                           (IntMap)
 import qualified Data.IntMap.Strict                           as IntMap
 import           Data.IORef
 import           Data.List
-import           Data.List.Extra                              (nubOrdOn)
+import           Data.List.Extra                              (nubOrd, nubOrdOn)
 import qualified Data.Map                                     as M
 import           Data.Maybe
 import           Data.Proxy
@@ -141,6 +141,13 @@ import qualified Development.IDE.Types.Shake                  as Shake
 import           GHC.Iface.Ext.Types                          (HieASTs (..))
 import           GHC.Iface.Ext.Utils                          (generateReferencesMap)
 import qualified GHC.LanguageExtensions                       as LangExt
+#if MIN_VERSION_ghc(9,13,0)
+import           GHC.Types.PkgQual                            (PkgQual (NoPkgQual))
+import           GHC.Types.Basic                              (ImportLevel (..))
+import           GHC.Unit.Types                               (GenWithIsBoot(..))
+import           GHC.Unit.Module.Graph                        (mkModuleEdge)
+import           GHC.Unit.Module.ModNodeKey                   (mnkModuleName)
+#endif
 import           HIE.Bios.Ghc.Gap                             (hostIsDynamic)
 import qualified HieDb
 import           Ide.Logger                                   (Pretty (pretty),
@@ -160,7 +167,7 @@ import           Ide.Plugin.Properties                        (HasProperty,
                                                                useProperty,
                                                                usePropertyByPath)
 import           Ide.Types                                    (DynFlagsModifications (dynFlagsModifyGlobal, dynFlagsModifyParser),
-                                                               PluginId)
+                                                               PluginId, getVirtualFileFromVFS)
 import qualified Language.LSP.Protocol.Lens                   as JL
 import           Language.LSP.Protocol.Message                (SMethod (SMethod_CustomMethod, SMethod_WindowShowMessage))
 import           Language.LSP.Protocol.Types                  (MessageType (MessageType_Info),
@@ -316,7 +323,12 @@ getLocatedImportsRule recorder =
     define (cmapWithPrio LogShake recorder) $ \GetLocatedImports file -> do
         ModSummaryResult{msrModSummary = ms} <- use_ GetModSummaryWithoutTimestamps file
         (KnownTargets targets targetsMap) <- useNoFile_ GetKnownTargets
+#if MIN_VERSION_ghc(9,13,0)
+        let imports = [(False, lvl, mbPkgName, modName) | (lvl, mbPkgName, modName) <- ms_textual_imps ms]
+                   ++ [(True, NormalLevel, NoPkgQual, noLoc modName) | L _ modName <- ms_srcimps ms]
+#else
         let imports = [(False, imp) | imp <- ms_textual_imps ms] ++ [(True, imp) | imp <- ms_srcimps ms]
+#endif
         env_eq <- use_ GhcSession file
         let env = hscEnv env_eq
         let import_dirs = map (second homeUnitEnv_dflags) $ hugElts $ hsc_HUG env
@@ -336,7 +348,11 @@ getLocatedImportsRule recorder =
                 | otherwise = do
                     itExists <- getFileExists nfp
                     return $ if itExists then Just nfp else Nothing
+#if MIN_VERSION_ghc(9,13,0)
+        (diags, imports') <- fmap unzip $ forM imports $ \(isSource, _lvl, mbPkgName, modName) -> do
+#else
         (diags, imports') <- fmap unzip $ forM imports $ \(isSource, (mbPkgName, modName)) -> do
+#endif
             diagOrImp <- locateModule (hscSetFlags dflags env) import_dirs (optExtensions opt) getTargetFor modName mbPkgName isSource
             case diagOrImp of
                 Left diags              -> pure (diags, Just (modName, Nothing))
@@ -510,9 +526,9 @@ persistentHieFileRule recorder = addPersistentRule GetHieAst $ \file -> runMaybe
   res <- readHieFileForSrcFromDisk recorder file
   vfsRef <- asks vfsVar
   vfsData <- liftIO $ _vfsMap <$> readTVarIO vfsRef
-  (currentSource, ver) <- liftIO $ case M.lookup (filePathToUri' file) vfsData of
-    Just (Open vf) -> pure (virtualFileText vf, Just $ virtualFileVersion vf)
-    _ -> (,Nothing) . T.decodeUtf8 <$> BS.readFile (fromNormalizedFilePath file)
+  (currentSource, ver) <- liftIO $ case getVirtualFileFromVFS (VFS vfsData) (filePathToUri' file) of
+    Nothing -> (,Nothing) . T.decodeUtf8 <$> BS.readFile (fromNormalizedFilePath file)
+    Just vf -> pure (virtualFileText vf, Just $ virtualFileVersion vf)
   let refmap = generateReferencesMap . getAsts . Compat.hie_asts $ res
       del = deltaFromDiff (T.decodeUtf8 $ Compat.hie_hs_src res) currentSource
   pure (HAR (Compat.hie_module res) (Compat.hie_asts res) refmap mempty (HieFromDisk res),del,ver)
@@ -624,6 +640,22 @@ getModuleGraphRule recorder = defineEarlyCutOffNoFile (cmapWithPrio LogShake rec
   fs <- toKnownFiles <$> useNoFile_ GetKnownTargets
   dependencyInfoForFiles (HashSet.toList fs)
 
+#if MIN_VERSION_ghc(9,13,0)
+-- | Build level-aware module graph edges from a ModSummary and a list of dependency NodeKeys.
+-- A module can be imported at multiple levels (e.g. @import splice M@ + @import M@),
+-- so we collect ALL levels per module and produce one edge per (module, level) pair.
+-- This is required for GHC 9.14's level-aware module graph (@mg_zero_graph@).
+mkLevelEdges :: ModSummary -> [NodeKey] -> [ModuleNodeEdge]
+mkLevelEdges ms dep_node_keys = concatMap (\nk -> map (\lvl -> mkModuleEdge lvl nk) (lookupLevels nk)) dep_node_keys
+  where
+    importLevelsMap = M.map nubOrd $ M.fromListWith (++)
+      [(unLoc mn, [lvl]) | (lvl, _pkg, mn) <- ms_textual_imps ms]
+    lookupLevels nk = case nk of
+      NodeKey_Module mnk ->
+        M.findWithDefault [NormalLevel] (gwib_mod $ mnkModuleName mnk) importLevelsMap
+      _ -> [NormalLevel]
+#endif
+
 dependencyInfoForFiles :: [NormalizedFilePath] -> Action (BS.ByteString, DependencyInformation)
 dependencyInfoForFiles fs = do
   (rawDepInfo, bm) <- rawDependencyInformation fs
@@ -633,10 +665,18 @@ dependencyInfoForFiles fs = do
   let deps = map (\i -> IM.lookup (getFilePathId i) (rawImports rawDepInfo)) _all_ids
       nodeKeys = IM.fromList $ catMaybes $ zipWith (\fi mms -> (getFilePathId fi,) . NodeKey_Module . msKey <$> mms) _all_ids mss
       mns = catMaybes $ zipWith go mss deps
+#if MIN_VERSION_ghc(9,13,0)
+      go (Just ms) (Just (Right (ModuleImports xs))) = Just $ ModuleNode this_dep_edges (ModuleNodeCompile ms)
+        where this_dep_ids = mapMaybe snd xs
+              this_dep_node_keys = mapMaybe (\fi -> IM.lookup (getFilePathId fi) nodeKeys) this_dep_ids
+              this_dep_edges = mkLevelEdges ms this_dep_node_keys
+      go (Just ms) _ = Just $ ModuleNode [] (ModuleNodeCompile ms)
+#else
       go (Just ms) (Just (Right (ModuleImports xs))) = Just $ ModuleNode this_dep_keys ms
         where this_dep_ids = mapMaybe snd xs
               this_dep_keys = mapMaybe (\fi -> IM.lookup (getFilePathId fi) nodeKeys) this_dep_ids
       go (Just ms) _ = Just $ ModuleNode [] ms
+#endif
       go _ _ = Nothing
       mg = mkModuleGraph mns
   pure (fingerprintToBS $ Util.fingerprintFingerprints $ map (maybe fingerprint0 msrFingerprint) msrs, processDependencyInformation rawDepInfo bm mg)
@@ -768,8 +808,14 @@ ghcSessionDepsDefinition fullModSummary GhcSessionDepsConfig{..} hscEnvEq file =
                 !final_deps <- do
                   dep_mss <- map msrModSummary <$> uses_ GetModSummaryWithoutTimestamps deps
                   return $!! map (NodeKey_Module . msKey) dep_mss
+#if MIN_VERSION_ghc(9,13,0)
+                let final_dep_edges = mkLevelEdges ms final_deps
+                let module_graph_nodes =
+                      nubOrdOn mkNodeKey (ModuleNode final_dep_edges (ModuleNodeCompile ms) : concatMap mgModSummaries' mgs)
+#else
                 let module_graph_nodes =
                       nubOrdOn mkNodeKey (ModuleNode final_deps ms : concatMap mgModSummaries' mgs)
+#endif
                 liftIO $ evaluate $ liftRnf rwhnf module_graph_nodes
                 return $ mkModuleGraph module_graph_nodes
             de <- useNoFile_ GetModuleGraph

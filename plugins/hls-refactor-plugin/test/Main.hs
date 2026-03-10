@@ -3299,7 +3299,7 @@ removeRedundantConstraintsTests = let
     ]
 
   typeSignatureLined3 = T.unlines $ header <>
-    [ "foo :: ( Eq a"
+    [ "foo :: (Eq a"
     , "       , Show a"
     , "       )"
     , "    => a -> Bool"
@@ -3307,7 +3307,7 @@ removeRedundantConstraintsTests = let
     ]
 
   typeSignatureLined3' = T.unlines $ header <>
-    [ "foo :: ( Eq a"
+    [ "foo :: (Eq a"
     , "       )"
     , "    => a -> Bool"
     , "foo x = x == x"
@@ -3390,7 +3390,9 @@ addSigActionTests = let
     executeCodeAction chosenAction
     modifiedCode <- documentContents doc
     liftIO $ expectedCode @=? modifiedCode
-  issue806 = if ghcVersion >= GHC910 then
+  issue806 = if ghcVersion >= GHC914 then
+                  "hello = print"           >:: "hello :: GHC.Internal.Types.ZonkAny 0 -> IO ()" -- GHC 9.14 moved to GHC.Internal.Types
+                else if ghcVersion >= GHC910 then
                   "hello = print"           >:: "hello :: GHC.Types.ZonkAny 0 -> IO ()" -- GHC now returns ZonkAny 0 instead of Any. https://gitlab.haskell.org/ghc/ghc/-/issues/25895
                 else
                   "hello = print"           >:: "hello :: GHC.Types.Any -> IO ()" -- Documents current behavior outlined in #806

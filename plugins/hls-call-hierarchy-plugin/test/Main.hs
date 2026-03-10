@@ -16,6 +16,7 @@ import qualified Language.LSP.Protocol.Lens as L
 import qualified Language.LSP.Test          as Test
 import           System.FilePath
 import           Test.Hls
+import qualified Test.Hls.FileSystem        as FS
 
 plugin :: PluginTestDescriptor ()
 plugin = mkPluginTestDescriptor' descriptor "call-hierarchy"
@@ -192,9 +193,9 @@ incomingCallsTests =
   testGroup "Incoming Calls"
   [ testGroup "single file"
     [ testCase "xdata unavailable" $
-        runSessionWithServer' def plugin testDataDir $ \runDir -> do
+        runCallHierarchySessionEmpty $ do
           doc <- createDoc "A.hs" "haskell" $ T.unlines ["a=3", "b=a"]
-          waitForIndex (runDir </> "A.hs")
+          waitForIndex "A.hs"
           item <- expectOneElement =<< Test.prepareCallHierarchy (mkPrepareCallHierarchyParam doc 1 0)
           let expected = [CallHierarchyIncomingCall item [mkRange 1 2 1 3]]
           item' <- expectOneElement =<< Test.prepareCallHierarchy (mkPrepareCallHierarchyParam doc 0 0)
@@ -313,9 +314,9 @@ outgoingCallsTests =
   testGroup "Outgoing Calls"
   [ testGroup "single file"
     [ testCase "xdata unavailable" $
-        runSessionWithServerEmptyDir def plugin $ \dir -> do
+        runCallHierarchySessionEmpty $ do
           doc <- createDoc "A.hs" "haskell" $ T.unlines ["a=3", "b=a"]
-          waitForIndex (dir </> "A.hs")
+          waitForIndex "A.hs"
           item <- expectOneElement =<< Test.prepareCallHierarchy (mkPrepareCallHierarchyParam doc 0 1)
           let expected = [CallHierarchyOutgoingCall item [mkRange 1 2 1 3]]
           item' <- expectOneElement =<< Test.prepareCallHierarchy (mkPrepareCallHierarchyParam doc 1 0)
@@ -412,9 +413,9 @@ outgoingCallsTests =
 
 incomingCallTestCase :: T.Text -> Int -> Int -> [(Int, Int)] -> [Range] -> Assertion
 incomingCallTestCase contents queryX queryY positions ranges =
-  runSessionWithServerEmptyDir def plugin $ \dir -> do
+  runCallHierarchySessionEmpty $ do
     doc <- createDoc "A.hs" "haskell" contents
-    waitForIndex (dir </> "A.hs")
+    waitForIndex "A.hs"
     items <- concatMapM (\((x, y), range) ->
       Test.prepareCallHierarchy (mkPrepareCallHierarchyParam doc x y)
           <&> map (, range)
@@ -428,9 +429,9 @@ incomingCallTestCase contents queryX queryY positions ranges =
 
 incomingCallMultiFileTestCase :: FilePath -> Int -> Int -> M.Map FilePath [((Int, Int), Range)] -> Assertion
 incomingCallMultiFileTestCase filepath queryX queryY mp =
-  runSessionWithServer' def plugin testDataDir $ \runDir -> do
+  runCallHierarchySession $ do
     doc <- openDoc filepath "haskell"
-    waitForIndex (runDir </> filepath)
+    waitForIndex filepath
     items <- fmap concat $ sequence $ M.elems $ M.mapWithKey (\fp pr -> do
               p <- openDoc fp "haskell"
               waitForKickDone
@@ -446,9 +447,9 @@ incomingCallMultiFileTestCase filepath queryX queryY mp =
 
 outgoingCallTestCase :: T.Text -> Int -> Int -> [(Int, Int)] -> [Range] -> Assertion
 outgoingCallTestCase contents queryX queryY positions ranges =
-  runSessionWithServerEmptyDir def plugin $ \dir -> do
+  runCallHierarchySessionEmpty $ do
     doc <- createDoc "A.hs" "haskell" contents
-    waitForIndex (dir </> "A.hs")
+    waitForIndex "A.hs"
     items <- concatMapM (\((x, y), range) ->
       Test.prepareCallHierarchy (mkPrepareCallHierarchyParam doc x y)
           <&> map (, range)
@@ -462,9 +463,9 @@ outgoingCallTestCase contents queryX queryY positions ranges =
 
 outgoingCallMultiFileTestCase :: FilePath -> Int -> Int -> M.Map FilePath [((Int, Int), Range)] -> Assertion
 outgoingCallMultiFileTestCase filepath queryX queryY mp =
-  runSessionWithServer' def plugin testDataDir $ \runDir -> do
+  runCallHierarchySession $ do
     doc <- openDoc filepath "haskell"
-    waitForIndex (runDir </> filepath)
+    waitForIndex filepath
     items <- fmap concat $ sequence $ M.elems $ M.mapWithKey (\fp pr -> do
               p <- openDoc fp "haskell"
               waitForKickDone
@@ -480,9 +481,9 @@ outgoingCallMultiFileTestCase filepath queryX queryY mp =
 
 oneCaseWithCreate :: T.Text -> Int -> Int -> (Uri -> CallHierarchyItem -> Assertion) -> Assertion
 oneCaseWithCreate contents queryX queryY expected =
-  runSessionWithServerEmptyDir def plugin $ \dir -> do
+  runCallHierarchySessionEmpty $ do
     doc <- createDoc "A.hs" "haskell" contents
-    waitForIndex (dir </> "A.hs")
+    waitForIndex "A.hs"
     item <- expectOneElement =<< Test.prepareCallHierarchy (mkPrepareCallHierarchyParam doc queryX queryY)
     liftIO $ expected (doc ^. L.uri) item
     closeDoc doc
@@ -549,3 +550,23 @@ waitForIndex fp1 = skipManyTill anyMessage $ void $ referenceReady lenientEquals
       | isRelative fp1 = any (equalFilePath fp1 . joinPath) $ tails $ splitDirectories fp2
       | otherwise = equalFilePath fp1 fp2
 
+runCallHierarchySession :: Session a -> IO a
+runCallHierarchySession =
+  runSessionWithServerInTmpDir def plugin
+    (FS.mkVirtualFileTree
+      testDataDir
+      [ FS.copy "A.hs"
+      , FS.copy "B.hs"
+      , FS.copy "C.hs"
+      , FS.copy "hie.yaml"
+      ]
+    )
+
+runCallHierarchySessionEmpty :: Session a -> IO a
+runCallHierarchySessionEmpty =
+  runSessionWithServerInTmpDir def plugin
+    (FS.mkVirtualFileTree
+      testDataDir
+      [
+      ]
+    )
