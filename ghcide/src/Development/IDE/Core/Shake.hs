@@ -132,10 +132,16 @@ import qualified Language.LSP.Server                     as LSP
 import           Data.Either                             (isRight, lefts)
 import           Data.Int                                (Int64)
 import           Development.IDE.Core.Tracing
+#if MIN_VERSION_ghc(9,13,0)
+import           Development.IDE.GHC.Compat              (NameCache,
+                                                          NameCacheUpdater,
+                                                          newNameCache)
+#else
 import           Development.IDE.GHC.Compat              (NameCache,
                                                           NameCacheUpdater,
                                                           initNameCache,
                                                           knownKeyNames)
+#endif
 import           Development.IDE.GHC.Orphans             ()
 import           Development.IDE.Graph                   hiding (ShakeValue,
                                                           action)

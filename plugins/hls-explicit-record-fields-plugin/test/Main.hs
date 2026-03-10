@@ -294,7 +294,7 @@ test = testGroup "explicit-fields"
                          , _paddingLeft = Nothing
                          }
           ]
-    , mkInlayHintsTest "CursorRecords" Nothing 9 $ \ih -> do
+    , mkInlayHintsTest "CursorRecords" Nothing 9 $ \_ ih -> do
         let mkLabelPart' = mkLabelPartOffsetLength "CursorRecords"
         a0  <- mkLabelPart' 3 14 "a0"
         a1  <- mkLabelPart' 4 14 "a1"
@@ -339,7 +339,7 @@ test = testGroup "explicit-fields"
               , _data_ = Nothing
               }
           ]
-    , mkInlayHintsTest "CursorPositional" Nothing 15 $ \ih -> do
+    , mkInlayHintsTest "CursorPositional" Nothing 15 $ \_ ih -> do
         let mkLabelPart' = mkLabelPartOffsetLengthSub1 "CursorPositional"
         middle <- mkLabelPart' 2 2 "middle="
         inner  <- mkLabelPart' 6 2 "inner="
@@ -381,7 +381,6 @@ test = testGroup "explicit-fields"
     ]
   ]
 
-mkInlayHintsTest :: FilePath -> Maybe TestName -> UInt -> (String -> [InlayHint] -> Assertion) -> TestTree
 assertNoInlayHints :: String -> [InlayHint] -> Assertion
 assertNoInlayHints _ = assertBool "There exists an inlay hint whereas there should have been none" . null
 
@@ -395,7 +394,6 @@ mkInlayHintsTest fp postfix line assert =
   where
     lineRange line = Range (Position line 0) (Position line 1000)
 
-mkTestNoAction :: TestName -> FilePath -> UInt -> UInt -> UInt -> UInt -> TestTree
 mkTestNoAction title fp x1 y1 x2 y2 =
   testCase title $
     runSessionWithServer def plugin (testDataDir </> "noop") $ do

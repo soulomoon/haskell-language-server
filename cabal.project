@@ -24,7 +24,6 @@ test-options: -j1
 -- haddock shown on hover
 package *
   ghc-options: -haddock
-
 constraints:
   -- C++ is hard to distribute, especially on older GHCs
   -- See https://github.com/haskell/haskell-language-server/issues/3822
@@ -92,3 +91,4 @@ if impl(ghc >= 9.14)
     monad-control:transformers,
     mmorph:transformers-compat,
     binary-instances:tagged,
+    pqueue:base,

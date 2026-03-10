@@ -1,7 +1,7 @@
 #!/usr/bin/env cabal
 {- cabal:
 build-depends:
-    base >= 4.14 && < 5
+    base >= 4.14
   , text
   , regex-tdfa
   , unix

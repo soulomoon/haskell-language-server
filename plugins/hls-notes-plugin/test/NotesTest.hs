@@ -84,7 +84,7 @@ testDataDir = "plugins" </> "hls-notes-plugin" </> "test" </> "testdata"
 hoverNoteTests :: TestTree
 hoverNoteTests = testGroup "Hover Notes"
   [ testCase "hover normal-notes" $
-      runSessionWithServer' testDataDir $ \_dir -> do
+      runSessionWithServerNote testDataDir $ \_dir -> do
         let file = "HoverNote.hs"
             pos  = Position 24 10
         doc <- openDoc file "haskell"
@@ -100,7 +100,7 @@ hoverNoteTests = testGroup "Hover Notes"
 
 
   , testCase "hover multi-notes-one" $
-      runSessionWithServer' testDataDir $ \_dir -> do
+      runSessionWithServerNote testDataDir $ \_dir -> do
         let file = "HoverNote.hs"
             pos  = Position 25 10
         doc <- openDoc file "haskell"
@@ -116,7 +116,7 @@ hoverNoteTests = testGroup "Hover Notes"
 
 
   , testCase "hover multi-notes-two" $
-      runSessionWithServer' testDataDir $ \_dir -> do
+      runSessionWithServerNote testDataDir $ \_dir -> do
         let file = "HoverNote.hs"
             pos  = Position 26 10
         doc <- openDoc file "haskell"
@@ -132,7 +132,7 @@ hoverNoteTests = testGroup "Hover Notes"
 
 
   , testCase "hover single-comment-declaration" $
-      runSessionWithServer' testDataDir $ \_dir -> do
+      runSessionWithServerNote testDataDir $ \_dir -> do
         let file = "HoverNote.hs"
             pos  = Position 27 10
         doc <- openDoc file "haskell"
@@ -146,7 +146,7 @@ hoverNoteTests = testGroup "Hover Notes"
 
         liftIO $ hover @?= expected
 
-  , testCase "hover single-comment leak" $ runSessionWithServer' testDataDir $ \_dir -> do
+  , testCase "hover single-comment leak" $ runSessionWithServerNote testDataDir $ \_dir -> do
         let file = "NoteDef.hs"
             pos  = Position 5 69
         doc <- openDoc file "haskell"

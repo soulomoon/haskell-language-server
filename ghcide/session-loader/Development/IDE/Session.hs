@@ -429,7 +429,6 @@ handleBatchLoadFailure sessionState files = do
 handleSingleLoadFailure :: SessionState -> FilePath -> IO ()
 handleSingleLoadFailure sessionState file = do
   addErrorLoadingFile sessionState file
-  removeErrorLoadingFile sessionState file
   atomically $ S.delete file (pendingFiles sessionState)
   removeCradleFile sessionState file
 
