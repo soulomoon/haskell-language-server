@@ -51,3 +51,4 @@ store/
 gh-release-artifacts/
 
 .hls/
+hlint.eventlog
