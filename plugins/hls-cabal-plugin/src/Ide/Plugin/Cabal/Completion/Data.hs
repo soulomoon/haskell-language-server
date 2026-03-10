@@ -323,4 +323,3 @@ weightedLicenseNames =
 
 ghcOptions :: [T.Text]
 ghcOptions = map T.pack $ flagsForCompletion False
-

@@ -43,7 +43,7 @@ import           System.Info
 
 
 import           Control.DeepSeq
-import           Control.Exception                  (evaluate)
+import           Control.Exception                  (evaluate, mask_)
 import           Control.Monad.IO.Unlift            (MonadUnliftIO)
 import qualified Data.Set                           as OS
 import qualified Development.IDE.GHC.Compat.Util    as Compat
@@ -54,13 +54,12 @@ import           Ide.PluginUtils                    (toAbsolute)
 
 import           GHC.Driver.Env                     (hsc_all_home_unit_ids)
 import           GHC.Driver.Errors.Types
-import           GHC.Types.Error                    (errMsgDiagnostic,
-                                                     singleMessage)
-import           GHC.Unit.State
-
 #if MIN_VERSION_ghc(9,13,0)
 import           GHC.Driver.Make                    (checkHomeUnitsClosed)
 #endif
+import           GHC.Types.Error                    (errMsgDiagnostic,
+                                                     singleMessage)
+import           GHC.Unit.State
 
 data Log
   = LogInterfaceFilesCacheDir !FilePath
@@ -103,6 +102,7 @@ data ComponentInfo = ComponentInfo
   -- | Processed DynFlags. Does not contain inplace packages such as local
   -- libraries. Can be used to actually load this Component.
   , componentDynFlags       :: DynFlags
+  , componentOptionHash     :: String
   -- | All targets of this components.
   , componentTargets        :: [GHC.Target]
   -- | Filepath which caused the creation of this component
@@ -149,7 +149,6 @@ newComponentCache recorder exts _cfp hsc_env old_cis new_cis = do
     logWith recorder Info $ LogMakingNewHscEnv uids
     hscEnv' <- -- Set up a multi component session with the other units on GHC 9.4
               Compat.initUnits dfs hsc_env
-
 #if MIN_VERSION_ghc(9,13,0)
     let closure_errs_raw = checkHomeUnitsClosed' (hsc_unit_env hscEnv') (hsc_all_home_unit_ids hscEnv')
         closure_errs = concatMap (Compat.bagToList . Compat.getMessages) closure_errs_raw
@@ -191,7 +190,7 @@ newComponentCache recorder exts _cfp hsc_env old_cis new_cis = do
             -- above.
             -- We just need to set the current unit here
             pure $ hscSetActiveUnitId (homeUnitId_ df) hscEnv'
-      henv <- newHscEnvEq thisEnv
+      henv <- newHscEnvEq thisEnv $ componentOptionHash ci
       let targetEnv = (if isBad ci then multi_errs else [], Just henv)
           targetDepends = componentDependencyInfo ci
       logWith recorder Debug $ LogNewComponentCache (targetEnv, targetDepends)
@@ -318,6 +317,7 @@ addComponentInfo recorder getCacheDirs dep_info newDynFlags (hieYaml, cfp, opts)
       , componentFP = rawComponentFP
       , componentCOptions = rawComponentCOptions
       , componentDependencyInfo = rawComponentDependencyInfo
+      , componentOptionHash = getOptionHash (componentOptions opts)
       }
   -- Modify the map so the hieYaml now maps to the newly updated
   -- ComponentInfos
@@ -422,14 +422,19 @@ setCacheDirs recorder CacheDirs{..} dflags = do
           & maybe id setHieDir hieCacheDir
           & maybe id setODir oCacheDir
 
-getCacheDirsDefault :: String -> [String] -> IO CacheDirs
-getCacheDirsDefault prefix opts = do
+getCacheDirsDefault :: String -> String -> [String] -> IO CacheDirs
+getCacheDirsDefault root prefix opts = do
     dir <- Just <$> getXdgDirectory XdgCache (cacheDir </> prefix ++ "-" ++ opts_hash)
     return $ CacheDirs dir dir dir
     where
         -- Create a unique folder per set of different GHC options, assuming that each different set of
         -- GHC options will create incompatible interface files.
         opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
+        -- opts_hash = "fixed"
+        -- opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack [root])
+
+getOptionHash :: [String] -> String
+getOptionHash opts = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
 
 setNameCache :: NameCache -> HscEnv -> HscEnv
 setNameCache nc hsc = hsc { hsc_NC = nc }
@@ -442,7 +447,7 @@ emptyHscEnv :: NameCache -> FilePath -> IO HscEnv
 emptyHscEnv nc libDir = do
     -- We call setSessionDynFlags so that the loader is initialised
     -- We need to do this before we call initUnits.
-    env <- liftIO $ runGhc (Just libDir) $
+    env <- mask_ $ liftIO $ runGhc (Just libDir) $
       getSessionDynFlags >>= setSessionDynFlags >> getSession
     pure $ setNameCache nc (hscSetFlags ((hsc_dflags env){useUnicode = True }) env)
 

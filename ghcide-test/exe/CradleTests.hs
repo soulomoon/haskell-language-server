@@ -282,9 +282,8 @@ runWithExtraFilesMultiComponent dirName action = do
       conf :: TestConfig ()
       conf = def
         { testPluginDescriptor = dummyPlugin
-        , testDirLocation = Right vfs
+        , testDirLocation = vfs
         , testConfigCaps = lspTestCaps
-        , testShiftRoot = True
         , testDisableKick = True
         , testLspConfig = lspConfig
         }

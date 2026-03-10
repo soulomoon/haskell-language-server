@@ -41,11 +41,11 @@ import           Development.IDE.Graph.Database       (ShakeDatabase,
                                                        shakeGetBuildStep,
                                                        shakeGetCleanKeys)
 import           Development.IDE.Graph.Internal.Types (Result (resultBuilt, resultChanged, resultVisited),
-                                                       Step (Step))
+                                                       Step (..))
 import qualified Development.IDE.Graph.Internal.Types as Graph
 import           Development.IDE.Session              (clearSessionLoaderPendingBarrier,
                                                        setSessionLoaderPendingBarrier)
-import           Development.IDE.Types.Action
+import           Development.IDE.Types.Action         (countQueue)
 import           Development.IDE.Types.HscEnvEq       (HscEnvEq (hscEnv))
 import           Development.IDE.Types.Location       (fromUri)
 import           GHC.Generics                         (Generic)
@@ -57,7 +57,6 @@ import qualified "list-t" ListT
 import qualified StmContainers.Map                    as STM
 import           System.Time.Extra
 
-type Age = Int
 data TestRequest
     = BlockSeconds Seconds           -- ^ :: Null
     | GetInterfaceFilesDir Uri       -- ^ :: String
@@ -69,10 +68,10 @@ data TestRequest
     | GetBuildKeysBuilt          -- ^ :: [(String]
     | GetBuildKeysChanged        -- ^ :: [(String]
     | GetBuildEdgesCount         -- ^ :: Int
-    | GarbageCollectDirtyKeys CheckParents Age    -- ^ :: [String] (list of keys collected)
     | GetStoredKeys                  -- ^ :: [String] (list of keys in store)
     | GetFilesOfInterest             -- ^ :: [FilePath]
     | GetRebuildsCount               -- ^ :: Int (number of times we recompiled with GHC)
+    | WaitForDiagnosticPublished
     deriving Generic
     deriving anyclass (FromJSON, ToJSON)
 
@@ -109,11 +108,7 @@ testRequestHandler s (GetInterfaceFilesDir file) = liftIO $ do
 testRequestHandler s GetShakeSessionQueueCount = liftIO $ do
     n <- atomically $ countQueue $ actionQueue $ shakeExtras s
     return $ Right (toJSON n)
-testRequestHandler s WaitForShakeQueue = liftIO $ do
-    atomically $ do
-        n <- countQueue $ actionQueue $ shakeExtras s
-        when (n>0) retry
-    return $ Right A.Null
+testRequestHandler s WaitForShakeQueue = waitForIdeIdle s
 testRequestHandler s (WaitForIdeRule k file) = liftIO $ do
     let nfp = fromUri $ toNormalizedUri file
     success <- runAction ("WaitForIdeRule " <> k <> " " <> show file) s $ parseAction (fromString k) nfp
@@ -142,11 +137,8 @@ testRequestHandler s GetBuildKeysVisited = liftIO $ do
 testRequestHandler s GetBuildEdgesCount = liftIO $ do
     count <- shakeGetBuildEdges $ shakeDb s
     return $ Right $ toJSON count
-testRequestHandler s (GarbageCollectDirtyKeys parents age) = do
-    res <- liftIO $ runAction "garbage collect dirty" s $ garbageCollectDirtyKeysOlderThan age parents
-    return $ Right $ toJSON $ map show res
 testRequestHandler s GetStoredKeys = do
-    keys <- liftIO $ atomically $ map fst <$> ListT.toList (STM.listT $ state $ shakeExtras s)
+    keys <- liftIO $ atomically $ map fst <$> ListT.toList (STM.listT $ stateValues $ shakeExtras s)
     return $ Right $ toJSON $ map show keys
 testRequestHandler s GetFilesOfInterest = do
     ff <- liftIO $ getFilesOfInterest s
@@ -154,6 +146,15 @@ testRequestHandler s GetFilesOfInterest = do
 testRequestHandler s GetRebuildsCount = do
     count <- liftIO $ runAction "get build count" s getRebuildCount
     return $ Right $ toJSON count
+testRequestHandler s WaitForDiagnosticPublished = waitForIdeIdle s
+
+waitForIdeIdle ::  IdeState
+                -> HandlerM config (Either PluginError Value)
+waitForIdeIdle s =
+    liftIO $ do
+    waitUntilIdle <- runAction "wait for diagnostics published" s $ waitUntilDiagnosticsPublished
+    waitUntilIdle
+    return $ Right A.Null
 
 getDatabaseKeys :: (Graph.Result -> Step)
     -> ShakeDatabase

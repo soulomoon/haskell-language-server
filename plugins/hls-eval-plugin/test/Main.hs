@@ -38,26 +38,31 @@ tests =
   [ testCase "Produces Evaluate code lenses" $
       runSessionWithServerInTmpDir def evalPlugin (mkFs $ FS.directProject "T1.hs") $ do
         doc <- openDoc "T1.hs" "haskell"
+        waitForBuildQueue
         lenses <- getCodeLenses doc
         liftIO $ map (preview $ command . _Just . title) lenses @?= [Just "Evaluate..."]
   , testCase "Produces Refresh code lenses" $
       runSessionWithServerInTmpDir def evalPlugin (mkFs $ FS.directProject "T2.hs") $ do
         doc <- openDoc "T2.hs" "haskell"
+        waitForBuildQueue
         lenses <- getCodeLenses doc
         liftIO $ map (preview $ command . _Just . title) lenses @?= [Just "Refresh..."]
   , testCase "Code lenses have ranges" $
       runSessionWithServerInTmpDir def evalPlugin (mkFs $ FS.directProject "T1.hs") $ do
         doc <- openDoc "T1.hs" "haskell"
+        waitForBuildQueue
         lenses <- getCodeLenses doc
         liftIO $ map (view range) lenses @?= [Range (Position 4 0) (Position 5 0)]
   , testCase "Multi-line expressions have a multi-line range" $ do
       runSessionWithServerInTmpDir def evalPlugin (mkFs $ FS.directProject "T3.hs") $ do
         doc <- openDoc "T3.hs" "haskell"
+        waitForBuildQueue
         lenses <- getCodeLenses doc
         liftIO $ map (view range) lenses @?= [Range (Position 3 0) (Position 5 0)]
   , testCase "Executed expressions range covers only the expression" $ do
       runSessionWithServerInTmpDir def evalPlugin (mkFs $ FS.directProject "T2.hs") $ do
         doc <- openDoc "T2.hs" "haskell"
+        waitForBuildQueue
         lenses <- getCodeLenses doc
         liftIO $ map (view range) lenses @?= [Range (Position 4 0) (Position 5 0)]
 

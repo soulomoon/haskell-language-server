@@ -46,5 +46,3 @@
 | Property | Description | Default | Allowed values |
 | --- | --- | --- | --- |
 | `path` | Set path to 'cabal-gild' executable | `"cabal-gild"` |  &nbsp;  |
-
-

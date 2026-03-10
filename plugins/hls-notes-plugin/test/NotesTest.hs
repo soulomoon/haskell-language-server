@@ -1,9 +1,10 @@
 module Main (main) where
 
-import           Data.List        (sort)
-import           Ide.Plugin.Notes (Log, descriptor)
-import           System.FilePath  ((</>))
+import           Data.List           (sort)
+import           Ide.Plugin.Notes    (Log, descriptor)
+import           System.FilePath     ((</>))
 import           Test.Hls
+import           Test.Hls.FileSystem (VirtualFileTree (..), copyDir)
 
 plugin :: PluginTestDescriptor Log
 plugin = mkPluginTestDescriptor descriptor "notes"
@@ -16,18 +17,18 @@ main = defaultTestRunner $
     , hoverNoteTests
     ]
 
-runSessionWithServer' :: FilePath -> (FilePath -> Session a) -> IO a
-runSessionWithServer' fp act =
+runSessionWithServerNote :: FilePath -> (FilePath -> Session a) -> IO a
+runSessionWithServerNote fp act =
     runSessionWithTestConfig def
         { testLspConfig = def
         , testPluginDescriptor = plugin
-        , testDirLocation = Left fp
+        , testDirLocation = VirtualFileTree [copyDir "./"] fp
         } act
 
 noteReferenceTests :: TestTree
 noteReferenceTests = testGroup "Note References"
    [
-      testCase "multi_file" $ runSessionWithServer' testDataDir $ \dir -> do
+      testCase "multi_file" $ runSessionWithServerNote testDataDir $ \dir -> do
         doc <- openDoc "NoteDef.hs" "haskell"
         waitForKickDone
         refs0 <- getReferences doc (Position 21 15) False
@@ -44,32 +45,32 @@ noteReferenceTests = testGroup "Note References"
 gotoNoteTests :: TestTree
 gotoNoteTests = testGroup "Goto Note Definition"
     [
-      testCase "single_file" $ runSessionWithServer' testDataDir $ \dir -> do
+      testCase "single_file" $ runSessionWithServerNote testDataDir $ \dir -> do
         doc <- openDoc "NoteDef.hs" "haskell"
         waitForKickDone
         defs <- getDefinitions doc (Position 3 41)
         let fp = dir </> "NoteDef.hs"
         liftIO $ defs @?= InL (Definition (InR [Location (filePathToUri fp) (Range (Position 11 9) (Position 11 9))]))
-    , testCase "liberal_format" $ runSessionWithServer' testDataDir $ \dir -> do
+    , testCase "liberal_format" $ runSessionWithServerNote testDataDir $ \dir -> do
         doc <- openDoc "NoteDef.hs" "haskell"
         waitForKickDone
         defs <- getDefinitions doc (Position 5 64)
         let fp = dir </> "NoteDef.hs"
         liftIO $ defs @?= InL (Definition (InR [Location (filePathToUri fp) (Range (Position 21 11) (Position 21 11))]))
 
-    , testCase "invalid_note" $ runSessionWithServer' testDataDir $ const $ do
+    , testCase "invalid_note" $ runSessionWithServerNote testDataDir $ const $ do
         doc <- openDoc "NoteDef.hs" "haskell"
         waitForKickDone
         defs <- getDefinitions doc (Position 6 54)
         liftIO $ defs @?= InL (Definition (InR []))
 
-    , testCase "no_note" $ runSessionWithServer' testDataDir $ const $ do
+    , testCase "no_note" $ runSessionWithServerNote testDataDir $ const $ do
         doc <- openDoc "NoteDef.hs" "haskell"
         waitForKickDone
         defs <- getDefinitions doc (Position 1 0)
         liftIO $ defs @?= InL (Definition (InR []))
 
-    , testCase "unopened_file" $ runSessionWithServer' testDataDir $ \dir -> do
+    , testCase "unopened_file" $ runSessionWithServerNote testDataDir $ \dir -> do
         doc <- openDoc "Other.hs" "haskell"
         waitForKickDone
         defs <- getDefinitions doc (Position 5 20)
@@ -83,7 +84,7 @@ testDataDir = "plugins" </> "hls-notes-plugin" </> "test" </> "testdata"
 hoverNoteTests :: TestTree
 hoverNoteTests = testGroup "Hover Notes"
   [ testCase "hover normal-notes" $
-      runSessionWithServer' testDataDir $ \_dir -> do
+      runSessionWithServerNote testDataDir $ \_dir -> do
         let file = "HoverNote.hs"
             pos  = Position 24 10
         doc <- openDoc file "haskell"
@@ -99,7 +100,7 @@ hoverNoteTests = testGroup "Hover Notes"
 
 
   , testCase "hover multi-notes-one" $
-      runSessionWithServer' testDataDir $ \_dir -> do
+      runSessionWithServerNote testDataDir $ \_dir -> do
         let file = "HoverNote.hs"
             pos  = Position 25 10
         doc <- openDoc file "haskell"
@@ -115,7 +116,7 @@ hoverNoteTests = testGroup "Hover Notes"
 
 
   , testCase "hover multi-notes-two" $
-      runSessionWithServer' testDataDir $ \_dir -> do
+      runSessionWithServerNote testDataDir $ \_dir -> do
         let file = "HoverNote.hs"
             pos  = Position 26 10
         doc <- openDoc file "haskell"
@@ -131,7 +132,7 @@ hoverNoteTests = testGroup "Hover Notes"
 
 
   , testCase "hover single-comment-declaration" $
-      runSessionWithServer' testDataDir $ \_dir -> do
+      runSessionWithServerNote testDataDir $ \_dir -> do
         let file = "HoverNote.hs"
             pos  = Position 27 10
         doc <- openDoc file "haskell"
@@ -145,7 +146,7 @@ hoverNoteTests = testGroup "Hover Notes"
 
         liftIO $ hover @?= expected
 
-  , testCase "hover single-comment leak" $ runSessionWithServer' testDataDir $ \_dir -> do
+  , testCase "hover single-comment leak" $ runSessionWithServerNote testDataDir $ \_dir -> do
         let file = "NoteDef.hs"
             pos  = Position 5 69
         doc <- openDoc file "haskell"

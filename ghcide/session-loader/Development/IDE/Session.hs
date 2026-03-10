@@ -91,7 +91,6 @@ import           Data.HashSet                        (HashSet)
 import qualified Data.HashSet                        as Set
 import           Database.SQLite.Simple
 import           Development.IDE.Core.Tracing        (withTrace)
-import           Development.IDE.Core.WorkerThread
 import           Development.IDE.Session.Dependency
 import           Development.IDE.Session.Diagnostics (renderCradleError)
 import           Development.IDE.Session.Ghc         hiding (Log)
@@ -105,11 +104,12 @@ import qualified System.Random                       as Random
 import           System.Random                       (RandomGen)
 import           Text.ParserCombinators.ReadP        (readP_to_S)
 
-import           Control.Concurrent.STM              (STM, TVar)
+import           Control.Concurrent.STM              (STM, TVar, newTVarIO)
 import qualified Control.Monad.STM                   as STM
 import           Control.Monad.Trans.Reader
 import qualified Development.IDE.Session.Ghc         as Ghc
 import qualified Development.IDE.Session.OrderedSet  as S
+import           Development.IDE.WorkerThread
 import qualified Focus
 import qualified StmContainers.Map                   as STM
 
@@ -129,18 +129,19 @@ data Log
   | LogNoneCradleFound FilePath
   | LogHieBios HieBios.Log
   | LogSessionLoadingChanged
-  | LogSessionWorkerThread LogWorkerThread
   | LogSessionNewLoadedFiles ![FilePath]
   | LogSessionReloadOnError FilePath ![FilePath]
   | LogGetOptionsLoop !FilePath
   | LogLookupSessionCache !FilePath
   | LogTime !String
   | LogSessionGhc Ghc.Log
+  | LogSessionWorkerThread LogWorkerThread
 deriving instance Show Log
+
 
 instance Pretty Log where
   pretty = \case
-    LogSessionWorkerThread msg -> pretty msg
+    LogSessionWorkerThread lt -> pretty lt
     LogTime s -> "Time:" <+> pretty s
     LogLookupSessionCache path -> "Looking up session cache for" <+> pretty path
     LogGetOptionsLoop fp -> "Loop: getOptions for" <+> pretty fp
@@ -223,7 +224,7 @@ data SessionLoadingOptions = SessionLoadingOptions
   -- | Given the project name and a set of command line flags,
   --   return the path for storing generated GHC artifacts,
   --   or 'Nothing' to respect the cradle setting
-  , getCacheDirs           :: String -> [String] -> IO CacheDirs
+  , getCacheDirs           :: String -> String -> [String] -> IO CacheDirs
   -- | Return the GHC lib dir to use for the 'unsafeGlobalDynFlags'
   , getInitialGhcLibDir    :: Recorder (WithPriority Log) -> FilePath -> IO (Maybe LibDir)
   }
@@ -366,8 +367,8 @@ runWithDb recorder fp = ContT $ \k -> do
     _ <- withWriteDbRetryable deleteMissingRealFiles
     _ <- withWriteDbRetryable garbageCollectTypeNames
 
-    runContT (withWorkerQueue (cmapWithPrio LogSessionWorkerThread recorder) "hiedb thread" (writer withWriteDbRetryable))
-        $ \chan -> withHieDb fp (\readDb -> k (WithHieDbShield $ makeWithHieDbRetryable recorder rng readDb, chan))
+    runContT (withWorkerQueue (logWith (cmapWithPrio LogSessionWorkerThread recorder) Debug) "hiedb thread"  (writer withWriteDbRetryable)) $ \chan ->
+        withHieDb fp (\readDb -> k (WithHieDbShield $ makeWithHieDbRetryable recorder rng readDb, chan))
   where
     writer withHieDbRetryable l = do
         -- TODO: probably should let exceptions be caught/logged/handled by top level handler
@@ -386,24 +387,24 @@ getHieDbLoc dir = do
   createDirectoryIfMissing True cDir
   pure (cDir </> db)
 
--- Note [SessionState and batch load]
--- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
--- SessionState manages the state for batch loading files in the session loader.
---
--- - When a new file needs to be loaded, it is added to the 'pendingFiles' set.
--- - The loader processes files from 'pendingFiles', attempting to load them in batches.
--- - (SBL1) If a file is already in 'failedFiles', it is loaded individually (single-file mode).
--- - (SBL2) Otherwise, the loader tries to load as many files as possible together (batch mode).
---
--- On success:
---   - (SBL3) All successfully loaded files are removed from 'pendingFiles' and 'failedFiles',
---     and added to 'loadedFiles'.
---
--- On failure:
---   - (SBL4) If loading a single file fails, it is added to 'failedFiles' and removed from 'loadedFiles' and 'pendingFiles'.
---   - (SBL5) If batch loading fails, all files attempted are added to 'failedFiles'.
---
--- This approach ensures efficient batch loading while isolating problematic files for individual handling.
+{- Note [SessionState and batch load]
+SessionState manages the state for batch loading files in the session loader.
+
+- When a new file needs to be loaded, it is added to the pendingFiles set.
+- The loader processes files from pendingFiles, attempting to load them in batches.
+- (SBL1) If a file is already in failedFiles, it is loaded individually (single-file mode).
+- (SBL2) Otherwise, the loader tries to load as many files as possible together (batch mode).
+
+On success:
+  - (SBL3) All successfully loaded files are removed from pendingFiles and failedFiles,
+    and added to loadedFiles.
+
+On failure:
+  - (SBL4) If loading a single file fails, it is added to failedFiles and removed from loadedFiles and pendingFiles.
+  - (SBL5) If batch loading fails, all files attempted are added to failedFiles.
+
+This approach ensures efficient batch loading while isolating problematic files for individual handling.
+-}
 
 -- SBL3
 handleBatchLoadSuccess :: Foldable t => Recorder (WithPriority Log) -> SessionState -> Maybe FilePath -> HashMap NormalizedFilePath (IdeResult HscEnvEq, DependencyInfo) -> t TargetDetails -> IO ()
@@ -432,27 +433,14 @@ handleSingleLoadFailure sessionState file = do
   removeCradleFile sessionState file
 
 data SessionState = SessionState
-  { loadedFiles  :: !(Var (HashSet FilePath))
-  -- ^ Set of files that loaded successfully
-  , failedFiles  :: !(Var (HashSet FilePath))
-  -- ^ Set of files that we tried to load but failed
-  -- for various reasons, such as cradle load errors
-  , pendingFiles :: !(S.OrderedSet FilePath)
-  -- ^ Files we are currently trying to load into the HLS session.
-  , hscEnvs      :: !(Var HieMap)
-  -- ^ Map @hie.yaml@ location to all components that have this @hie.yaml@ as
-  -- the root location.
-  , fileToFlags  :: !FlagsMap
-  -- ^ Map @hie.yaml@ to all modules that have this @hie.yaml@ as the root location.
-  , filesMap     :: !FilesMap
-  -- ^ Maps a 'NormalizedFilePath' to its @hie.yaml@, the reverse of 'fileToFlags'.
-  , version      :: !(Var Int)
-    -- ^ Session loading version, incremented whenever the shake cache needs to be invalidated.
-  , sessionLoadingPreferenceConfig :: !(Var (Maybe SessionLoadingPreferenceConfig))
-    -- ^ How do we load files? The user can choose to load multiple components at once
-    -- or to load only one component after the other.
-    --
-    -- Changing this value invalidates the entire shake session.
+  { loadedFiles  :: !(Var (HashSet FilePath)),
+    failedFiles  :: !(Var (HashSet FilePath)),
+    pendingFiles :: !(S.OrderedSet FilePath),
+    hscEnvs      :: !(Var HieMap),
+    fileToFlags  :: !FlagsMap,
+    filesMap     :: !FilesMap,
+    version      :: !(TVar Int),
+    sessionLoadingPreferenceConfig :: !(Var (Maybe SessionLoadingPreferenceConfig))
   }
 
 newtype SessionLoaderPendingBarrierVar = SessionLoaderPendingBarrierVar (TVar (Maybe Int))
@@ -470,8 +458,6 @@ clearSessionLoaderPendingBarrier ideState = do
 
 waitForSessionLoaderPendingBarrier :: TVar (Maybe Int) -> SessionState -> IO ()
 waitForSessionLoaderPendingBarrier barrier state =
-  -- Block the session-loader queue until we have enqueued enough pending files.
-  -- This is used by tests to enforce true batch setup before consuming pending work.
   atomically $ do
     mTarget <- readTVar barrier
     case mTarget of
@@ -547,7 +533,10 @@ insertAllFileMappings state mappings =
 
 -- | Increment the version counter
 incrementVersion :: SessionState -> IO Int
-incrementVersion state = modifyVar' (version state) succ
+incrementVersion state =
+    atomically $ do
+        modifyTVar' (version state) succ
+        readTVar (version state)
 
 -- | Get files from the pending file set
 getPendingFiles :: SessionState -> IO (HashSet FilePath)
@@ -569,8 +558,7 @@ handleSingleFileProcessingError state hieYaml file diags extraDepFiles = liftIO 
     insertFileFlags state hieYaml ncfp flags
     insertFileMapping state hieYaml ncfp
 
--- | Get the set of extra files to load based on the current file path.
---
+-- | Get the set of extra files to load based on the current file path
 -- If the current file is in error loading files, we fallback to single loading mode (empty set)
 -- Otherwise, we remove error files from pending files and also exclude the current file
 getExtraFilesToLoad :: SessionState -> FilePath -> IO [FilePath]
@@ -615,7 +603,7 @@ newSessionState = do
     <*> newVar Map.empty            -- hscEnvs
     <*> STM.newIO                   -- fileToFlags
     <*> STM.newIO                   -- filesMap
-    <*> newVar 0                    -- version
+    <*> newTVarIO 0                    -- version
     <*> newVar Nothing              -- sessionLoadingPreferenceConfig
   return sessionState
 
@@ -638,7 +626,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
   let toAbsolutePath = toAbsolute rootDir -- see Note [Root Directory]
 
   sessionState <- newSessionState
-  let returnWithVersion fun = IdeGhcSession fun <$> liftIO (readVar (version sessionState))
+  let returnWithVersion fun =
+        return $ IdeGhcSession fun (readTVar $ version sessionState) (S.size $ pendingFiles sessionState)
 
   -- This caches the mapping from Mod.hs -> hie.yaml
   cradleLoc <- liftIO $ memoIO $ \v -> do
@@ -651,6 +640,7 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
 
   return $ do
     clientConfig <- getClientConfigAction
+    SessionLoaderPendingBarrierVar pendingBarrier <- getIdeGlobalAction
     extras@ShakeExtras{ideNc, knownTargetsVar
                       } <- getShakeExtras
     let invalidateShakeCache = do
@@ -658,32 +648,30 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
             return $ toNoFileKey GhcSessionIO
 
     ideOptions <- getIdeOptions
-    SessionLoaderPendingBarrierVar pendingBarrier <- getIdeGlobalAction
 
     -- see Note [Serializing runs in separate thread]
-    -- Start the 'getOptionsLoop' if the queue is empty
-    liftIO $ atomically $
-      Extra.whenM (isEmptyTaskQueue que) $ do
-        let newSessionLoadingOptions = SessionLoadingOptions
-              { findCradle = cradleLoc
-              , ..
-              }
-            sessionShake = SessionShake
-              { restartSession = restartShakeSession extras
-              , invalidateCache = invalidateShakeCache
-              , enqueueActions = shakeEnqueue extras
-              }
-            sessionEnv = SessionEnv
-              { sessionLspContext = lspEnv extras
-              , sessionRootDir = rootDir
-              , sessionIdeOptions = ideOptions
-              , sessionPendingBarrier = pendingBarrier
-              , sessionClientConfig = clientConfig
-              , sessionSharedNameCache = ideNc
-              , sessionLoadingOptions = newSessionLoadingOptions
-              }
+    -- Start the getOptionsLoop if the queue is empty
+    liftIO $ atomically $ Extra.whenM (isEmptyTaskQueue que) $ do
+      let newSessionLoadingOptions = SessionLoadingOptions
+            { findCradle = cradleLoc
+            , ..
+            }
+          sessionShake = SessionShake
+            { restartSession = restartShakeSession extras
+            , invalidateCache = invalidateShakeCache
+            , enqueueActions = shakeEnqueue extras
+            }
+          sessionEnv = SessionEnv
+            { sessionLspContext = lspEnv extras
+            , sessionRootDir = rootDir
+            , sessionIdeOptions = ideOptions
+            , sessionPendingBarrier = pendingBarrier
+            , sessionClientConfig = clientConfig
+            , sessionSharedNameCache = ideNc
+            , sessionLoadingOptions = newSessionLoadingOptions
+            }
 
-        writeTaskQueue que (runReaderT (getOptionsLoop recorder sessionShake sessionState knownTargetsVar) sessionEnv)
+      writeTaskQueue que (runReaderT (getOptionsLoop recorder sessionShake sessionState knownTargetsVar) sessionEnv)
 
     -- Each one of deps will be registered as a FileSystemWatcher in the GhcSession action
     -- so that we can get a workspace/didChangeWatchedFiles notification when a dep changes.
@@ -702,19 +690,20 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
 lookupOrWaitCache :: Recorder (WithPriority Log) -> SessionState -> FilePath -> IO (IdeResult HscEnvEq, DependencyInfo)
 lookupOrWaitCache recorder sessionState absFile = do
   let ncfp = toNormalizedFilePath' absFile
-  cacheResult <- maybeM
-    (return Nothing)
-    (guardedA (checkDependencyInfo . snd))
-    (atomically $ do
+  res <- atomically $ do
       -- wait until target file is not in pendingFiles
       Extra.whenM (S.lookup absFile (pendingFiles sessionState)) STM.retry
       -- check if in the cache
-      checkInCache sessionState ncfp)
-
-
+      checkInCache sessionState ncfp
   logWith recorder Debug $ LogLookupSessionCache absFile
-
-  case cacheResult of
+  updateDateRes <-  case res of
+    Just r -> do
+        depOk <- checkDependencyInfo (snd r)
+        if depOk
+            then return $ Just r
+            else return Nothing
+    _ -> return Nothing
+  case updateDateRes of
     Just r -> return r
     Nothing -> do
       -- if not ok, we need to reload the session
@@ -727,14 +716,12 @@ checkInCache sessionState ncfp = runMaybeT $ do
   m <- MaybeT $ STM.lookup cachedHieYamlLocation (fileToFlags sessionState)
   MaybeT $ pure $ HM.lookup ncfp m
 
--- | Modify the shake state.
 data SessionShake = SessionShake
-  { restartSession :: VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
+  { restartSession  :: VFSModified -> String -> IO [Key] -> IO ()
   , invalidateCache :: IO Key
-  , enqueueActions :: DelayedAction () -> IO (IO ())
+  , enqueueActions  :: DelayedAction () -> IO (IO ())
   }
 
--- | Read-only data that the initialisation logic needs access to.
 data SessionEnv = SessionEnv
   { sessionLspContext      :: Maybe (LanguageContextEnv Config)
   , sessionRootDir         :: FilePath
@@ -755,8 +742,6 @@ type SessionM = ReaderT SessionEnv IO
 -- 3.1. If it wasn't, initialise a new session and continue with step 4.
 -- 3.2. If it is loaded, check whether we need to reload the session, e.g. because the `.cabal` file was modified
 -- 3.2.1. If we need to reload, remove the
---
--- See Note [SessionState and batch load] for an overview of the strategy.
 getOptionsLoop :: Recorder (WithPriority Log) -> SessionShake -> SessionState -> TVar (Hashed KnownTargets) -> SessionM ()
 getOptionsLoop recorder sessionShake sessionState knownTargetsVar = forever $ do
   pendingBarrier <- asks sessionPendingBarrier
@@ -767,7 +752,6 @@ getOptionsLoop recorder sessionShake sessionState knownTargetsVar = forever $ do
   -- Get the next file to load
   file <- liftIO $ atomically $ S.readQueue (pendingFiles sessionState)
   logWith recorder Debug (LogGetOptionsLoop file)
-
   hieLoc <- findHieYamlForTarget (filesMap sessionState) file
   sessionOpts recorder sessionShake sessionState knownTargetsVar (hieLoc, file)
     `Safe.catch` handleSingleFileProcessingError' sessionState hieLoc file
@@ -793,7 +777,7 @@ sessionOpts recorder sessionShake sessionState knownTargetsVar (hieYaml, file) =
     clearErrorLoadingFiles sessionState
     clearCradleFiles sessionState
     cacheKey <- liftIO $ invalidateCache sessionShake
-    liftIO $ restartSession sessionShake VFSUnmodified "didSessionLoadingPreferenceConfigChange" [] (return [cacheKey])
+    liftIO $ restartSession sessionShake VFSUnmodified "didSessionLoadingPreferenceConfigChange" (return [cacheKey])
 
   v <- liftIO $ atomically $ STM.lookup hieYaml (fileToFlags sessionState)
   case v >>= HM.lookup (toNormalizedFilePath' file) of
@@ -809,20 +793,20 @@ sessionOpts recorder sessionShake sessionState knownTargetsVar (hieYaml, file) =
           liftIO $ atomically $ resetFileMaps sessionState
           -- Keep the same name cache
           liftIO $ modifyVar_ (hscEnvs sessionState) (return . Map.adjust (const []) hieYaml)
-          -- This file needs to be reloaded!
           consultCradle recorder sessionShake sessionState knownTargetsVar hieYaml file
         else do
-          -- If deps are ok, we can just remove the file from pending files.
-          -- This unblocks the STM waiting in 'lookupOrWaitCache'.
+          -- if deps are ok, we can just remove the file from pending files
           liftIO $ atomically $ removeFromPending sessionState file
     Nothing ->
-        -- This file has never been loaded before, so actually load it now!
         consultCradle recorder sessionShake sessionState knownTargetsVar hieYaml file
 
 consultCradle :: Recorder (WithPriority Log) -> SessionShake -> SessionState -> TVar (Hashed KnownTargets) -> Maybe FilePath -> FilePath -> SessionM ()
 consultCradle recorder sessionShake sessionState knownTargetsVar hieYaml cfp = do
-  (cradle, eopts) <- loadCradleWithNotifications recorder sessionState hieYaml cfp
-
+  loadingOptions <- asks sessionLoadingOptions
+  (cradle, eopts) <- loadCradleWithNotifications recorder
+    sessionState
+    (loadCradle loadingOptions recorder)
+    hieYaml cfp
   logWith recorder Debug $ LogSessionLoadingResult eopts
   let ncfp = toNormalizedFilePath' cfp
   case eopts of
@@ -843,33 +827,21 @@ consultCradle recorder sessionShake sessionState knownTargetsVar hieYaml cfp = d
         let errorToLoadNewFiles = cfp : Set.toList (attemptToLoadFiles `Set.difference` old_files)
         if length errorToLoadNewFiles > 1
         then do
-            -- We tried loading multiple files, but some failed to load!
-            -- Unfortunately, 'hie-bios' is an all-or-nothing kind of deal,
-            -- and we don't know whether some of the files could have been loaded,
-            -- or none of them have been!
-            -- To work around this, we try to remove the failing targets from the set of extra targets,
-            -- to still get a fast reload.
-            --
-            -- How do we do this? We mark all of the extra target files as files that failed to
-            -- to load and retry to load the original target.
-            -- We decide the extra targets in 'getExtraFilesToLoad', which takes the
-            -- set of failed targets into account.
+            -- we are loading more files and failed, we need to retry
+            -- mark as less loaded files as failedLoadingFiles as possible
+            -- limitation is that when we are loading files, and the dependencies of old_files
+            -- are changed, and old_files are not valid anymore.
+            -- but they will still be in the old_files, and will not move to failedFiles.
+            -- And make other files failed to load in batch mode.
             liftIO $ handleBatchLoadFailure sessionState errorToLoadNewFiles
             -- retry without other files
             logWith recorder Info $ LogSessionReloadOnError cfp (Set.toList attemptToLoadFiles)
             consultCradle recorder sessionShake sessionState knownTargetsVar hieYaml cfp
         else do
-            -- We are only loading this file and it failed, so we definitely know,
-            -- we can't load it.
-            -- Add it to the list of permanently failed to load targets and do not retry!
+            -- we are only loading this file and it failed
             let res = map (\err' -> renderCradleError err' cradle ncfp) err
             handleSingleFileProcessingError sessionState hieYaml cfp res $ concatMap cradleErrorDependencies err
 
--- | Set up the GHC session for the new 'ComponentOptions' we have discovered.
---
--- The units found in these 'ComponentOptions' are merged with the set of existing home units,
--- replacing the older home unit with the new ones.
--- We update the GHC session to use a multiple home unit session, and restart the shake session accordingly.
 session ::
     Recorder (WithPriority Log) ->
     SessionShake ->
@@ -879,7 +851,7 @@ session ::
     SessionM ()
 session recorder sessionShake sessionState knownTargetsVar(hieYaml, cfp, opts, libDir) = do
   let initEmptyHscEnv = emptyHscEnvM libDir
-  (new_components_info, old_components_info) <- packageSetup recorder sessionState initEmptyHscEnv (hieYaml, cfp, opts)
+  (new_deps, old_deps) <- packageSetup recorder sessionState initEmptyHscEnv (hieYaml, cfp, opts)
 
   -- For each component, now make a new HscEnvEq which contains the
   -- HscEnv for the hie.yaml file but the DynFlags for that component
@@ -888,14 +860,14 @@ session recorder sessionShake sessionState knownTargetsVar(hieYaml, cfp, opts, l
   hscEnv <- initEmptyHscEnv
   ideOptions <- asks sessionIdeOptions
   let new_cache = newComponentCache (cmapWithPrio LogSessionGhc recorder) (optExtensions ideOptions) cfp hscEnv
-  all_target_details <- liftIO $ new_cache old_components_info new_components_info
+  all_target_details <- liftIO $ new_cache old_deps new_deps
   (all_targets, this_flags_map) <- liftIO $ addErrorTargetIfUnknown all_target_details hieYaml cfp
   -- The VFS doesn't change on cradle edits, re-use the old one.
   -- Invalidate all the existing GhcSession build nodes by restarting the Shake session
   liftIO $ do
     checkProject <- optCheckProject ideOptions
-    restartSession sessionShake VFSUnmodified "new component" [] $ do
-        -- It is necessary to call 'handleBatchLoadSuccess' in restartSession
+    restartSession sessionShake VFSUnmodified "new component" $ do
+        -- It is necessary to call handleBatchLoadSuccess in restartSession
         -- to ensure the GhcSession rule does not return before a new session is started.
         -- Otherwise, invalid compilation results may propagate to downstream rules,
         -- potentially resulting in lost diagnostics and other issues.
@@ -903,27 +875,27 @@ session recorder sessionShake sessionState knownTargetsVar(hieYaml, cfp, opts, l
         keys2 <- invalidateCache sessionShake
         keys1 <- extendKnownTargets recorder knownTargetsVar all_targets
         -- Typecheck all files in the project on startup
-        unless (null new_components_info || not checkProject) $ do
+        unless (null new_deps || not checkProject) $ do
             cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
-            void $ enqueueActions sessionShake $ mkDelayedAction "InitialLoad" Debug $ void $ do
+            void $ enqueueActions sessionShake =<< mkDelayedAction "InitialLoad" Debug (void $ do
                 mmt <- uses GetModificationTime cfps'
                 let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
                 modIfaces <- uses GetModIface cs_exist
                 -- update exports map
                 shakeExtras <- getShakeExtras
                 let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
-                liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
+                liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>))
         return [keys1, keys2]
 
 -- | Create a new HscEnv from a hieYaml root and a set of options
 packageSetup :: Recorder (WithPriority Log) -> SessionState -> SessionM HscEnv -> (Maybe FilePath, NormalizedFilePath, ComponentOptions) -> SessionM ([ComponentInfo], [ComponentInfo])
 packageSetup recorder sessionState newEmptyHscEnv (hieYaml, cfp, opts) = do
-  getCacheDirs <- asks (getCacheDirs . sessionLoadingOptions)
   haddockparse <- asks (optHaddockParse . sessionIdeOptions)
   rootDir <- asks sessionRootDir
+  getCacheDirs <- asks (getCacheDirs . sessionLoadingOptions)
   -- Parse DynFlags for the newly discovered component
   hscEnv <- newEmptyHscEnv
-  newTargetDfs <- liftIO $ evalGhcEnv hscEnv $ setOptions haddockparse cfp opts (hsc_dflags hscEnv) rootDir
+  newTargetDfs <- liftIO $ mask_ $ evalGhcEnv hscEnv $ setOptions haddockparse cfp opts (hsc_dflags hscEnv) rootDir
   let deps = componentDependencies opts ++ maybeToList hieYaml
   dep_info <- liftIO $ getDependencyInfo (fmap (toAbsolute rootDir) deps)
   -- Now lookup to see whether we are combining with an existing HscEnv
@@ -931,7 +903,7 @@ packageSetup recorder sessionState newEmptyHscEnv (hieYaml, cfp, opts) = do
   -- information about other components loaded into the HscEnv
   -- (unitId, DynFlag, Targets)
   liftIO $ modifyVar (hscEnvs sessionState) $
-    addComponentInfo (cmapWithPrio LogSessionGhc recorder) getCacheDirs dep_info newTargetDfs (hieYaml, cfp, opts)
+    addComponentInfo (cmapWithPrio LogSessionGhc recorder) (getCacheDirs rootDir) dep_info newTargetDfs (hieYaml, cfp, opts)
 
 addErrorTargetIfUnknown :: Foldable t => t [TargetDetails] -> Maybe FilePath -> NormalizedFilePath -> IO ([TargetDetails], HashMap NormalizedFilePath (IdeResult HscEnvEq, DependencyInfo))
 addErrorTargetIfUnknown all_target_details hieYaml cfp = do
@@ -994,23 +966,20 @@ extendKnownTargets recorder knownTargetsVar newTargets = do
 loadCradleWithNotifications ::
   Recorder (WithPriority Log) ->
   SessionState ->
+  (Maybe FilePath -> FilePath -> IO (Cradle Void)) ->
   Maybe FilePath ->
   FilePath ->
   SessionM (Cradle Void, Either [CradleError] (ComponentOptions, FilePath, String))
-loadCradleWithNotifications recorder sessionState hieYaml cfp = do
+loadCradleWithNotifications recorder sessionState loadCradle hieYaml cfp = do
+  IdeTesting isTesting <- asks (optTesting . sessionIdeOptions)
+  sessionPref <- asks (sessionLoading . sessionClientConfig)
+  lspEnv <- asks sessionLspContext
   rootDir <- asks sessionRootDir
   let lfpLog = makeRelative rootDir cfp
   logWith recorder Info $ LogCradlePath lfpLog
   when (isNothing hieYaml) $
     logWith recorder Warning $ LogCradleNotFound lfpLog
-
-  -- Find the 'Cradle' for the target
-  loadingOptions <- asks sessionLoadingOptions
-  cradle <- liftIO $ loadCradle loadingOptions recorder hieYaml rootDir
-
-  -- Test notification for better observability.
-  IdeTesting isTesting <- asks (optTesting . sessionIdeOptions)
-  lspEnv <- asks sessionLspContext
+  cradle <- liftIO $ loadCradle hieYaml rootDir
   when isTesting $ mRunLspT lspEnv $
     sendNotification (SMethod_CustomMethod (Proxy @"ghcide/cradle/loaded")) (toJSON cfp)
 
@@ -1018,9 +987,7 @@ loadCradleWithNotifications recorder sessionState hieYaml cfp = do
   let progMsg = "Setting up " <> T.pack (takeBaseName (cradleRootDir cradle))
                 <> " (for " <> T.pack lfpLog <> ")"
 
-  sessionPref <- asks (sessionLoading . sessionClientConfig)
   extraToLoads <- liftIO $ getExtraFilesToLoad sessionState cfp
-  -- Start loading the file!
   eopts <- mRunLspTCallback lspEnv (\act -> withIndefiniteProgress progMsg Nothing NotCancellable (const act)) $
     withTrace "Load cradle" $ \addTag -> do
         addTag "file" lfpLog
@@ -1077,16 +1044,11 @@ toFlagsMap :: TargetDetails -> [(NormalizedFilePath, (IdeResult HscEnvEq, Depend
 toFlagsMap TargetDetails{..} =
     [ (l, (targetEnv, targetDepends)) | l <-  targetLocations]
 
--- | Mapping from @hie.yaml@ to all components that have been loaded
--- from this @hie.yaml@ location.
---
 -- See Note [Multi Cradle Dependency Info]
 type HieMap = Map.Map (Maybe FilePath) [RawComponentInfo]
-
--- | Maps a @hie.yaml@ location to all its Target Filepaths and options.
--- Reverse of 'FilesMap'.
+-- | Maps a "hie.yaml" location to all its Target Filepaths and options.
 type FlagsMap = STM.Map (Maybe FilePath) (HM.HashMap NormalizedFilePath (IdeResult HscEnvEq, DependencyInfo))
--- | Maps a Filepath to its respective @hie.yaml@ location.
+-- | Maps a Filepath to its respective "hie.yaml" location.
 -- It aims to be the reverse of 'FlagsMap'.
 type FilesMap = STM.Map NormalizedFilePath (Maybe FilePath)
 
@@ -1117,7 +1079,7 @@ data PackageSetupException
         { compileTime :: !Version
         , runTime     :: !Version
         }
-    deriving (Eq, Show, Typeable)
+    deriving (Eq, Show)
 
 instance Exception PackageSetupException
 
