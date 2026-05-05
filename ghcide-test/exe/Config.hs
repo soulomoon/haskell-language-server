@@ -105,6 +105,7 @@ runInDir fs = runSessionWithServer def dummyPlugin fs
 run :: Session a -> IO a
 run = runSessionWithTestConfig def
     { testDirLocation = (mkIdeTestFs [])
+    -- , testDisableKick = True
     , testPluginDescriptor = dummyPlugin }
     . const
 

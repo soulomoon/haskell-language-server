@@ -280,14 +280,13 @@ thLinkingTest unboxed = testCase name $ runWithExtraFiles dir $ \dir -> do
     adoc <- createDoc aPath "haskell" aSource
     bdoc <- createDoc bPath "haskell" bSource
 
-    expectDiagnostics [("THB.hs", [(DiagnosticSeverity_Warning, (4,1), "Top-level binding", Just "GHC-38417")])]
+    waitForExpectedDiagnosticsFromDocsOne (bdoc, [(DiagnosticSeverity_Warning, (4,1), "Top-level binding", Just "GHC-38417")])
 
     let aSource' = T.unlines $ init (init (T.lines aSource)) ++ ["th :: DecsQ", "th = [d| a = False|]"]
     changeDoc adoc [TextDocumentContentChangeEvent . InR $ TextDocumentContentChangeWholeDocument aSource']
 
     -- modify b too
     let bSource' = T.unlines $ init (T.lines bSource) ++ ["$th"]
-    -- _ <- waitForDiagnostics
 
     changeDoc bdoc [TextDocumentContentChangeEvent . InR $ TextDocumentContentChangeWholeDocument bSource']
     waitForExpectedDiagnosticsFromDocsOne (bdoc, [(DiagnosticSeverity_Warning, (4,1), "Top-level binding", Just "GHC-38417")])

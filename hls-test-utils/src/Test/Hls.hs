@@ -48,10 +48,7 @@ module Test.Hls
     -- * Assertion helper functions
     waitForProgressDone,
     waitForAllProgressDone,
-    waitForBuildQueue,
     waitForProgressBegin,
-    waitForTypecheck,
-    waitForAction,
     hlsConfigToClientConfig,
     setHlsConfig,
     getLastBuildKeys,
@@ -965,41 +962,13 @@ waitForAllProgressDone = void $ waitForBuildQueue
 --       done <- null <$> getIncompleteProgressSessions
 --       unless done loop
 
--- | Wait for the build queue to be empty
-waitForBuildQueue :: Session Seconds
-waitForBuildQueue = do
-    let m = SMethod_CustomMethod (Proxy @"test")
-    waitId <- sendRequest m (toJSON WaitForShakeQueue)
-    (td, resp) <- duration $ skipManyTill anyMessage $ responseForId m waitId
-    case resp of
-        TResponseMessage{_result=Right Null} -> return td
-        -- assume a ghcide binary lacking the WaitForShakeQueue method
-        _                                    -> return 0
 
 waitForDiagsAndBuildQueue :: TextDocumentIdentifier -> Session Seconds
 waitForDiagsAndBuildQueue doc = do
       _ <- waitForDiagnosticsFromSource doc ""
       waitForBuildQueue
 
-callTestPlugin :: (A.FromJSON b) => TestRequest -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) b)
-callTestPlugin cmd = do
-    let cm = SMethod_CustomMethod (Proxy @"test")
-    waitId <- sendRequest cm (A.toJSON cmd)
-    TResponseMessage{_result} <- skipManyTill anyMessage $ responseForId cm waitId
-    return $ do
-      e <- _result
-      case A.fromJSON e of
-        A.Error err -> Left $ TResponseError (InR ErrorCodes_InternalError) (T.pack err) Nothing
-        A.Success a -> pure a
-
-waitForAction :: String -> TextDocumentIdentifier -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) WaitForIdeRuleResult)
-waitForAction key TextDocumentIdentifier{_uri} =
-    callTestPlugin (WaitForIdeRule key _uri)
-
-waitForTypecheck :: TextDocumentIdentifier -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) Bool)
-waitForTypecheck tid = fmap ideResultSuccess <$> waitForAction "typecheck" tid
-
-getLastBuildKeys :: Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) [T.Text])
+getLastBuildKeys :: Session [T.Text]
 getLastBuildKeys = callTestPlugin GetBuildKeysBuilt
 
 hlsConfigToClientConfig :: Config -> A.Object
