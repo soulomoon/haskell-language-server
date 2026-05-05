@@ -215,7 +215,7 @@ tests =
         -- trigger a rebuild and check that dependency interfaces are not rebuilt
         changeDoc doc []
         _ <- waitForTypecheck doc
-        Right keys <- getLastBuildKeys
+        keys <- getLastBuildKeys
         let ifaceKeys = filter ("GetModIface" `T.isPrefixOf`) keys
         liftIO $ ifaceKeys @?= []
   ]

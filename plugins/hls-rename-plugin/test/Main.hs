@@ -129,7 +129,7 @@ renameTests = testGroup "Identifier"
 
     , testCase "fails when module does not compile" $ runRenameSession "" $ do
         doc <- openDoc "FunctionArgument.hs" "haskell"
-        expectNoMoreDiagnostics 3 doc "typecheck"
+        expectDiagnosticsEmpty doc "typecheck"
 
         -- Update the document so it doesn't compile
         let change = TextDocumentContentChangeEvent $ InL TextDocumentContentChangePartial
@@ -160,7 +160,7 @@ renameTests = testGroup "Identifier"
               , _text = "Int"
               }
         changeDoc doc [change']
-        expectNoMoreDiagnostics 3 doc "typecheck"
+        expectDiagnosticsEmpty doc "typecheck"
 
         -- Make sure renaming succeeds
         rename doc (Position 3 0) "foo'"

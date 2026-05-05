@@ -65,7 +65,22 @@ module Test.Hls.Util
     , callTestPlugin
     , callTestPluginWithDiag
     , callTestPluginWithSMethod
-    , expectDiagnosticsEmpty, getStoredKeys, getInterfaceFilesDir, waitForBuildQueue, getFilesOfInterest, expectDiagnosticsWithTags', expectedDiagnosticWithNothing, expectMessages, expectDiagnostics, filePathTextDocumentIdentifier, waitForExpectedDiagnosticsFromFilePath, waitForExpectedDiagnosticsFromDocsOne, waitForCustomMessage, waitForGC, configureCheckProject, isReferenceReady
+    , expectDiagnosticsEmpty
+    , getStoredKeys
+    , getInterfaceFilesDir
+    , waitForBuildQueue
+    , getFilesOfInterest
+    , expectDiagnosticsWithTags'
+    , expectedDiagnosticWithNothing
+    , expectMessages
+    , expectDiagnostics
+    , filePathTextDocumentIdentifier
+    , waitForExpectedDiagnosticsFromFilePath
+    , waitForExpectedDiagnosticsFromDocsOne
+    , waitForCustomMessage
+    , waitForGC
+    , configureCheckProject
+    , isReferenceReady
   )
 where
 
@@ -321,8 +336,8 @@ waitForDiagnosticsFrom doc = do
 waitForTypecheck :: TextDocumentIdentifier -> Test.Session Bool
 waitForTypecheck tid = ideResultSuccess <$> waitForAction "typecheck" tid
 
-waitForActionWithDiagnosticsFromDocs :: (HasCallStack) => Bool -> [TextDocumentIdentifier] -> Test.Session [[Diagnostic]]
-waitForActionWithDiagnosticsFromDocs _waitFirst docs = do
+waitForActionWithDiagnosticsFromDocs :: (HasCallStack) => [TextDocumentIdentifier] -> Test.Session [[Diagnostic]]
+waitForActionWithDiagnosticsFromDocs docs = do
   -- The test request waits until HLS has no pending diagnostic work. While
   -- waiting for the response, lsp-test consumes publishDiagnostics messages and
   -- updates its current-diagnostics cache.
@@ -342,12 +357,12 @@ flushMessages = do
 
 waitForDiagnosticsFromSource :: TextDocumentIdentifier -> String -> Test.Session [Diagnostic]
 waitForDiagnosticsFromSource doc src = do
-      diags <- concat <$> waitForActionWithDiagnosticsFromDocs True [doc]
+      diags <- concat <$> waitForActionWithDiagnosticsFromDocs [doc]
       return $ filter (\d -> d ^. L.source == Just (T.pack src)) diags
 
 expectDiagnosticsEmpty :: TextDocumentIdentifier -> String -> Test.Session ()
 expectDiagnosticsEmpty doc src = do
-    diagsA <- concat <$> waitForActionWithDiagnosticsFromDocs False [doc]
+    diagsA <- concat <$> waitForActionWithDiagnosticsFromDocs [doc]
     let diags = filter (\d -> d ^. L.source == Just (T.pack src)) diagsA
     unless (null diags) $
         liftIO $ assertFailure $ "Expected no diagnostics for " <> show (doc ^. L.uri) <>
@@ -467,14 +482,14 @@ waitForExpectedDiagnosticsFromFilePath oxs = do
   res <- forM xs $ \(fp, ed) -> do
     tdi <- filePathTextDocumentIdentifier fp
     return (tdi, ed)
-  waitForExpectedDiagnosticsFromDocs True res
+  waitForExpectedDiagnosticsFromDocs res
 
 waitForExpectedDiagnosticsFromDocsOne :: (HasCallStack) => (TextDocumentIdentifier, [ExpectedDiagnostic]) -> Session ()
-waitForExpectedDiagnosticsFromDocsOne x = waitForExpectedDiagnosticsFromDocs True [x]
+waitForExpectedDiagnosticsFromDocsOne x = waitForExpectedDiagnosticsFromDocs [x]
 
-waitForExpectedDiagnosticsFromDocs :: (HasCallStack) => Bool -> [(TextDocumentIdentifier, [ExpectedDiagnostic])] -> Session ()
-waitForExpectedDiagnosticsFromDocs waitFirst expected = do
-  docDiags <- waitForActionWithDiagnosticsFromDocs waitFirst (map fst expected)
+waitForExpectedDiagnosticsFromDocs :: (HasCallStack) => [(TextDocumentIdentifier, [ExpectedDiagnostic])] -> Session ()
+waitForExpectedDiagnosticsFromDocs expected = do
+  docDiags <- waitForActionWithDiagnosticsFromDocs (map fst expected)
   forM_ (zip expected docDiags) $ \((doc, exDiags), diags) -> do
     checkDiagnosticsForDoc doc exDiags diags
 
@@ -589,7 +604,7 @@ waitForDiagnosticsFromSourceWithTimeout timeout doc src = do
         -- Send a dummy message to provoke a response from the server.
         -- This guarantees that we have at least one message to
         -- process, so message won't block or timeout.
-    diags <- concat <$> waitForActionWithDiagnosticsFromDocs False [doc]
+    diags <- concat <$> waitForActionWithDiagnosticsFromDocs [doc]
     return $ filter (\d -> d ^. L.source == Just (T.pack src)) diags
 
 
