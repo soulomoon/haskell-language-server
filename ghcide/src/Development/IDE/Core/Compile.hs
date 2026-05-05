@@ -115,7 +115,7 @@ import           GHC.Tc.Gen.Splice
 import           GHC.Types.Error
 import           GHC.Types.ForeignStubs
 import           GHC.Types.TypeEnv
-import           Development.IDE.WorkerThread                 (writeTaskQueue)
+import           Development.IDE.Core.WorkerThread        (writeTaskQueue)
 
 -- See Note [Guidelines For Using CPP In GHCIDE Import Statements]
 

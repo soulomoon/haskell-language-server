@@ -23,7 +23,6 @@ import           Data.Aeson                         (FromJSON, ToJSON)
 import           Data.Bifunctor                     (second)
 import qualified Data.ByteString                    as BS
 import           Data.Dynamic
-import           Data.Either                        (partitionEithers)
 import           Data.Foldable                      (fold)
 import qualified Data.HashMap.Strict                as Map
 import           Data.HashSet                       (HashSet)
@@ -36,17 +35,12 @@ import           Data.Typeable
 import           Debug.Trace                        (traceEventIO)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
-import           Development.IDE.WorkerThread       (DeliverStatus (..),
-                                                     TaskQueue (..),
-                                                     awaitRunInThread,
-                                                     counTaskQueue,
-                                                     flushTaskQueue,
-                                                     writeTaskQueue)
 import qualified Focus
 import           GHC.Conc                           ()
 import           GHC.Generics                       (Generic)
 import qualified ListT
 import           Numeric.Natural
+import           Prettyprinter
 import qualified StmContainers.Map                  as SMap
 import           StmContainers.Map                  (Map)
 import           System.Time.Extra                  (Seconds, sleep)
@@ -228,6 +222,18 @@ data ShakeDatabase = ShakeDatabase !Int [Action ()] Database
 newtype Step = Step Int
     deriving newtype (Eq,Ord,Hashable,Show,Num,Enum,Real,Integral)
 
+data DeliverStatus = DeliverStatus
+    { deliverStep :: Int
+    , deliverName :: String
+    , deliverKey  :: Key
+    } deriving (Show)
+
+instance Pretty DeliverStatus where
+    pretty (DeliverStatus step name key) =
+        pretty ("Step:" :: String) <+> pretty step <> comma
+            <+> pretty ("name:" :: String) <+> pretty name <> comma
+            <+> pretty ("key:" :: String) <+> pretty (show key)
+
 getShakeStep :: MonadIO m => ShakeDatabase -> m Step
 getShakeStep (ShakeDatabase _ _ db) = do
     s <- readTVarIO $ databaseStep db
@@ -250,9 +256,6 @@ dbNotLocked db = do
  check =<< readTVar (databaseValuesLock db)
 
 
-
-getShakeQueue :: ShakeDatabase -> DBQue
-getShakeQueue (ShakeDatabase _ _ db) = databaseQueue db
 ---------------------------------------------------------------------
 -- Keys
 newtype Value = Value Dynamic
@@ -265,15 +268,6 @@ data KeyDetails = KeyDetails {
 onKeyReverseDeps :: (KeySet -> KeySet) -> KeyDetails -> KeyDetails
 onKeyReverseDeps f it@KeyDetails{..} =
     it{keyReverseDeps = f keyReverseDeps}
-
-
-type DBQue = TaskQueue (Either Dynamic (IO ()))
-raedAllLeftsDBQue :: DBQue -> STM [Dynamic]
-raedAllLeftsDBQue q = do
-    allResult <- flushTaskQueue q
-    let (allLeft, allRight) = partitionEithers allResult
-    mapM_ (writeTaskQueue q . Right) allRight
-    return allLeft
 
 data Database = Database {
     databaseExtra                      :: Dynamic,
@@ -298,7 +292,6 @@ data Database = Database {
 
     dataBaseLogger                     :: String -> IO (),
 
-    databaseQueue                      :: DBQue,
     -- The action queue and
     databaseActionQueue                :: ActionQueue,
 
@@ -369,16 +362,6 @@ isRootKey (DirectKey _a) = True
 isRootKey _              = False
 
 ---------------------------------------------------------------------
-
-shakeDataBaseQueue :: ShakeDatabase -> DBQue
-shakeDataBaseQueue = databaseQueue . (\(ShakeDatabase _ _ db) -> db)
-
-awaitRunInDb :: Database -> IO result -> IO result
-awaitRunInDb db act = awaitRunInThread (databaseQueue db) act
-
-databaseGetActionQueueLength :: Database -> STM Int
-databaseGetActionQueueLength db = do
-    counTaskQueue (databaseQueue db)
 
 -- | Abstract pattern for spawning async computations with database registration.
 -- This pattern is used by spawnRefresh and can be used by other functions that need:

@@ -33,7 +33,6 @@ import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
 import           Development.IDE.Graph.Internal.Types ()
-import           Development.IDE.WorkerThread         (DeliverStatus (..))
 import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                    as SMap
@@ -54,8 +53,8 @@ import           Data.List.NonEmpty                   (unzip)
 
 
 -- fiff taht does make more sense
-newDatabase :: (String -> IO ()) -> DBQue -> ActionQueue -> Dynamic -> TheRules -> IO Database
-newDatabase dataBaseLogger databaseQueue databaseActionQueue databaseExtra databaseRules = do
+newDatabase :: (String -> IO ()) -> ActionQueue -> Dynamic -> TheRules -> IO Database
+newDatabase dataBaseLogger databaseActionQueue databaseExtra databaseRules = do
     databaseStep <- newTVarIO $ Step 0
     databaseThreads <- newTVarIO []
     databaseValuesLock <- newTVarIO True
@@ -423,6 +422,5 @@ spawnRefresh db@Database {..} stack key barrier prevResult registerHook  refresh
 -- If the parent is Dirty, and every direct child is either Clean/Exception/Running for a step < eventStep,
 -- and no child changed at/after eventStep, mark parent Clean (preserving its last Clean result),
 -- and recursively attempt the same for its own parents.
-
 
 

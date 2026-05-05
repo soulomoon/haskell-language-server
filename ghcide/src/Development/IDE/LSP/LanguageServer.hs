@@ -49,11 +49,10 @@ import           Development.IDE.Core.Service          (shutdown)
 import           Development.IDE.Core.Shake            hiding (Log)
 import qualified Development.IDE.Core.Shake            as Shake
 import           Development.IDE.Core.Tracing
-import           Development.IDE.Graph.Internal.Types  (DBQue)
+import           Development.IDE.Core.WorkerThread
 import qualified Development.IDE.Session               as Session
 import           Development.IDE.Types.Shake           (WithHieDb,
                                                         WithHieDbShield (..))
-import           Development.IDE.WorkerThread
 import           Ide.Logger
 import           Language.LSP.Server                   (LanguageContextEnv,
                                                         LspServerLog,

@@ -41,7 +41,6 @@ import           Development.IDE.Graph.Internal.Profile  (writeProfile)
 import           Development.IDE.Graph.Internal.Rules
 import           Development.IDE.Graph.Internal.Types
 import qualified Development.IDE.Graph.Internal.Types    as Logger
-import           Development.IDE.WorkerThread            (DeliverStatus)
 import qualified StmContainers.Map                       as SMap
 
 
@@ -51,11 +50,11 @@ data NonExportedType = NonExportedType
 shakeShutDatabase :: KeySet -> ShakeDatabase -> IO ()
 shakeShutDatabase dirties (ShakeDatabase _ _ db) = shutDatabase dirties db
 
-shakeNewDatabase :: (String -> IO ()) -> DBQue -> ActionQueue -> ShakeOptions -> Rules () -> IO ShakeDatabase
-shakeNewDatabase l que aq opts rules = do
+shakeNewDatabase :: (String -> IO ()) -> ActionQueue -> ShakeOptions -> Rules () -> IO ShakeDatabase
+shakeNewDatabase l aq opts rules = do
     let extra = fromMaybe (toDyn NonExportedType) $ shakeExtra opts
     (theRules, actions) <- runRules extra rules
-    db <- newDatabase l que aq extra theRules
+    db <- newDatabase l aq extra theRules
     pure $ ShakeDatabase (length actions) actions db
 
 shakeRunDatabase :: ShakeDatabase -> [Action a] -> IO [Either SomeException a]

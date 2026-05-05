@@ -37,7 +37,6 @@ import           Development.IDE.Graph.Internal.Database
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules    (RuleResult)
 import           Development.IDE.Graph.Internal.Types
-import           Development.IDE.WorkerThread            (DeliverStatus (..))
 import           System.Exit
 import           UnliftIO                                (atomically,
                                                           newEmptyTMVarIO,

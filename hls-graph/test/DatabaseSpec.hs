@@ -22,16 +22,16 @@ exractException [] = Nothing
 exractException (Left e : _) | Just ne@StackException{} <- fromGraphException e = return ne
 exractException (_: xs) = exractException xs
 
-shakeNewDatabaseWithLogger :: DBQue -> ShakeOptions -> Rules () -> IO ShakeDatabase
-shakeNewDatabaseWithLogger q opts rules = do
+shakeNewDatabaseWithLogger :: ShakeOptions -> Rules () -> IO ShakeDatabase
+shakeNewDatabaseWithLogger opts rules = do
   aq <- newQueue
-  shakeNewDatabase (const $ return ()) q aq opts rules
+  shakeNewDatabase (const $ return ()) aq opts rules
 
 spec :: Spec
 spec = do
     describe "Evaluation" $ do
-        itInThread "detects cycles" $ \q -> do
-            db <- shakeNewDatabaseWithLogger q shakeOptions $ do
+        itInThread "detects cycles" $ do
+            db <- shakeNewDatabaseWithLogger shakeOptions $ do
                 ruleBool
                 addRule $ \Rule _old _mode -> do
                     True <- apply1 (Rule @Bool)
@@ -44,8 +44,8 @@ spec = do
             throwStack x `shouldThrow` \StackException{} -> True
 
     describe "compute" $ do
-      itInThread "build step and changed step updated correctly" $ \q -> do
-        (ShakeDatabase _ _ theDb) <- shakeNewDatabaseWithLogger q shakeOptions $ do
+      itInThread "build step and changed step updated correctly" $ do
+        (ShakeDatabase _ _ theDb) <- shakeNewDatabaseWithLogger shakeOptions $ do
           ruleStep
         let k = newKey $ Rule @()
         -- ChangedRecomputeSame

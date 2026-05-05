@@ -70,6 +70,7 @@ module Development.IDE.Core.Shake(
     IndexQueue,
     HieDb,
     HieDbWriter(..),
+    DBQue,
     addPersistentRule,
     garbageCollectDirtyKeys,
     garbageCollectDirtyKeysOlderThan,
@@ -142,6 +143,7 @@ import           Development.IDE.GHC.Compat              (NameCache,
                                                           initNameCache,
                                                           knownKeyNames)
 #endif
+import           Development.IDE.Core.WorkerThread
 import           Development.IDE.GHC.Orphans             ()
 import           Development.IDE.Graph                   hiding (ShakeValue,
                                                           action)
@@ -161,11 +163,11 @@ import           Development.IDE.Graph.Database          (ShakeDatabase,
                                                           shakeShutDatabase)
 import           Development.IDE.Graph.Internal.Action   (pumpActionThread)
 import           Development.IDE.Graph.Internal.Database (AsyncParentKill (AsyncParentKill))
-import           Development.IDE.Graph.Internal.Types    (DBQue, Step (..),
+import           Development.IDE.Graph.Internal.Types    (DeliverStatus (..),
+                                                          Step (..),
                                                           actionNameKey,
                                                           getShakeStep,
                                                           runActionMonad,
-                                                          shakeDataBaseQueue,
                                                           withShakeDatabaseValuesLock)
 import           Development.IDE.Graph.Rule
 import           Development.IDE.Types.Action            (ActionQueue,
@@ -183,7 +185,6 @@ import           Development.IDE.Types.KnownTargets
 import           Development.IDE.Types.Location
 import           Development.IDE.Types.Monitoring        (Monitoring (..))
 import           Development.IDE.Types.Shake
-import           Development.IDE.WorkerThread
 import qualified Focus
 import           GHC.Fingerprint
 import           GHC.Stack                               (HasCallStack)
@@ -330,7 +331,7 @@ data HieDbWriter
 -- The inner `(HieDb -> IO ()) -> IO ()` wraps `HieDb -> IO ()`
 -- with (currently) retry functionality
 type IndexQueue = TaskQueue (((HieDb -> IO ()) -> IO ()) -> IO ())
--- type ShakeControlQueue = TaskQueue ShakeRestartArgs
+type DBQue = TaskQueue (Either Dynamic (IO ()))
 type ShakeQueue = DBQue
 type ShakeControlQueue = ShakeQueue
 type LoaderQueue = TaskQueue (IO ())
@@ -788,7 +789,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         positionMapping <- STM.newIO
         knownTargetsVar <- newTVarIO $ hashed emptyKnownTargets
         restartVersion <- newTVarIO 0
-        let restartShakeSession = shakeRestart restartVersion shakeDb
+        let restartShakeSession = shakeRestart restartVersion shakeControlQueue
         persistentKeys <- newTVarIO mempty
         indexPending <- newTVarIO HMap.empty
         indexCompleted <- newTVarIO 0
@@ -821,7 +822,6 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
     shakeDb  <-
         shakeNewDatabase
             (\logText -> logWith recorder Info (LogShakeText $ T.pack logText))
-            shakeControlQueue
             (actionQueue shakeExtras)
             opts { shakeExtra = newShakeExtra shakeExtras }
             rules
@@ -953,13 +953,12 @@ instance Semigroup ShakeRestartArgs where
 -- | Restart the current 'ShakeSession' with the given system actions.
 --   Any actions running in the current session will be aborted,
 --   but actions added via 'shakeEnqueue' will be requeued.
-shakeRestart :: TVar Int -> ShakeDatabase ->  VFSModified -> String -> IO [Key] -> IO ()
-shakeRestart version db vfs reason ioActionBetweenShakeSession = do
+shakeRestart :: TVar Int -> DBQue -> VFSModified -> String -> IO [Key] -> IO ()
+shakeRestart version rts vfs reason ioActionBetweenShakeSession = do
     -- lockShakeDatabaseValues db
     v <- atomically $ do
         modifyTVar' version (+1)
         readTVar version
-    let rts = shakeDataBaseQueue db
     waitMVar <- newEmptyMVar
     -- submit at the head of the queue,
     -- prefer restart request over any pending actions

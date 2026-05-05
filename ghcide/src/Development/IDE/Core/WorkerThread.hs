@@ -1,5 +1,5 @@
 {-
-Module : Development.IDE.WorkerThread
+Module : Development.IDE.Core.WorkerThread
 Author : @soulomoon
 SPDX-License-Identifier: Apache-2.0
 
@@ -10,9 +10,8 @@ see Note [Serializing runs in separate thread]
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeFamilies      #-}
 
-module Development.IDE.WorkerThread
+module Development.IDE.Core.WorkerThread
   ( LogWorkerThread (..),
-    DeliverStatus(..),
     withWorkerQueue,
     TaskQueue(..),
     writeTaskQueue,
@@ -31,16 +30,13 @@ module Development.IDE.WorkerThread
     flushTaskQueue
   ) where
 
-import           Control.Concurrent.Async           (withAsync)
-import           Control.Concurrent.STM
-import           Control.Exception.Safe             (SomeException, finally,
-                                                     throw, try)
-import           Control.Monad.Cont                 (ContT (ContT))
-import qualified Data.Text                          as T
-
 import           Control.Concurrent
-import           Data.Dynamic                       (Dynamic)
-import           Development.IDE.Graph.Internal.Key (Key)
+import           Control.Concurrent.Async (withAsync)
+import           Control.Concurrent.STM
+import           Control.Exception.Safe   (SomeException, finally, throw, try)
+import           Control.Monad.Cont       (ContT (ContT))
+import           Data.Dynamic             (Dynamic)
+import qualified Data.Text                as T
 import           Prettyprinter
 
 data LogWorkerThread
@@ -59,7 +55,6 @@ instance Pretty LogWorkerThread where
     LogSingleWorkEnded t -> "Worker ended a unit of work: " <+> pretty t
     LogMainThreadId t tid -> "Main thread for" <+> pretty t <+> "is" <+> pretty (show tid)
 
-
 {-
 Note [Serializing runs in separate thread]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -71,9 +66,12 @@ Originally we used various ways to implement this, but it was hard to maintain a
 Moreover, we can not stop these threads uniformly when we are shutting down the server.
 -}
 data TaskQueue a = TaskQueue (TQueue a) (TVar Int)
+
 newTaskQueueIO :: IO (TaskQueue a)
 newTaskQueueIO = TaskQueue <$> newTQueueIO <*> newTVarIO 0
+
 data ExitOrTask t = Exit | Task t
+
 type Logger = LogWorkerThread -> IO ()
 
 -- | 'withWorkerQueue' creates a new 'TQueue', and launches a worker
@@ -85,9 +83,9 @@ withWorkerQueueSimple log title = withWorkerQueue log title id
 withWorkerQueueSimpleRight :: Logger -> T.Text -> ContT () IO (TaskQueue (Either Dynamic (IO ())))
 withWorkerQueueSimpleRight log title = withWorkerQueue log title $ eitherWorker (const $ return ()) id
 
-
 withWorkerQueue :: Logger -> T.Text -> (t -> IO ()) -> ContT () IO (TaskQueue t)
 withWorkerQueue = withWorkersQueue 1
+
 withWorkersQueue :: Int -> Logger -> T.Text -> (t -> IO ()) -> ContT () IO (TaskQueue t)
 withWorkersQueue n log title workerAction = ContT $ \mainAction -> do
   tid <- myThreadId
@@ -98,58 +96,51 @@ withWorkersQueue n log title workerAction = ContT $ \mainAction -> do
   -- ensuring that no new work is started after shutdown is requested.
   -- This mechanism is necessary because some downstream code may swallow async exceptions,
   -- making 'cancel' unreliable for stopping the thread in all cases.
-  -- If 'cancel' does interrupt the thread (e.g., while blocked in STM or in a cooperative job),
-  -- the thread exits immediately and never checks the TMVar; in such cases, the stop flag is redundant.
+  -- If 'cancel' does interrupt the thread, the thread exits immediately and never checks the TMVar;
+  -- in such cases, the stop flag is redundant.
   b <- newEmptyTMVarIO
   withAsyncs (replicate n (writerThread q b)) $ do
     mainAction q
     -- if we want to debug the exact location the worker swallows an async exception, we can
     -- temporarily comment out the `finally` clause.
         `finally` atomically (putTMVar b ())
-    log (LogThreadEnding title)
-  log (LogThreadEnded title)
+    logWith recorder Debug (LogThreadEnding title)
+  logWith recorder Debug (LogThreadEnded title)
   where
-    -- writerThread :: TaskQueue t -> TMVar () -> (forall a. IO a -> IO a) -> IO ()
-    writerThread q@(TaskQueue _ c) b =
-      -- See above: check stop flag before dequeuing, exit if set, otherwise run next job.
-      do
-        task <- atomically $ do
-          task <- tryReadTaskQueue q
-          isEm <- isEmptyTMVar b
-          case (isEm, task) of
-            (False, _)   -> return Exit -- stop flag set, exit
-            (_, Just t)  -> incraseCounter c >> return (Task t) -- got a task, run it
-            (_, Nothing) -> retry -- no task, wait
-        case task of
-          Exit -> return ()
-          Task t -> do
-                log $ LogSingleWorkStarting title
-                workerAction t
-                log $ LogSingleWorkEnded title
-                decreaseCounter c
-                writerThread q b
+    writerThread q@(TaskQueue _ c) b = do
+      task <- atomically $ do
+        task <- tryReadTaskQueue q
+        isEm <- isEmptyTMVar b
+        case (isEm, task) of
+          (False, _)   -> return Exit
+          (_, Just t)  -> incraseCounter c >> return (Task t)
+          (_, Nothing) -> retry
+      case task of
+        Exit -> return ()
+        Task t -> do
+          log $ LogSingleWorkStarting title
+          workerAction t
+          log $ LogSingleWorkEnded title
+          decreaseCounter c
+          writerThread q b
 
 withAsyncs :: [IO ()] -> IO () -> IO ()
 withAsyncs ios mainAction = go ios
-    where
-        go []     = mainAction
-        go (x:xs) = withAsync x $ \_ -> go xs
+  where
+    go []     = mainAction
+    go (x:xs) = withAsync x $ \_ -> go xs
 
 -- | 'awaitRunInThread' queues up an 'IO' action to be run by a worker thread,
 -- and then blocks until the result is computed. If the action throws an
 -- non-async exception, it is rethrown in the calling thread.
-
-data DeliverStatus = DeliverStatus
-  { deliverStep   :: Int
-    , deliverName :: String
-    , deliverKey  :: Key
-  } deriving (Show)
-
-
-instance Pretty DeliverStatus where
-  pretty (DeliverStatus step name key) =
-    "Step:" <+> pretty step <> "," <+> "name:" <+> pretty name <+> "," <+> "key:" <+> pretty (show key)
-
+awaitRunInThread :: TaskQueue (Either Dynamic (IO ())) -> IO result -> IO result
+awaitRunInThread (TaskQueue q _) act = do
+  barrier <- newEmptyTMVarIO
+  atomically $ writeTQueue q (Right $ try act >>= atomically . putTMVar barrier)
+  resultOrException <- atomically $ takeTMVar barrier
+  case resultOrException of
+    Left e  -> throw (e :: SomeException)
+    Right r -> return r
 
 type Worker arg = arg -> IO ()
 
@@ -158,56 +149,43 @@ eitherWorker w1 w2 = \case
   Left a  -> w1 a
   Right b -> w2 b
 
--- incraseCounter :: TVar Int -> STM ()
+incraseCounter :: TVar Int -> STM ()
 incraseCounter counter = modifyTVar' counter (+1)
-decreaseCounter counter = atomically $ modifyTVar' counter (\x -> x -1)
 
+decreaseCounter :: TVar Int -> IO ()
+decreaseCounter counter = atomically $ modifyTVar' counter (\x -> x - 1)
 
-awaitRunInThread :: TaskQueue (Either Dynamic (IO ())) -> IO result -> IO result
-awaitRunInThread (TaskQueue q counter) act = do
-  barrier <- newEmptyTMVarIO
-  -- Take an action from TQueue, run it and
-  -- use barrier to wait for the result
-  atomically $ writeTQueue q (Right $ try act >>= atomically . putTMVar barrier)
-  resultOrException <- atomically $ takeTMVar barrier
-  case resultOrException of
-    Left e  -> throw (e :: SomeException)
-    Right r -> return r
-
-
--- submitWork without waiting for the result
+-- submitWork without waiting for the result.
 submitWork :: TaskQueue arg -> arg -> IO ()
-submitWork (TaskQueue q counter) arg = atomically $ writeTQueue q arg
+submitWork (TaskQueue q _) arg = atomically $ writeTQueue q arg
 
--- submit work at the head of the queue, so it will be executed next
+-- Submit work at the head of the queue, so it will be executed next.
 submitWorkAtHead :: TaskQueue arg -> arg -> IO ()
-submitWorkAtHead (TaskQueue q counter) arg = do
-  atomically $ unGetTQueue q arg
+submitWorkAtHead (TaskQueue q _) arg = atomically $ unGetTQueue q arg
 
 writeTaskQueue :: TaskQueue a -> a -> STM ()
-writeTaskQueue (TaskQueue q counter) = writeTQueue q
+writeTaskQueue (TaskQueue q _) = writeTQueue q
 
 tryReadTaskQueue :: TaskQueue a -> STM (Maybe a)
-tryReadTaskQueue (TaskQueue q counter) = tryReadTQueue q
+tryReadTaskQueue (TaskQueue q _) = tryReadTQueue q
 
 isEmptyTaskQueue :: TaskQueue a -> STM Bool
-isEmptyTaskQueue (TaskQueue q counter) = (liftA2 (&&)) (isEmptyTQueue q) (isEmptyCounter (TaskQueue q counter))
+isEmptyTaskQueue (TaskQueue q counter) = liftA2 (&&) (isEmptyTQueue q) (isEmptyCounter counter)
 
-isEmptyCounter :: TaskQueue a -> STM Bool
-isEmptyCounter (TaskQueue q counter) = do
+isEmptyCounter :: TVar Int -> STM Bool
+isEmptyCounter counter = do
     cnt <- readTVar counter
     return $ cnt == 0
 
--- look and count the number of items in the queue
--- do not remove them
+-- Look at and count the queued items without removing them.
 counTaskQueue :: TaskQueue a -> STM Int
-counTaskQueue (TaskQueue q counter) = do
+counTaskQueue (TaskQueue q _) = do
     xs <- flushTQueue q
     mapM_ (unGetTQueue q) (reverse xs)
     return $ length xs
 
 readTaskQueue :: TaskQueue a -> STM a
-readTaskQueue (TaskQueue q counter) = readTQueue q
+readTaskQueue (TaskQueue q _) = readTQueue q
 
 flushTaskQueue :: TaskQueue a -> STM [a]
-flushTaskQueue (TaskQueue q counter) = flushTQueue q
+flushTaskQueue (TaskQueue q _) = flushTQueue q
