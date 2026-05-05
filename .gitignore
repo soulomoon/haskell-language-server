@@ -2,6 +2,7 @@ dist-newstyle
 .stack-work
 /hie.yaml
 cabal.project.local
+hlint.eventlog
 *~
 *.lock
 

@@ -11,7 +11,6 @@ addDependentFile
 hls-pragmas-plugin-tests::/inline: RULES/
 
 # hls-graph cancel leaks asynchronous exception to the next session
-hls-hlint-plugin-tests::adding hlint flags to plugin configuration removes hlint diagnostics
 hls-explicit-imports-plugin-tests::ExplicitUsualCase inlay hints with client caps
 hls-class-plugin-tests::Creates a placeholder for fmap
 th-linking-test-unboxed
