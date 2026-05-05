@@ -45,7 +45,7 @@ import qualified StmContainers.Map                  as SMap
 import           StmContainers.Map                  (Map)
 import           System.Time.Extra                  (Seconds, sleep)
 import           UnliftIO                           (Async (asyncThreadId),
-                                                     MVar, MonadUnliftIO,
+                                                     MonadUnliftIO,
                                                      asyncExceptionFromException,
                                                      asyncExceptionToException,
                                                      asyncWithUnmask,

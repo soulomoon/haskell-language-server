@@ -38,9 +38,7 @@ import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules    (RuleResult)
 import           Development.IDE.Graph.Internal.Types
 import           System.Exit
-import           UnliftIO                                (atomically,
-                                                          newEmptyTMVarIO,
-                                                          putTMVar, readTMVar)
+import           UnliftIO                                (atomically)
 
 type ShakeValue a = (Show a, Typeable a, Eq a, Hashable a, NFData a)
 
@@ -92,26 +90,6 @@ pumpActionThread sdb@(ShakeDatabase _ _ db) logMsg = do
         d <- liftIO $ atomicallyNamed "action queue - pop" $ popQueue (databaseActionQueue db)
         pumpActionThreadReRun sdb d
         pumpActionThread sdb logMsg
-
-runActionInDb :: String -> [Action a] -> Action [Either SomeException a]
-runActionInDb title acts = do
-  a <- ask
-  s <- atomically $ getDataBaseStepInt (actionDatabase a)
-  resultBarriers <-
-    mapM
-      ( \act -> do
-          barrier <- newEmptyTMVarIO
-          liftIO $
-            runInThreadStmInNewThreads
-              (actionDatabase a)
-              (DeliverStatus s title (newKey "root"))
-              act
-              (atomically . putTMVar barrier)
-          return $ barrier
-      )
-      $ map (\x -> ignoreState a x) acts
-  results <- liftIO $ mapM (atomically . readTMVar) $ resultBarriers
-  return results
 
 ignoreState :: SAction -> Action b -> IO b
 ignoreState a x = do

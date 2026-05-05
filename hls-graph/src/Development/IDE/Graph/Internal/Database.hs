@@ -39,8 +39,7 @@ import qualified StmContainers.Map                    as SMap
 import           System.Time.Extra                    (duration)
 import           UnliftIO                             (MVar, atomically,
                                                        isAsyncException,
-                                                       newEmptyMVar, putMVar,
-                                                       readMVar)
+                                                       newEmptyMVar, putMVar)
 
 import qualified Data.List                            as List
 import qualified UnliftIO.Exception                   as UE
@@ -69,7 +68,7 @@ newDatabase dataBaseLogger databaseActionQueue databaseExtra databaseRules = do
 --   Assumes that the database is not running a build
 -- only some keys are dirty
 incDatabase :: Database -> Maybe (([Key], [Key]), KeySet) -> IO KeySet
-incDatabase db (Just ((oldkeys, newKeys), preserves)) = do
+incDatabase db (Just ((_oldKeys, newKeys), preserves)) = do
     atomicallyNamed "incDatabase" $ modifyTVar' (databaseStep db) $ \(Step i) -> Step $ i + 1
     forM_ newKeys $ \newKey -> atomically $ SMap.focus updateDirty newKey (databaseValues db)
     -- only upsweep the keys that are not preserved
@@ -422,5 +421,4 @@ spawnRefresh db@Database {..} stack key barrier prevResult registerHook  refresh
 -- If the parent is Dirty, and every direct child is either Clean/Exception/Running for a step < eventStep,
 -- and no child changed at/after eventStep, mark parent Clean (preserving its last Clean result),
 -- and recursively attempt the same for its own parents.
-
 
