@@ -17,6 +17,7 @@ module Development.IDE.LSP.LanguageServer
     ) where
 
 import           Control.Concurrent.STM
+import           Control.Exception                     (throw)
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
 import           Control.Monad.Reader
@@ -37,7 +38,9 @@ import           UnliftIO.Directory
 import           UnliftIO.Exception
 
 import qualified Colog.Core                            as Colog
-import           Control.Exception                     (throw)
+import           Control.Concurrent.Extra              (newBarrier,
+                                                        signalBarrier,
+                                                        waitBarrier)
 import           Control.Monad.IO.Unlift               (MonadUnliftIO)
 import           Control.Monad.Trans.Cont              (ContT (..), evalContT)
 import           Data.Foldable                         (traverse_)
@@ -213,18 +216,17 @@ setupLSP recorder defaultRoot getHieDbLoc userHandlers getIdeState clientMsgVar 
   -- An MVar to control the lifetime of the reactor loop.
   -- The loop will be stopped and resources freed when it's full
   reactorStopSignal <- newEmptyMVar
-  reactorConfirmVar <- newEmptyMVar
+  reactorConfirmBarrier <- newBarrier
   let
     untilReactorStopSignal = untilMVar reactorStopSignal
     confirmReactorShutdown reason = do
-      confirmed <- tryPutMVar reactorConfirmVar ()
-      when confirmed $
-        logWith recorder Debug $ LogReactorShutdownConfirmed reason
+      logWith recorder Debug $ LogReactorShutdownConfirmed reason
+      signalBarrier reactorConfirmBarrier ()
     requestReactorShutdown = do
       k <- tryPutMVar reactorStopSignal ()
       logWith recorder Info $ LogReactorShutdownRequested k
       let timeOutSeconds = 10
-      timeout (timeOutSeconds * 1_000_000) (readMVar reactorConfirmVar) >>= \case
+      timeout (timeOutSeconds * 1_000_000) (waitBarrier reactorConfirmBarrier) >>= \case
         Just () -> pure ()
         -- If we don't get confirmation within 10 seconds, we log a warning and shutdown anyway.
         Nothing -> logWith recorder Warning $ LogShutDownTimeout timeOutSeconds
@@ -405,7 +407,6 @@ cancelHandler cancelRequest = LSP.notificationHandler SMethod_CancelRequest $ \T
 shutdownHandler :: Recorder (WithPriority Log) -> IO () -> LSP.Handlers (ServerM c)
 shutdownHandler _recorder requestReactorShutdown = LSP.requestHandler SMethod_Shutdown $ \_ resp -> do
     -- stop the reactor to free up the hiedb connection and shut down shake
-    logWith _recorder Info $ LogText "Shutdown requested"
     liftIO requestReactorShutdown
     resp $ Right Null
 
