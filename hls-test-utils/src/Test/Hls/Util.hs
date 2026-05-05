@@ -297,23 +297,12 @@ waitForDiagnosticsFrom doc = do
 
 
 waitForActionWithDiagnosticsFromDocs :: (HasCallStack) => Bool -> [TextDocumentIdentifier] -> Test.Session [[Diagnostic]]
-waitForActionWithDiagnosticsFromDocs waitFirst docs = do
+waitForActionWithDiagnosticsFromDocs _waitFirst docs = do
+  -- The test request waits until HLS has no pending diagnostic work. While
+  -- waiting for the response, lsp-test consumes publishDiagnostics messages and
+  -- updates its current-diagnostics cache.
   void $ callTestPluginWithDiag WaitForDiagnosticPublished
-  mapM getOrWait docs
-  where
-    waitUntilNonEmpty doc = do
-          void $ waitForDiagnosticsFrom doc
-          void $ callTestPluginWithDiag WaitForDiagnosticPublished
-          diags <- Test.getCurrentDiagnostics doc
-          if (null diags)
-                then waitUntilNonEmpty doc
-                else return diags
-
-    getOrWait doc = do
-      diags <- Test.getCurrentDiagnostics doc
-      when (null diags && waitFirst) $ void $ waitUntilNonEmpty doc
-      flushMessages
-      Test.getCurrentDiagnostics doc
+  mapM Test.getCurrentDiagnostics docs
 
 flushMessages :: Test.Session ()
 flushMessages = do

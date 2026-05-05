@@ -1,24 +1,24 @@
 # One tasty pattern per line. Lines starting with # are comments.
 # Blank lines are ignored.
 
-open close
-non local variable
-Notification Handlers
-bidirectional module dependency with hs-boot
+# open close
+# non local variable
+# Notification Handlers
+# bidirectional module dependency with hs-boot
 
-InternalError over InvalidParams
-addDependentFile
-hls-pragmas-plugin-tests::/inline: RULES/
+# InternalError over InvalidParams
+# addDependentFile
+# hls-pragmas-plugin-tests::/inline: RULES/
 
 # hls-graph cancel leaks asynchronous exception to the next session
-hls-explicit-imports-plugin-tests::ExplicitUsualCase inlay hints with client caps
-hls-class-plugin-tests::Creates a placeholder for fmap
-th-linking-test-unboxed
-update syntax error
-ghcide restarts shake session on config changes:
 
-retry failed
-th-linking-test
+# hls-explicit-imports-plugin-tests::ExplicitUsualCase inlay hints with client caps
+# hls-class-plugin-tests::Creates a placeholder for fmap
+# update syntax error
+# ghcide restarts shake session on config changes:
+#
+# retry failed
+# th-linking-test
 
 # iface-error-test-1
 # func-test::sends indefinite progress notifications
@@ -26,3 +26,5 @@ th-linking-test
 
 # this is a garbage collecter test
 # ghcide-tests::are deleted from the state
+
+th-linking-test-unboxed
