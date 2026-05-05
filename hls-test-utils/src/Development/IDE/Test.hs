@@ -47,7 +47,7 @@ import qualified Data.Aeson                      as A
 import           Data.Bifunctor                  (second)
 import           Data.Default
 import qualified Data.Map.Strict                 as Map
-import           Data.Maybe                      (fromJust)
+import           Data.Maybe                      (fromJust, isNothing)
 import           Data.Proxy
 import           Data.Text                       (Text)
 import qualified Data.Text                       as T
@@ -183,9 +183,25 @@ waitForExpectedDiagnosticsFromDocsOne x = waitForExpectedDiagnosticsFromDocs Tru
 
 waitForExpectedDiagnosticsFromDocs :: (HasCallStack) => Bool -> [(TextDocumentIdentifier, [ExpectedDiagnostic])] -> Session ()
 waitForExpectedDiagnosticsFromDocs waitFirst expected = do
-  docDiags <- waitForActionWithDiagnosticsFromDocs waitFirst (map fst expected)
-  forM_ (zip expected docDiags) $ \((doc, exDiags), diags) -> do
-    checkDiagnosticsForDoc doc exDiags diags
+  go (200 :: Int) waitFirst
+  where
+    docs = map fst expected
+
+    go attempts shouldWaitFirst = do
+      docDiags <- waitForActionWithDiagnosticsFromDocs shouldWaitFirst docs
+      if and (zipWith diagnosticsMatch expected docDiags)
+        then pure ()
+        else
+          if attempts <= 0
+            then forM_ (zip expected docDiags) $ \((doc, exDiags), diags) ->
+              checkDiagnosticsForDoc doc exDiags diags
+            else do
+              liftIO $ sleep 0.1
+              go (attempts - 1) False
+
+    diagnosticsMatch (_, exDiags) diags =
+      length exDiags == length diags
+        && all (isNothing . requireDiagnostic diags . expectedDiagnosticWithNothing) exDiags
 
 
 expectCurrentDiagnostics :: HasCallStack => TextDocumentIdentifier -> [ExpectedDiagnostic] -> Session ()
@@ -275,4 +291,3 @@ referenceReady pred = satisfyMaybe $ \case
     , symbolVal p == "ghcide/reference/ready"
     -> Just fp
   _ -> Nothing
-

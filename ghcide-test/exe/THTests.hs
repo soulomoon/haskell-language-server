@@ -6,8 +6,7 @@ import           Control.Monad.IO.Class      (liftIO)
 import qualified Data.Text                   as T
 import           Development.IDE.GHC.Compat  (GhcVersion (..), ghcVersion)
 import           Development.IDE.GHC.Util
-import           Development.IDE.Test        (expectCurrentDiagnostics,
-                                              expectDiagnostics,
+import           Development.IDE.Test        (expectDiagnostics,
                                               expectNoMoreDiagnostics,
                                               waitForExpectedDiagnosticsFromDocsOne)
 import           Language.LSP.Protocol.Types hiding (SemanticTokenAbsolute (..),
