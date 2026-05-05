@@ -367,7 +367,7 @@ handleInit lifecycleCtx env (TRequestMessage _ _ m params) = otTracedHandler "In
 runShakeThread :: Recorder (WithPriority Log) -> MVar IdeState -> ContT () IO DBQue
 runShakeThread recorder mide =
   withWorkerQueue
-    (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug)
+    (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder)
     "ShakeShakeControlQueue"
     (runRestartTask (cmapWithPrio LogShake recorder) mide)
 -- | runWithWorkerThreads
@@ -381,8 +381,8 @@ runWithWorkerThreads recorder mide dbLoc shutdownSession f = evalContT $ do
   -- This is passed in via the callsites.
   ContT $ \action -> action () `finally` shutdownSession
   sessionRestartTQueue <- runShakeThread recorder mide
-  sessionLoaderTQueue <- withWorkerQueueSimple (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug) "SessionLoaderTQueue"
-  sessionDiagTQueue <- withWorkerQueueSimple (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug) "SessionDiagTQueue"
+  sessionLoaderTQueue <- withWorkerQueueSimple (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) "SessionLoaderTQueue"
+  sessionDiagTQueue <- withWorkerQueueSimple (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) "SessionDiagTQueue"
   liftIO $ f hiedb (ThreadQueue threadQueue sessionRestartTQueue sessionLoaderTQueue sessionDiagTQueue)
 
 -- | Runs the action until it ends or until the given MVar is put.

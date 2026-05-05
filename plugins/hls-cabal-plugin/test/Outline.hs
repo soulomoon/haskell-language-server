@@ -11,7 +11,7 @@ import           Utils
 
 testSymbols :: (T.HasCallStack) => T.TestName -> FilePath -> [DocumentSymbol] -> T.TestTree
 testSymbols testName path expectedSymbols =
-  runCabalTestCaseSession testName "outline-cabal" $ \_ -> do
+  runCabalTestCaseSession testName "outline-cabal" $ do
     docId <- T.openDoc path "cabal"
     symbols <- T.getDocumentSymbols docId
     T.liftIO $ symbols T.@?= Right expectedSymbols

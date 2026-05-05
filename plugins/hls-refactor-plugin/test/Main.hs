@@ -4048,13 +4048,6 @@ runWithExtraFiles prefix s =
   let rootPath = "plugins/hls-refactor-plugin/test/data" </> prefix
   in runInDir (VirtualFileTree [copyDir "./"] rootPath) s
 
--- copyTestDataFiles :: HasCallStack => FilePath -> FilePath -> IO ()
--- copyTestDataFiles dir prefix = do
---   -- Copy all the test data files to the temporary workspace
---   testDataFiles <- getDirectoryFilesIO ("plugins/hls-refactor-plugin/test/data" </> prefix) ["//*"]
---   for_ testDataFiles $ \f -> do
---     createDirectoryIfMissing True $ dir </> takeDirectory f
---     copyFile ("plugins/hls-refactor-plugin/test/data" </> prefix </> f) (dir </> f)
 
 run :: Session a -> IO a
 run s = run' (const s)

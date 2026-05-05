@@ -33,6 +33,8 @@ import           Control.Concurrent.STM
 import           Control.Exception.Safe   (SomeException, finally, throw, try)
 import           Control.Monad.Cont       (ContT (ContT))
 import qualified Data.Text                as T
+import           Ide.Logger               (Priority (Debug), Recorder,
+                                           WithPriority, logWith)
 import           Prettyprinter
 
 data LogWorkerThread
@@ -68,21 +70,19 @@ newTaskQueueIO = TaskQueue <$> newTQueueIO <*> newTVarIO 0
 
 data ExitOrTask t = Exit | Task t
 
-type Logger = LogWorkerThread -> IO ()
-
 -- | 'withWorkerQueue' creates a new 'TQueue', and launches a worker
 -- thread which polls the queue for requests and runs the given worker
 -- function on them.
-withWorkerQueueSimple :: Logger -> T.Text -> ContT () IO (TaskQueue (IO ()))
-withWorkerQueueSimple log title = withWorkerQueue log title id
+withWorkerQueueSimple :: Recorder (WithPriority LogWorkerThread) -> T.Text -> ContT () IO (TaskQueue (IO ()))
+withWorkerQueueSimple recorder title = withWorkerQueue recorder title id
 
-withWorkerQueue :: Logger -> T.Text -> (t -> IO ()) -> ContT () IO (TaskQueue t)
+withWorkerQueue :: Recorder (WithPriority LogWorkerThread) -> T.Text -> (t -> IO ()) -> ContT () IO (TaskQueue t)
 withWorkerQueue = withWorkersQueue 1
 
-withWorkersQueue :: Int -> Logger -> T.Text -> (t -> IO ()) -> ContT () IO (TaskQueue t)
-withWorkersQueue n log title workerAction = ContT $ \mainAction -> do
+withWorkersQueue :: Int -> Recorder (WithPriority LogWorkerThread) -> T.Text -> (t -> IO ()) -> ContT () IO (TaskQueue t)
+withWorkersQueue n recorder title workerAction = ContT $ \mainAction -> do
   tid <- myThreadId
-  log (LogMainThreadId title tid)
+  logWith recorder Debug (LogMainThreadId title tid)
   q <- newTaskQueueIO
   -- Use a TMVar as a stop flag to coordinate graceful shutdown.
   -- The worker thread checks this flag before dequeuing each job; if set, it exits immediately,
@@ -97,8 +97,8 @@ withWorkersQueue n log title workerAction = ContT $ \mainAction -> do
     -- if we want to debug the exact location the worker swallows an async exception, we can
     -- temporarily comment out the `finally` clause.
         `finally` atomically (putTMVar b ())
-    log (LogThreadEnding title)
-  log (LogThreadEnded title)
+    logWith recorder Debug (LogThreadEnding title)
+  logWith recorder Debug (LogThreadEnded title)
   where
     writerThread q@(TaskQueue _ c) b = do
       task <- atomically $ do
@@ -111,9 +111,9 @@ withWorkersQueue n log title workerAction = ContT $ \mainAction -> do
       case task of
         Exit -> return ()
         Task t -> do
-          log $ LogSingleWorkStarting title
+          logWith recorder Debug $ LogSingleWorkStarting title
           workerAction t
-          log $ LogSingleWorkEnded title
+          logWith recorder Debug $ LogSingleWorkEnded title
           decreaseCounter c
           writerThread q b
 
