@@ -383,7 +383,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
           let dir = argsProjectRoot
           dbLoc <- getHieDbLoc dir
           ideMVar <- newEmptyMVar
-          runWithWorkerThreads (cmapWithPrio LogLanguageServer recorder) ideMVar dbLoc $ \hiedb threadQueue -> do
+          runWithWorkerThreads (cmapWithPrio LogLanguageServer recorder) ideMVar dbLoc mempty $ \hiedb threadQueue -> do
             -- GHC produces messages with UTF8 in them, so make sure the terminal doesn't error
             hSetEncoding stdout utf8
             hSetEncoding stderr utf8
@@ -443,7 +443,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
           let root = argsProjectRoot
           dbLoc <- getHieDbLoc root
           ideMVar <- newEmptyMVar
-          runWithWorkerThreads (cmapWithPrio LogLanguageServer recorder) ideMVar dbLoc $ \hiedb threadQueue -> do
+          runWithWorkerThreads (cmapWithPrio LogLanguageServer recorder) ideMVar dbLoc mempty $ \hiedb threadQueue -> do
             sessionLoader <- loadSessionWithOptions (cmapWithPrio LogSession recorder) argsSessionLoadingOptions "." (tLoaderQueue threadQueue)
             let def_options = argsIdeOptions argsDefaultHlsConfig sessionLoader
                 ideOptions = def_options

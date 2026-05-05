@@ -101,7 +101,6 @@ import           Development.IDE.Core.Compile
 import           Development.IDE.Core.FileExists              hiding (Log,
                                                                LogShake)
 import           Development.IDE.Core.FileStore               (getFileContents,
-                                                               getFileModTimeContents,
                                                                getModTime)
 import           Development.IDE.Core.IdeConfiguration
 import           Development.IDE.Core.OfInterest              hiding (Log,
@@ -322,7 +321,7 @@ getLocatedImportsRule :: Recorder (WithPriority Log) -> Rules ()
 getLocatedImportsRule recorder =
     define (cmapWithPrio LogShake recorder) $ \GetLocatedImports file -> do
         ModSummaryResult{msrModSummary = ms} <- use_ GetModSummaryWithoutTimestamps file
-        (KnownTargets targets targetsMap) <- useNoFile_ GetKnownTargets
+        (KnownTargets targets) <- useNoFile_ GetKnownTargets
 #if MIN_VERSION_ghc(9,13,0)
         let imports = [(False, lvl, mbPkgName, modName) | (lvl, mbPkgName, modName) <- ms_textual_imps ms]
                    ++ [(True, NormalLevel, NoPkgQual, noLoc modName) | L _ modName <- ms_srcimps ms]
@@ -335,14 +334,13 @@ getLocatedImportsRule recorder =
         let dflags = hsc_dflags env
         opt <- getIdeOptions
         let getTargetFor modName nfp
-                | Just (TargetFile nfp') <- HM.lookup (TargetFile nfp) targetsMap = do
+                | Just (TargetFile nfp') <- HM.lookupKey (TargetFile nfp) targets = do
                     -- reuse the existing NormalizedFilePath in order to maximize sharing
                     itExists <- getFileExists nfp'
                     return $ if itExists then Just nfp' else Nothing
                 | Just tt <- HM.lookup (TargetModule modName) targets = do
                     -- reuse the existing NormalizedFilePath in order to maximize sharing
-                    let ttmap = HM.mapWithKey const (HashSet.toMap tt)
-                        nfp' = HM.lookupDefault nfp nfp ttmap
+                    let nfp' = fromMaybe nfp $ HashSet.lookupElement nfp tt
                     itExists <- getFileExists nfp'
                     return $ if itExists then Just nfp' else Nothing
                 | otherwise = do
@@ -796,10 +794,17 @@ ghcSessionDepsDefinition fullModSummary GhcSessionDepsConfig{..} hscEnvEq file =
                 env = msrHscEnv msr
             depSessions <- map hscEnv <$> uses_ (GhcSessionDeps_ fullModSummary) deps
             ifaces <- uses_ GetModIface deps
-            let inLoadOrder = map (\HiFileResult{..} -> HomeModInfo hirModIface hirModDetails emptyHomeModInfoLinkable) ifaces
+            -- Load .hs-boot before .hs: the HPT is keyed by module name, and
+            -- GHC's addHomeModInfoToHpt overwrites, so the non-boot must be last.
+            let inLoadOrder = sortOn (not . isBootHmi)
+                  $ map (\HiFileResult{..} -> HomeModInfo hirModIface hirModDetails emptyHomeModInfoLinkable) ifaces
+                isBootHmi hmi = case mi_hsc_src (hm_iface hmi) of
+                  HsBootFile -> True
+                  _          -> False
+            de <- useNoFile_ GetModuleGraph
             mg <- do
               if fullModuleGraph
-              then depModuleGraph <$> useNoFile_ GetModuleGraph
+              then return $ depModuleGraph de
               else do
                 let mgs = map hsc_mod_graph depSessions
                 -- On GHC 9.4+, the module graph contains not only ModSummary's but each `ModuleNode` in the graph
@@ -818,7 +823,6 @@ ghcSessionDepsDefinition fullModSummary GhcSessionDepsConfig{..} hscEnvEq file =
 #endif
                 liftIO $ evaluate $ liftRnf rwhnf module_graph_nodes
                 return $ mkModuleGraph module_graph_nodes
-            de <- useNoFile_ GetModuleGraph
             session' <- liftIO $ mergeEnvs env mg de ms inLoadOrder depSessions
 
             -- Here we avoid a call to to `newHscEnvEqWithImportPaths`, which creates a new
@@ -925,10 +929,10 @@ getModSummaryRule displayTHWarning recorder = do
         let session' = hscEnv sessionEq
         modify_dflags <- getModifyDynFlags dynFlagsModifyGlobal
         let session = setNonHomeFCHook $ hscSetFlags (modify_dflags $ hsc_dflags session') session' -- TODO wz1000
-        (modTime, mFileContent) <- getFileModTimeContents f
+        mFileContent <- getFileContents f
         let fp = fromNormalizedFilePath f
         modS <- liftIO $ runExceptT $
-                getModSummaryFromImports session (hscOptionHash sessionEq) fp modTime (textToStringBuffer . Rope.toText <$> mFileContent)
+                getModSummaryFromImports session (hscOptionHash sessionEq) fp (textToStringBuffer . Rope.toText <$> mFileContent)
         case modS of
             Right res -> do
                 -- Check for Template Haskell

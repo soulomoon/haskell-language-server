@@ -224,7 +224,7 @@ data SessionLoadingOptions = SessionLoadingOptions
   -- | Given the project name and a set of command line flags,
   --   return the path for storing generated GHC artifacts,
   --   or 'Nothing' to respect the cradle setting
-  , getCacheDirs           :: String -> String -> [String] -> IO CacheDirs
+  , getCacheDirs           :: String -> Maybe B.ByteString -> [String] -> IO CacheDirs
   -- | Return the GHC lib dir to use for the 'unsafeGlobalDynFlags'
   , getInitialGhcLibDir    :: Recorder (WithPriority Log) -> FilePath -> IO (Maybe LibDir)
   }
@@ -903,7 +903,7 @@ packageSetup recorder sessionState newEmptyHscEnv (hieYaml, cfp, opts) = do
   -- information about other components loaded into the HscEnv
   -- (unitId, DynFlag, Targets)
   liftIO $ modifyVar (hscEnvs sessionState) $
-    addComponentInfo (cmapWithPrio LogSessionGhc recorder) (getCacheDirs rootDir) dep_info newTargetDfs (hieYaml, cfp, opts)
+    addComponentInfo (cmapWithPrio LogSessionGhc recorder) getCacheDirs dep_info newTargetDfs (hieYaml, cfp, opts)
 
 addErrorTargetIfUnknown :: Foldable t => t [TargetDetails] -> Maybe FilePath -> NormalizedFilePath -> IO ([TargetDetails], HashMap NormalizedFilePath (IdeResult HscEnvEq, DependencyInfo))
 addErrorTargetIfUnknown all_target_details hieYaml cfp = do

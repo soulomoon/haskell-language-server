@@ -42,7 +42,8 @@ import           Control.Concurrent.Extra              (newBarrier,
                                                         waitBarrier)
 import           Control.Exception                     (throw)
 import           Control.Monad.IO.Unlift               (MonadUnliftIO)
-import           Control.Monad.Trans.Cont              (ContT, evalContT)
+import           Control.Monad.Trans.Cont              (ContT (..), evalContT)
+import           Data.Foldable                         (traverse_)
 import           Development.IDE.Core.IdeConfiguration
 import           Development.IDE.Core.Service          (shutdown)
 import           Development.IDE.Core.Shake            hiding (Log)
@@ -59,6 +60,7 @@ import           Language.LSP.Server                   (LanguageContextEnv,
                                                         type (<~>))
 import           System.Time.Extra                     (Seconds)
 import           System.Timeout                        (timeout)
+
 data Log
   = LogRegisteringIdeConfig !IdeConfiguration
   | LogReactorThreadException !SomeException
@@ -304,9 +306,8 @@ handleInit initParams env (TRequestMessage _ _ m params) = otTracedHandler "Init
     ideMVar <- newEmptyMVar
 
     let
-      handleServerExceptionOrShutDown me = do
+      loggedTeardown me = do
         -- shutdown shake
-        tryReadMVar ideMVar >>= mapM_ shutdown
         case me of
           Left e -> do
             lifetimeConfirm ("due to exception in reactor thread: " <> T.pack (displayException e))
@@ -340,20 +341,24 @@ handleInit initParams env (TRequestMessage _ _ m params) = otTracedHandler "Init
                 $ \(e :: SomeException) -> do
                     exceptionInHandler e
                     k $ TResponseError (InR ErrorCodes_InternalError) (T.pack $ show e) Nothing
-    _ <- flip forkFinally handleServerExceptionOrShutDown $ do
-            runWithWorkerThreads recorder ideMVar dbLoc $ \withHieDb' threadQueue' ->
-                do
-                ide <- ctxGetIdeState initParams env root withHieDb' threadQueue'
-                putMVar ideMVar ide
-                -- We might be blocked indefinitly at initialization if reactorStop is signaled
-                -- before we putMVar.
-                untilReactorStopSignal $ forever $ do
-                    msg <- readChan $ ctxClientMsgChan initParams
-                    -- We dispatch notifications synchronously and requests asynchronously
-                    -- This is to ensure that all file edits and config changes are applied before a request is handled
-                    case msg of
-                        ReactorNotification act -> handle exceptionInHandler act
-                        ReactorRequest _id act k -> void $ async $ checkCancelled _id act k
+    _ <- flip forkFinally loggedTeardown $ do
+      -- Need to be careful about when the shutdown occurs, it needs to be shut
+      -- down after the session loader and restarting threads, and before the
+      -- hiedb connections are closed.
+      let shutdownSession = tryReadMVar ideMVar >>= traverse_ shutdown
+      runWithWorkerThreads recorder ideMVar dbLoc shutdownSession $ \withHieDb' threadQueue' -> do
+        ide <- ctxGetIdeState initParams env root withHieDb' threadQueue'
+        putMVar ideMVar ide
+        -- Keep this after putMVar ideMVar ide; otherwise shutdown during
+        -- initialization could leave handleInit blocked indefinitely on readMVar.
+        untilReactorStopSignal $ forever $ do
+          msg <- readChan $ ctxClientMsgChan initParams
+          -- We dispatch notifications synchronously and requests asynchronously
+          -- This is to ensure that all file edits and config changes are applied before a request is handled
+          case msg of
+            ReactorNotification act  -> handle exceptionInHandler act
+            ReactorRequest _id act k -> void $ async $ checkCancelled _id act k
+      logWith recorder Info $ LogReactorThreadStopped 0
 
     ide <- readMVar ideMVar
     registerIdeConfiguration (shakeExtras ide) initConfig
@@ -369,13 +374,17 @@ runShakeThread recorder mide =
 -- | runWithWorkerThreads
 -- create several threads to run the session, db and session loader
 -- see Note [Serializing runs in separate thread]
-runWithWorkerThreads :: Recorder (WithPriority Log) -> MVar IdeState -> FilePath -> (WithHieDb -> ThreadQueue -> IO ()) -> IO ()
-runWithWorkerThreads recorder mide  dbLoc f = evalContT $ do
-            (WithHieDbShield hiedb, threadQueue) <- runWithDb (cmapWithPrio LogSession recorder) dbLoc
-            sessionRestartTQueue <- runShakeThread recorder mide
-            sessionLoaderTQueue <- withWorkerQueueSimple (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug) "SessionLoaderTQueue"
-            sessionDiagTQueue <- withWorkerQueueSimple (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug) "sessionDiagTQueuet "
-            liftIO $ f hiedb (ThreadQueue threadQueue sessionRestartTQueue sessionLoaderTQueue sessionDiagTQueue)
+runWithWorkerThreads :: Recorder (WithPriority Log) -> MVar IdeState -> FilePath -> IO () -> (WithHieDb -> ThreadQueue -> IO ()) -> IO ()
+runWithWorkerThreads recorder mide dbLoc shutdownSession f = evalContT $ do
+  (WithHieDbShield hiedb, threadQueue) <- runWithDb (cmapWithPrio LogSession recorder) dbLoc
+  -- The shake session needs to be shut down prior to the hiedb connections
+  -- being cleaned up, otherwise shake could be referencing dead connections.
+  -- This is passed in via the callsites.
+  ContT $ \action -> action () `finally` shutdownSession
+  sessionRestartTQueue <- runShakeThread recorder mide
+  sessionLoaderTQueue <- withWorkerQueueSimple (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug) "SessionLoaderTQueue"
+  sessionDiagTQueue <- withWorkerQueueSimple (logWith (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) Debug) "SessionDiagTQueue"
+  liftIO $ f hiedb (ThreadQueue threadQueue sessionRestartTQueue sessionLoaderTQueue sessionDiagTQueue)
 
 -- | Runs the action until it ends or until the given MVar is put.
 --   It is important, that the thread that puts the 'MVar' is not dropped before it puts the 'MVar' i.e. it should
