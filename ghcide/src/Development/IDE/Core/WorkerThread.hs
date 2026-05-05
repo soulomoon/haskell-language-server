@@ -19,10 +19,7 @@ module Development.IDE.Core.WorkerThread
     isEmptyTaskQueue,
     counTaskQueue,
     submitWork,
-    eitherWorker,
-    Worker,
     tryReadTaskQueue,
-    withWorkerQueueSimpleRight,
     submitWorkAtHead,
     awaitRunInThread,
     withAsyncs,
@@ -35,7 +32,6 @@ import           Control.Concurrent.Async (withAsync)
 import           Control.Concurrent.STM
 import           Control.Exception.Safe   (SomeException, finally, throw, try)
 import           Control.Monad.Cont       (ContT (ContT))
-import           Data.Dynamic             (Dynamic)
 import qualified Data.Text                as T
 import           Prettyprinter
 
@@ -80,9 +76,6 @@ type Logger = LogWorkerThread -> IO ()
 withWorkerQueueSimple :: Logger -> T.Text -> ContT () IO (TaskQueue (IO ()))
 withWorkerQueueSimple log title = withWorkerQueue log title id
 
-withWorkerQueueSimpleRight :: Logger -> T.Text -> ContT () IO (TaskQueue (Either Dynamic (IO ())))
-withWorkerQueueSimpleRight log title = withWorkerQueue log title $ eitherWorker (const $ return ()) id
-
 withWorkerQueue :: Logger -> T.Text -> (t -> IO ()) -> ContT () IO (TaskQueue t)
 withWorkerQueue = withWorkersQueue 1
 
@@ -104,8 +97,8 @@ withWorkersQueue n log title workerAction = ContT $ \mainAction -> do
     -- if we want to debug the exact location the worker swallows an async exception, we can
     -- temporarily comment out the `finally` clause.
         `finally` atomically (putTMVar b ())
-    logWith recorder Debug (LogThreadEnding title)
-  logWith recorder Debug (LogThreadEnded title)
+    log (LogThreadEnding title)
+  log (LogThreadEnded title)
   where
     writerThread q@(TaskQueue _ c) b = do
       task <- atomically $ do
@@ -133,21 +126,14 @@ withAsyncs ios mainAction = go ios
 -- | 'awaitRunInThread' queues up an 'IO' action to be run by a worker thread,
 -- and then blocks until the result is computed. If the action throws an
 -- non-async exception, it is rethrown in the calling thread.
-awaitRunInThread :: TaskQueue (Either Dynamic (IO ())) -> IO result -> IO result
+awaitRunInThread :: TaskQueue (IO ()) -> IO result -> IO result
 awaitRunInThread (TaskQueue q _) act = do
   barrier <- newEmptyTMVarIO
-  atomically $ writeTQueue q (Right $ try act >>= atomically . putTMVar barrier)
+  atomically $ writeTQueue q (try act >>= atomically . putTMVar barrier)
   resultOrException <- atomically $ takeTMVar barrier
   case resultOrException of
     Left e  -> throw (e :: SomeException)
     Right r -> return r
-
-type Worker arg = arg -> IO ()
-
-eitherWorker :: Worker a -> Worker b -> Worker (Either a b)
-eitherWorker w1 w2 = \case
-  Left a  -> w1 a
-  Right b -> w2 b
 
 incraseCounter :: TVar Int -> STM ()
 incraseCounter counter = modifyTVar' counter (+1)

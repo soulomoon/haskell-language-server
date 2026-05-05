@@ -77,7 +77,7 @@ module Development.IDE.Core.Shake(
     Log(..),
     VFSModified(..), getClientConfigAction,
     ThreadQueue(..),
-    runWithSignal, runRestartTask, runRestartTaskDyn, dynShakeRestart, waitUntilDiagnosticsPublished, runWithSignalAction, waitUntilDiagnosticsPublishedAction,
+    runWithSignal, runRestartTask, waitUntilDiagnosticsPublished, runWithSignalAction, waitUntilDiagnosticsPublishedAction,
     askShake
     ) where
 
@@ -331,7 +331,7 @@ data HieDbWriter
 -- The inner `(HieDb -> IO ()) -> IO ()` wraps `HieDb -> IO ()`
 -- with (currently) retry functionality
 type IndexQueue = TaskQueue (((HieDb -> IO ()) -> IO ()) -> IO ())
-type DBQue = TaskQueue (Either Dynamic (IO ()))
+type DBQue = TaskQueue ShakeRestartArgs
 type ShakeQueue = DBQue
 type ShakeControlQueue = ShakeQueue
 type LoaderQueue = TaskQueue (IO ())
@@ -962,19 +962,10 @@ shakeRestart version rts vfs reason ioActionBetweenShakeSession = do
     waitMVar <- newEmptyMVar
     -- submit at the head of the queue,
     -- prefer restart request over any pending actions
-    void $ submitWork rts $ Left $
-        toDyn $ ShakeRestartArgs vfs reason ioActionBetweenShakeSession 1 [waitMVar] v
+    void $ submitWork rts $
+        ShakeRestartArgs vfs reason ioActionBetweenShakeSession 1 [waitMVar] v
     -- Wait until the restart is done
     takeMVar waitMVar
-
-
-runRestartTaskDyn :: Recorder (WithPriority Log) -> MVar IdeState -> Dynamic -> IO ()
-runRestartTaskDyn recorder ideStateVar dy = runRestartTask recorder ideStateVar (dynShakeRestart dy)
-
-dynShakeRestart :: Dynamic -> ShakeRestartArgs
-dynShakeRestart dy = case fromDynamic dy of
-    Just shakeRestartArgs -> shakeRestartArgs
-    Nothing -> error "Internal error, dynShakeRestart, got invalid dynamic type"
 
 runRestartTask :: Recorder (WithPriority Log) -> MVar IdeState -> ShakeRestartArgs -> IO ()
 runRestartTask recorder ideStateVar shakeRestartArgs = do
