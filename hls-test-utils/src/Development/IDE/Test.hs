@@ -183,48 +183,9 @@ waitForExpectedDiagnosticsFromDocsOne x = waitForExpectedDiagnosticsFromDocs Tru
 
 waitForExpectedDiagnosticsFromDocs :: (HasCallStack) => Bool -> [(TextDocumentIdentifier, [ExpectedDiagnostic])] -> Session ()
 waitForExpectedDiagnosticsFromDocs waitFirst expected = do
-  go maxAttempts waitFirst False
-  where
-    docs = map fst expected
-    maxAttempts = 200 :: Int
-
-    go attempts shouldWaitFirst loggedWarning = do
-      docDiags <- waitForActionWithDiagnosticsFromDocs shouldWaitFirst docs
-      if and (zipWith diagnosticsMatch expected docDiags)
-        then
-          when loggedWarning $
-            liftIO $
-              putStrLn $
-                "[waitForExpectedDiagnosticsFromDocs] expected diagnostics matched after "
-                  <> show (maxAttempts - attempts)
-                  <> " retry attempts"
-        else
-          if attempts <= 0
-            then forM_ (zip expected docDiags) $ \((doc, exDiags), diags) ->
-              checkDiagnosticsForDoc doc exDiags diags
-            else do
-              unless loggedWarning $
-                liftIO $ putStrLn $ diagnosticWaitWarning expected docDiags
-              liftIO $ sleep 0.1
-              go (attempts - 1) False True
-
-    diagnosticsMatch (_, exDiags) diags =
-      length exDiags == length diags
-        && all (isNothing . requireDiagnostic diags . expectedDiagnosticWithNothing) exDiags
-
-    diagnosticWaitWarning expectedDiags actualDiags =
-      unlines $
-        "[waitForExpectedDiagnosticsFromDocs][warning] first waitForActionWithDiagnosticsFromDocs result did not match expected diagnostics; retrying."
-          : zipWith renderSnapshot expectedDiags actualDiags
-
-    renderSnapshot (TextDocumentIdentifier{_uri}, exDiags) actualDiags =
-      "  uri: "
-        <> show _uri
-        <> "\n    expected: "
-        <> show exDiags
-        <> "\n    actual: "
-        <> show actualDiags
-
+  docDiags <- waitForActionWithDiagnosticsFromDocs waitFirst (map fst expected)
+  forM_ (zip expected docDiags) $ \((doc, exDiags), diags) -> do
+    checkDiagnosticsForDoc doc exDiags diags
 
 expectCurrentDiagnostics :: HasCallStack => TextDocumentIdentifier -> [ExpectedDiagnostic] -> Session ()
 expectCurrentDiagnostics doc expected = do
