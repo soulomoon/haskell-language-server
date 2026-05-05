@@ -54,12 +54,14 @@ import           Ide.PluginUtils                    (toAbsolute)
 
 import           GHC.Driver.Env                     (hsc_all_home_unit_ids)
 import           GHC.Driver.Errors.Types
-#if MIN_VERSION_ghc(9,13,0)
-import           GHC.Driver.Make                    (checkHomeUnitsClosed)
-#endif
 import           GHC.Types.Error                    (errMsgDiagnostic,
                                                      singleMessage)
 import           GHC.Unit.State
+
+
+#if MIN_VERSION_ghc(9,13,0)
+import           GHC.Driver.Make                    (checkHomeUnitsClosed)
+#endif
 
 data Log
   = LogInterfaceFilesCacheDir !FilePath
