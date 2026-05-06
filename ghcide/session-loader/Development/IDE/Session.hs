@@ -764,11 +764,11 @@ getOptionsLoop :: Recorder (WithPriority Log) -> SessionShake -> SessionState ->
 getOptionsLoop recorder sessionShake sessionState knownTargetsVar = forever $ do
   pendingBarrier <- asks sessionPendingBarrier
   IdeTesting isTestMode <- asks (optTesting . sessionIdeOptions)
-  when isTestMode $
-    liftIO $ waitForSessionLoaderPendingBarrier pendingBarrier sessionState
 
   -- Get the next file to load
   file <- liftIO $ atomically $ S.readQueue (pendingFiles sessionState)
+  when isTestMode $
+    liftIO $ waitForSessionLoaderPendingBarrier pendingBarrier sessionState
   logWith recorder Debug (LogGetOptionsLoop file)
 
   hieLoc <- findHieYamlForTarget (filesMap sessionState) file
