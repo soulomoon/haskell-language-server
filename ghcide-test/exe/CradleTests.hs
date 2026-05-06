@@ -36,8 +36,7 @@ import           Language.LSP.Protocol.Types     hiding
 import           Language.LSP.Test
 import           System.FilePath
 import           Test.Hls                        (TestConfig (..), def,
-                                                  runSessionWithTestConfig,
-                                                  waitForBuildQueue)
+                                                  runSessionWithTestConfig)
 import           Test.Hls.FileSystem
 import           Test.Hls.Util                   (EnvSpec (..), OS (..),
                                                   ignoreInEnv)
@@ -190,7 +189,6 @@ runRegressionMultiOpenAThenB dir = do
         bPath = dir </> "b/B.hs"
     adoc <- openDoc aPath "haskell"
     bdoc <- openDoc bPath "haskell"
-    _ <- waitForBuildQueue
     [aRes, bRes] <- waitForTypeChecksBatched [adoc, bdoc]
     liftIO $ assertBool "A should typecheck" (ideResultSuccess aRes)
     liftIO $ assertBool "B should typecheck" (ideResultSuccess bRes)
@@ -205,7 +203,6 @@ runRegressionMultiOpenBThenA dir = do
         bPath = dir </> "b/B.hs"
     bdoc <- openDoc bPath "haskell"
     adoc <- openDoc aPath "haskell"
-    _ <- waitForBuildQueue
     [bRes, aRes] <- waitForTypeChecksBatched [bdoc, adoc]
     liftIO $ assertBool "B should typecheck" (ideResultSuccess bRes)
     liftIO $ assertBool "A should typecheck" (ideResultSuccess aRes)
@@ -223,7 +220,6 @@ runRegressionMultiOpenBThenAThenC dir = do
     bdoc <- openDoc bPath "haskell"
     adoc <- openDoc aPath "haskell"
     cdoc <- openDoc cPath "haskell"
-    _ <- waitForBuildQueue
     [bRes, aRes, cRes] <- waitForTypeChecksBatched [bdoc, adoc, cdoc]
     liftIO $ assertBool "B should typecheck" (ideResultSuccess bRes)
     liftIO $ assertBool "A should typecheck" (ideResultSuccess aRes)
@@ -327,7 +323,6 @@ regressionBatchFailureIsolatesBrokenFile dir = do
       bPath = dir </> "b/B.hs"
   adoc <- openDoc aPath "haskell"
   bdoc <- openDoc bPath "haskell"
-  _ <- waitForBuildQueue
   [aRes, bRes] <- waitForTypeChecksBatched [adoc, bdoc]
   liftIO $ assertBool "A should typecheck when B cradle mapping is broken" (ideResultSuccess aRes)
   liftIO $ assertBool "B should fail with a broken cradle mapping" (not $ ideResultSuccess bRes)
