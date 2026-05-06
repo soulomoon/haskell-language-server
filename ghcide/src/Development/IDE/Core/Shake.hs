@@ -427,12 +427,12 @@ waitUntilDiagnosticsPublished = do
     res <- optGhcSession opts
     return $ atomicallyNamed "waitUntilDiagnosticsPublished" $ do
         pdc <- pendingFilesCount res
-        check (pdc == 0)
-        isEmpty <- isEmptyTaskQueue diagQueue
-        isEmpty1 <- isEmptyTaskQueue shakeControlQueue
+        debouncerEmpty <- debouncerIsEmpty debouncer
+        diagQueueEmpty <- isEmptyTaskQueue diagQueue
+        shakeControlQueueEmpty <- isEmptyTaskQueue shakeControlQueue
         -- actionQueue should also be empty, otherwise there might be more diagnostics to publish
-        isEmpty2 <- isActionQueueEmpty actionQueue
-        unless (isEmpty && isEmpty1 && isEmpty2) retry
+        actionQueueEmpty <- isActionQueueEmpty actionQueue
+        check (pdc == 0 && shakeControlQueueEmpty && actionQueueEmpty && debouncerEmpty && diagQueueEmpty)
 
 waitUntilDiagnosticsPublishedAction :: Action ()
 waitUntilDiagnosticsPublishedAction = do
@@ -1515,19 +1515,19 @@ updateFileDiagnostics recorder fp ver k ShakeExtras{diagnostics, hiddenDiagnosti
         _ <- liftIO $ atomicallyNamed "diagnostics - hidden" $ update (addTagUnsafe "hidden ") currentHidden hiddenDiagnostics
         let uri' = filePathToUri' fp
         let delay = if null newDiags then 0.1 else 0
-        -- registerEvent debouncer delay uri' $ withTrace ("report diagnostics " <> fromString (fromNormalizedFilePath fp)) $ \tag -> do
-        join $ mask_ $ do
-                lastPublish <- atomicallyNamed "diagnostics - publish" $ STM.focus (Focus.lookupWithDefault [] <* Focus.insert newDiags) uri' publishedDiagnostics
-                let action = when (lastPublish /= newDiags) $ case lspEnv of
-                        -- case lspEnv of
-                        Nothing -> -- Print an LSP event.
-                            logWith recorder Info $ LogDiagsDiffButNoLspEnv newDiags
-                            -- return ()
-                        Just env -> LSP.runLspT env $ do
-                            logWith recorder Info $ LogDiagsPublishLog k lastPublish newDiags
-                            LSP.sendNotification SMethod_TextDocumentPublishDiagnostics $
-                                LSP.PublishDiagnosticsParams (fromNormalizedUri uri') (fmap fromIntegral ver) (map fdLspDiagnostic newDiags)
-                return action
+        registerEvent debouncer delay uri' $ withTrace ("report diagnostics " <> fromString (fromNormalizedFilePath fp)) $ \tag -> do
+          join $ mask_ $ do
+                  lastPublish <- atomicallyNamed "diagnostics - publish" $ STM.focus (Focus.lookupWithDefault [] <* Focus.insert newDiags) uri' publishedDiagnostics
+                  let action = when (lastPublish /= newDiags) $ case lspEnv of
+                          -- case lspEnv of
+                          Nothing -> -- Print an LSP event.
+                              logWith recorder Info $ LogDiagsDiffButNoLspEnv newDiags
+                              -- return ()
+                          Just env -> LSP.runLspT env $ do
+                              logWith recorder Info $ LogDiagsPublishLog k lastPublish newDiags
+                              LSP.sendNotification SMethod_TextDocumentPublishDiagnostics $
+                                  LSP.PublishDiagnosticsParams (fromNormalizedUri uri') (fmap fromIntegral ver) (map fdLspDiagnostic newDiags)
+                  return action
     where
         diagsFromRule :: Diagnostic -> Diagnostic
         diagsFromRule c@Diagnostic{_range}

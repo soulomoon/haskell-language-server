@@ -77,8 +77,6 @@ tests = testGroup "diagnostics"
               , _text = "l"
               }
       changeDoc doc [change]
-      -- need to wait for new diagnostics to be published
-      void $ waitForDiagnosticsFrom doc
       waitForExpectedDiagnosticsFromFilePath
         [("Testing.hs", [(DiagnosticSeverity_Error, (0, 15), "Not in scope: 'lissing'", Just "GHC-76037")])]
 

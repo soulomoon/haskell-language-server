@@ -40,7 +40,6 @@ module Test.Hls.Util
     , inspectDiagnosticAny
     , waitForDiagnosticsFrom
     , waitForDiagnosticsFromSource
-    , waitForDiagnosticsFromSourceWithTimeout
     , waitForActionWithDiagnosticsFromDocs
     , waitForExpectedDiagnosticsFromDocs
     , flushMessages
@@ -368,18 +367,11 @@ expectDiagnosticsEmpty doc src = do
         liftIO $ assertFailure $ "Expected no diagnostics for " <> show (doc ^. L.uri) <>
             " got " <> show diags
 
--- -- | wait for @timeout@ seconds and report an assertion failure
--- -- if any diagnostic messages arrive in that period
--- expectNoMoreDiagnostics :: Seconds -> TextDocumentIdentifier -> String -> Test.Session ()
--- expectNoMoreDiagnostics timeout doc src = do
---     diags <- waitForDiagnosticsFromSourceWithTimeout timeout doc src
---     unless (null diags) $
---         liftIO $ assertFailure $
---             "Got unexpected diagnostics for " <> show (doc ^. L.uri) <>
---             " got " <> show diags
-
--- |wait for @timeout@ seconds and report an assertion failure
--- if any diagnostic messages arrive in that period
+-- | 'waitForExpectedDiagnosticsFromDocs' waits for diagnostics to be published for the given documents,
+-- and checks that they match the expected diagnostics. The expected diagnostics are specified as a list
+-- of pairs of 'TextDocumentIdentifier' and a list of 'ExpectedDiagnostic'.
+-- timeout is outdated and should be removed, as the function will until the system is idle,
+-- which is the correct behaviour for the tests.
 expectNoMoreDiagnostics :: HasCallStack => Seconds -> Test.Session ()
 expectNoMoreDiagnostics _timeout = do
     diags <- callTestPluginWithDiag WaitForDiagnosticPublished
@@ -593,19 +585,6 @@ callTestPlugin cmd = do
 callTestPluginWithDiag ::
     A.ToJSON a => a -> Test.Session [TNotificationMessage Method_TextDocumentPublishDiagnostics]
 callTestPluginWithDiag = callTestPluginWithSMethod SMethod_TextDocumentPublishDiagnostics
-
--- | wait for @timeout@ seconds and return diagnostics for the given @document and @source.
--- If timeout is 0 it will wait until the session timeout
-waitForDiagnosticsFromSourceWithTimeout :: Seconds -> TextDocumentIdentifier -> String -> Test.Session [Diagnostic]
-waitForDiagnosticsFromSourceWithTimeout timeout doc src = do
-    when (timeout > 0) $
-        -- Give any further diagnostic messages time to arrive.
-        liftIO $ sleep timeout
-        -- Send a dummy message to provoke a response from the server.
-        -- This guarantees that we have at least one message to
-        -- process, so message won't block or timeout.
-    diags <- concat <$> waitForActionWithDiagnosticsFromDocs [doc]
-    return $ filter (\d -> d ^. L.source == Just (T.pack src)) diags
 
 
 failIfSessionTimeout :: HasCallStack => IO a -> IO a

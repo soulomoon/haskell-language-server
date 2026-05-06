@@ -4,17 +4,21 @@
 module Development.IDE.Core.Debouncer
     ( Debouncer
     , registerEvent
+    , debouncerIsEmpty
     , newAsyncDebouncer
     , noopDebouncer
     ) where
 
 import           Control.Concurrent.Async
-import           Control.Concurrent.STM.Stats (atomically, atomicallyNamed)
+import           Control.Concurrent.STM.Stats (STM, TVar, atomically,
+                                               atomicallyNamed, modifyTVar',
+                                               newTVarIO, readTVar)
 import           Control.Exception
 import           Control.Monad                (join)
 import           Data.Foldable                (traverse_)
 import           Data.Hashable
 import qualified Focus
+import qualified ListT
 import qualified StmContainers.Map            as STM
 import           System.Time.Extra
 
@@ -27,11 +31,36 @@ import           System.Time.Extra
 --
 -- We abstract over the debouncer used so we an use a proper debouncer in the IDE but disable
 -- debouncing in the DAML CLI compiler.
-newtype Debouncer k = Debouncer { registerEvent :: Seconds -> k -> IO () -> IO () }
+data Debouncer k = Debouncer
+    { registerEvent         :: Seconds -> k -> IO () -> IO ()
+    , debouncerPendingCount :: IO Int
+    -- ^ Count the currently debounced events.
+    --
+    -- This includes events waiting for the debounce delay and events whose fire
+    -- action is currently running.
+    , debouncerIsEmpty      :: STM Bool
+    -- ^ Check whether the debouncer has no waiting or running events.
+    }
 
 -- | Debouncer used in the IDE that delays events as expected.
 newAsyncDebouncer :: (Eq k, Hashable k) => IO (Debouncer k)
-newAsyncDebouncer = Debouncer . asyncRegisterEvent <$> STM.newIO
+newAsyncDebouncer = do
+    pending <- STM.newIO
+    running <- newTVarIO 0
+    return Debouncer
+        { registerEvent =  \s k e -> asyncRegisterEvent pending s k
+                (bracket_
+                  (atomically $ modifyTVar' running (+ 1))
+                  (atomically $ modifyTVar' running (subtract 1)) e)
+        , debouncerPendingCount = atomically $ countDebouncerEvents pending running
+        , debouncerIsEmpty = fmap (== 0) $ countDebouncerEvents pending running
+        }
+
+countDebouncerEvents :: STM.Map k (Async ()) -> TVar Int -> STM Int
+countDebouncerEvents pending running = do
+    pendingCount <- length <$> ListT.toList (STM.listT pending)
+    runningCount <- readTVar running
+    return $ pendingCount + runningCount
 
 -- | Register an event that will fire after the given delay if no other event
 -- for the same key gets registered until then.
@@ -55,4 +84,8 @@ asyncRegisterEvent d delay k fire = mask_ $ do
 
 -- | Debouncer used in the DAML CLI compiler that emits events immediately.
 noopDebouncer :: Debouncer k
-noopDebouncer = Debouncer $ \_ _ a -> a
+noopDebouncer = Debouncer
+    { registerEvent = \_ _ a -> a
+    , debouncerPendingCount = return 0
+    , debouncerIsEmpty = return True
+    }

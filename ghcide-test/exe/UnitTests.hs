@@ -3,12 +3,14 @@ module UnitTests (tests) where
 
 import           Config                            (mkIdeTestFs)
 import           Control.Concurrent
+import           Control.Concurrent.STM            (atomically)
 import           Control.Monad.IO.Class            (liftIO)
 import           Data.IORef
 import           Data.IORef.Extra                  (atomicModifyIORef_)
 import           Data.List.Extra
 import           Data.String                       (IsString (fromString))
 import qualified Data.Text                         as T
+import           Development.IDE.Core.Debouncer
 import           Development.IDE.Core.FileStore    (getModTime)
 import qualified Development.IDE.Plugin.HLS.GhcIde as Ghcide
 import qualified Development.IDE.Types.Diagnostics as Diagnostics
@@ -51,6 +53,47 @@ tests = do
      , testCase "from empty path URI" $ do
          let uri = Uri "file://"
          uriToFilePath' uri @?= Just ""
+     , testCase "debouncer pending count tracks queued keys" $ do
+         debouncer <- newAsyncDebouncer
+         assertDebouncerEmpty debouncer True
+
+         registerEvent debouncer 60 ("a" :: String) (return ())
+         assertDebouncerEmpty debouncer False
+
+         registerEvent debouncer 60 ("b" :: String) (return ())
+
+         registerEvent debouncer 60 ("a" :: String) (return ())
+
+         registerEvent debouncer 0 ("a" :: String) (return ())
+         registerEvent debouncer 0 ("b" :: String) (return ())
+         assertDebouncerEmpty debouncer True
+     , testCase "debouncer counts a running fire" $ do
+         debouncer <- newAsyncDebouncer
+         fireStarted <- newEmptyMVar
+         releaseFire <- newEmptyMVar
+         fireDone <- newEmptyMVar
+
+         _ <- forkIO $ do
+             registerEvent debouncer 0 ("a" :: String) $ do
+                 putMVar fireStarted ()
+                 takeMVar releaseFire
+             putMVar fireDone ()
+
+         takeMVar fireStarted
+         assertDebouncerEmpty debouncer False
+
+         registerEvent debouncer 60 ("a" :: String) (return ())
+
+         putMVar releaseFire ()
+         takeMVar fireDone
+
+         registerEvent debouncer 0 ("a" :: String) (return ())
+         assertDebouncerEmpty debouncer True
+     , testCase "noop debouncer is always empty" $ do
+         fired <- newEmptyMVar
+         registerEvent noopDebouncer 60 ("a" :: String) $ putMVar fired ()
+         takeMVar fired
+         assertDebouncerEmpty noopDebouncer True
      , testCase "showDiagnostics prints ranges 1-based (like vscode)" $ do
          let diag = Diagnostics.FileDiagnostic "" Diagnostics.ShowDiag Diagnostic
                {  _codeDescription = Nothing
@@ -100,6 +143,11 @@ tests = do
      , Progress.tests
      , FuzzySearch.tests
      ]
+
+assertDebouncerEmpty :: Debouncer k -> Bool -> Assertion
+assertDebouncerEmpty debouncer expected = do
+    actual <- atomically $ debouncerIsEmpty debouncer
+    actual @?= expected
 
 findResolution_us :: Int -> IO Int
 findResolution_us delay_us | delay_us >= 1000000 = error "Unable to compute timestamp resolution"
