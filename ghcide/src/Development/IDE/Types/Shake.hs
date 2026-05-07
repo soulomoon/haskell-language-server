@@ -25,6 +25,7 @@ import           Data.Vector                          (Vector)
 import           Development.IDE.Core.PositionMapping
 import           Development.IDE.Core.RuleTypes       (FileVersion)
 import           Development.IDE.Graph                (Key, RuleResult, newKey,
+                                                       pattern DirectKey,
                                                        pattern Key)
 import qualified Development.IDE.Graph                as Shake
 import           Development.IDE.Types.Diagnostics
@@ -32,6 +33,7 @@ import           Development.IDE.Types.Location
 import           GHC.Generics
 import           HieDb.Types                          (HieDb)
 import qualified StmContainers.Map                    as STM
+import           System.FilePath                      (takeBaseName)
 import           Type.Reflection                      (SomeTypeRep (SomeTypeRep),
                                                        eqTypeRep, pattern App,
                                                        type (:~~:) (HRefl),
@@ -82,6 +84,7 @@ fromKey :: Typeable k => Key -> Maybe (k, NormalizedFilePath)
 fromKey (Key k)
   | Just (Q (k', f)) <- cast k = Just (k', f)
   | otherwise = Nothing
+fromKey (DirectKey _k) = Nothing
 
 -- | fromKeyType (Q (k,f)) = (typeOf k, f)
 fromKeyType :: Key -> Maybe (SomeTypeRep, NormalizedFilePath)
@@ -91,6 +94,7 @@ fromKeyType (Key k)
   , Q (_, f) <- k
   = Just (SomeTypeRep a, f)
   | otherwise = Nothing
+fromKeyType (DirectKey _k) = Nothing
 
 toNoFileKey :: (Show k, Typeable k, Eq k, Hashable k) => k -> Key
 toNoFileKey k = newKey $ Q (k, emptyFilePath)
@@ -99,7 +103,7 @@ newtype Q k = Q (k, NormalizedFilePath)
     deriving newtype (Eq, Hashable, NFData)
 
 instance Show k => Show (Q k) where
-    show (Q (k, file)) = show k ++ "; " ++ fromNormalizedFilePath file
+    show (Q (k, file)) = show k ++ "; " ++ takeBaseName (fromNormalizedFilePath file)
 
 -- | Invariant: the @v@ must be in normal form (fully evaluated).
 --   Otherwise we keep repeatedly 'rnf'ing values taken from the Shake database

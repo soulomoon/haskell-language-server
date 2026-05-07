@@ -8,7 +8,6 @@ import qualified Data.Text                                      as T
 import           Development.IDE.GHC.Compat.Core                (flagsForCompletion)
 import           Distribution.CabalSpecVersion                  (CabalSpecVersion (CabalSpecV2_2),
                                                                  showCabalSpecVersion)
-import           Distribution.Pretty                            (prettyShow)
 import           Ide.Plugin.Cabal.Completion.Completer.FilePath
 import           Ide.Plugin.Cabal.Completion.Completer.Module
 import           Ide.Plugin.Cabal.Completion.Completer.Paths
@@ -16,7 +15,7 @@ import           Ide.Plugin.Cabal.Completion.Completer.Simple
 import           Ide.Plugin.Cabal.Completion.Completer.Types    (Completer)
 import           Ide.Plugin.Cabal.Completion.Types
 import           Ide.Plugin.Cabal.LicenseSuggest                (licenseNames)
-import           Language.Haskell.Extension
+
 -- | Ad-hoc data type for modelling the available top-level stanzas.
 -- Not intended right now for anything else but to avoid string
 -- comparisons in 'stanzaKeywordMap' and 'libExecTestBenchCommons'.
@@ -53,7 +52,7 @@ cabalKeywords =
   Map.fromList
     [ ("name:", nameCompleter),
       ("version:", noopCompleter),
-      ("build-type:", constantCompleter ["Simple", "Custom", "Configure", "Make", "Hooks"]),
+      ("build-type:", constantCompleter ["Simple", "Custom", "Configure", "Make"]),
       ("license:", weightedConstantCompleter licenseNames weightedLicenseNames),
       ("license-file:", filePathCompleter),
       ("license-files:", filePathCompleter),
@@ -88,8 +87,7 @@ stanzaKeywordMap =
       ("common", libExecTestBenchCommons Library),
       ("common", libExecTestBenchCommons Common),
       ("flag", flagFields),
-      ("source-repository", sourceRepositoryFields),
-      ("custom-setup", customSetupFields)
+      ("source-repository", sourceRepositoryFields)
     ]
 
 libraryFields :: Map KeyWordName Completer
@@ -179,9 +177,9 @@ libExecTestBenchCommons st =
     [ ("import:", importCompleter),
       ("build-depends:", noopCompleter),
       ("hs-source-dirs:", directoryCompleter),
-      ("default-extensions:", constantCompleter $ map (T.pack . prettyShow) allExtensions),
-      ("other-extensions:", constantCompleter $ map (T.pack . prettyShow) allExtensions),
-      ("default-language:", defaultLanguageCompleter),
+      ("default-extensions:", noopCompleter),
+      ("other-extensions:", noopCompleter),
+      ("default-language:", constantCompleter ["GHC2021", "Haskell2010", "Haskell98"]),
       ("other-languages:", noopCompleter),
       ("build-tool-depends:", noopCompleter),
       ("buildable:", constantCompleter ["True", "False"]),
@@ -236,32 +234,6 @@ libExecTestBenchCommons st =
         -- parses the '.cabal' file s.t. that we have access to the 'hs-source-dirs',
         -- but not have erased the "common" stanza.
         noopCompleter
-
-customSetupFields :: Map KeyWordName Completer
-customSetupFields =
-  Map.fromList
-    [ ("setup-depends:", noopCompleter)
-    , ("build-depends:", noopCompleter)
-    , ("build-tools:", noopCompleter)
-    , ("default-language:", defaultLanguageCompleter)
-    ]
-
--- | Returns all possible language extensions including disabled ones.
-allExtensions :: [Extension]
-allExtensions =
-  concatMap
-    ( \e ->
-        -- These pragmas cannot be negated as they are not reversible
-        -- by prepending "No".
-        if e `notElem` [Unsafe, Trustworthy, Safe]
-          then [EnableExtension e, DisableExtension e]
-          else [EnableExtension e]
-    )
-    knownExtensions
-
--- | Returns all possible default languages
-defaultLanguageCompleter :: Completer
-defaultLanguageCompleter = constantCompleter $ map (T.pack . prettyShow) knownLanguages
 
 -- | Contains a map of the most commonly used licenses, weighted by their popularity.
 --
@@ -323,4 +295,3 @@ weightedLicenseNames =
 
 ghcOptions :: [T.Text]
 ghcOptions = map T.pack $ flagsForCompletion False
-

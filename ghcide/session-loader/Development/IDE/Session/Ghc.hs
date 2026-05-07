@@ -43,7 +43,7 @@ import           System.Info
 
 
 import           Control.DeepSeq
-import           Control.Exception                  (evaluate)
+import           Control.Exception                  (evaluate, mask_)
 import           Control.Monad.IO.Unlift            (MonadUnliftIO)
 import qualified Data.Set                           as OS
 import qualified Development.IDE.GHC.Compat.Util    as Compat
@@ -57,11 +57,6 @@ import           GHC.Driver.Errors.Types
 import           GHC.Types.Error                    (errMsgDiagnostic,
                                                      singleMessage)
 import           GHC.Unit.State
-
-
-#if MIN_VERSION_ghc(9,13,0)
-import           GHC.Driver.Make                    (checkHomeUnitsClosed)
-#endif
 
 data Log
   = LogInterfaceFilesCacheDir !FilePath
@@ -80,18 +75,7 @@ instance Pretty Log where
       "New component cache HscEnvEq:" <+> viaShow componentCache
     LogDLLLoadError errorString ->
       "Error dynamically loading libm.so.6:" <+> pretty errorString
--- | Configuration info for a particular home unit.
-data HomeUnitConfig = HomeUnitConfig
-  {
-  -- | The dynamic flags to compile this specific unit.
-    homeUnitDynFlags :: DynFlags
-  -- | All the targets for this unit.
-  , homeUnitTargets  :: [GHC.Target]
-  -- | Optional hash seed to differentiate home units
-  -- with same `-this-unit-id`. Used when `-this-unit-id` is "main",
-  -- which is common when loading a single target.
-  , homeUnitHash     :: Maybe B.ByteString
-  }
+
 -- This is pristine information about a component
 data RawComponentInfo = RawComponentInfo
   { rawComponentUnitId         :: UnitId
@@ -107,8 +91,6 @@ data RawComponentInfo = RawComponentInfo
   -- | Maps cradle dependencies, such as `stack.yaml`, or `.cabal` file
   -- to last modification time. See Note [Multi Cradle Dependency Info].
   , rawComponentDependencyInfo :: DependencyInfo
-  -- | An optional hash seed generated in 'setOptions' for the unit id "main".
-  , rawComponentHash           :: Maybe B.ByteString
   }
 
 -- This is processed information about the component, in particular the dynflags will be modified.
@@ -117,6 +99,7 @@ data ComponentInfo = ComponentInfo
   -- | Processed DynFlags. Does not contain inplace packages such as local
   -- libraries. Can be used to actually load this Component.
   , componentDynFlags       :: DynFlags
+  , componentOptionHash     :: String
   -- | All targets of this components.
   , componentTargets        :: [GHC.Target]
   -- | Filepath which caused the creation of this component
@@ -164,12 +147,7 @@ newComponentCache recorder exts _cfp hsc_env old_cis new_cis = do
     hscEnv' <- -- Set up a multi component session with the other units on GHC 9.4
               Compat.initUnits dfs hsc_env
 
-#if MIN_VERSION_ghc(9,13,0)
-    let closure_errs_raw = checkHomeUnitsClosed' (hsc_unit_env hscEnv') (hsc_all_home_unit_ids hscEnv')
-        closure_errs = concatMap (Compat.bagToList . Compat.getMessages) closure_errs_raw
-#else
     let closure_errs = maybeToList $ checkHomeUnitsClosed' (hsc_unit_env hscEnv') (hsc_all_home_unit_ids hscEnv')
-#endif
         closure_err_to_multi_err err =
             ideErrorWithSource
                 (Just "cradle") (Just DiagnosticSeverity_Warning) _cfp
@@ -205,7 +183,7 @@ newComponentCache recorder exts _cfp hsc_env old_cis new_cis = do
             -- above.
             -- We just need to set the current unit here
             pure $ hscSetActiveUnitId (homeUnitId_ df) hscEnv'
-      henv <- newHscEnvEq thisEnv
+      henv <- newHscEnvEq thisEnv $ componentOptionHash ci
       let targetEnv = (if isBad ci then multi_errs else [], Just henv)
           targetDepends = componentDependencyInfo ci
       logWith recorder Debug $ LogNewComponentCache (targetEnv, targetDepends)
@@ -223,13 +201,13 @@ setOptions :: GhcMonad m
     -> ComponentOptions
     -> DynFlags
     -> FilePath -- ^ root dir, see Note [Root Directory]
-    -> m (NonEmpty HomeUnitConfig)
+    -> m (NonEmpty (DynFlags, [GHC.Target]))
 setOptions haddockOpt cfp (ComponentOptions theOpts compRoot _) dflags rootDir = do
     ((theOpts',_errs,_warns),units) <- processCmdLineP unit_flags [] (map noLoc theOpts)
     case NE.nonEmpty units of
       Just us -> initMulti us
       Nothing -> do
-        (HomeUnitConfig df targets mHash) <- initOne (map unLoc theOpts')
+        (df, targets) <- initOne (map unLoc theOpts')
         -- A special target for the file which caused this wonderful
         -- component to be created. In case the cradle doesn't list all the targets for
         -- the component, in which case things will be horribly broken anyway.
@@ -249,7 +227,7 @@ setOptions haddockOpt cfp (ComponentOptions theOpts compRoot _) dflags rootDir =
         -- we will report it as an error for that file
         let abs_fp = toAbsolute rootDir (fromNormalizedFilePath cfp)
         let special_target = Compat.mkSimpleTarget df abs_fp
-        pure $ HomeUnitConfig df (special_target : targets) mHash :| []
+        pure $ (df, special_target : targets) :| []
     where
       initMulti unitArgFiles =
         forM unitArgFiles $ \f -> do
@@ -260,7 +238,7 @@ setOptions haddockOpt cfp (ComponentOptions theOpts compRoot _) dflags rootDir =
           initOne $ HieBios.removeRTS $ HieBios.removeVerbosityOpts args
       initOne this_opts = do
         (dflags', targets') <- addCmdOpts this_opts dflags
-        let (dflags'',mHash) =
+        let dflags'' =
                 case unitIdString (homeUnitId_ dflags') of
                      -- cabal uses main for the unit id of all executable packages
                      -- This makes multi-component sessions confused about what
@@ -269,11 +247,10 @@ setOptions haddockOpt cfp (ComponentOptions theOpts compRoot _) dflags rootDir =
                      -- This works because there won't be any dependencies on the
                      -- executable unit.
                      "main" ->
-                       let hashBytes =H.finalize $ H.updates H.init (map B.pack this_opts)
-                           hash =  B.unpack $ B16.encode hashBytes
+                       let hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack this_opts)
                            hashed_uid = Compat.toUnitId (Compat.stringToUnit ("main-"++hash))
-                       in (setHomeUnitId_ hashed_uid dflags', Just hashBytes)
-                     _ -> (dflags', Nothing)
+                       in setHomeUnitId_ hashed_uid dflags'
+                     _ -> dflags'
 
         let targets = makeTargetsAbsolute root targets'
             root = case workingDirectory dflags'' of
@@ -294,14 +271,14 @@ setOptions haddockOpt cfp (ComponentOptions theOpts compRoot _) dflags rootDir =
               Compat.setUpTypedHoles $
               makeDynFlagsAbsolute compRoot -- makeDynFlagsAbsolute already accounts for workingDirectory
               dflags''
-        return (HomeUnitConfig dflags''' targets mHash)
+        return (dflags''', targets)
 
 addComponentInfo ::
   MonadUnliftIO m =>
   Recorder (WithPriority Log) ->
-  (String -> Maybe B.ByteString -> [String] -> IO CacheDirs) ->
+  (String -> [String] -> IO CacheDirs) ->
   DependencyInfo ->
-  NonEmpty HomeUnitConfig->
+  NonEmpty (DynFlags, [GHC.Target]) ->
   (Maybe FilePath, NormalizedFilePath, ComponentOptions) ->
   Map.Map (Maybe FilePath) [RawComponentInfo] ->
   m (Map.Map (Maybe FilePath) [RawComponentInfo], ([ComponentInfo], [ComponentInfo]))
@@ -313,7 +290,7 @@ addComponentInfo recorder getCacheDirs dep_info newDynFlags (hieYaml, cfp, opts)
       -- We will modify the unitId and DynFlags used for
       -- compilation but these are the true source of
       -- information.
-      new_deps = fmap (\(HomeUnitConfig df targets mHash) -> RawComponentInfo (homeUnitId_ df) df targets cfp opts dep_info mHash) newDynFlags
+      new_deps = fmap (\(df, targets) -> RawComponentInfo (homeUnitId_ df) df targets cfp opts dep_info) newDynFlags
       all_deps = new_deps `NE.appendList` fromMaybe [] oldDeps
       -- Get all the unit-ids for things in this component
 
@@ -321,7 +298,7 @@ addComponentInfo recorder getCacheDirs dep_info newDynFlags (hieYaml, cfp, opts)
     let prefix = show rawComponentUnitId
     -- See Note [Avoiding bad interface files]
     let cacheDirOpts = componentOptions opts
-    cacheDirs <- liftIO $ getCacheDirs prefix rawComponentHash cacheDirOpts
+    cacheDirs <- liftIO $ getCacheDirs prefix cacheDirOpts
     processed_df <- setCacheDirs recorder cacheDirs rawComponentDynFlags
     -- The final component information, mostly the same but the DynFlags don't
     -- contain any packages which are also loaded
@@ -333,6 +310,7 @@ addComponentInfo recorder getCacheDirs dep_info newDynFlags (hieYaml, cfp, opts)
       , componentFP = rawComponentFP
       , componentCOptions = rawComponentCOptions
       , componentDependencyInfo = rawComponentDependencyInfo
+      , componentOptionHash = getOptionHash (componentOptions opts)
       }
   -- Modify the map so the hieYaml now maps to the newly updated
   -- ComponentInfos
@@ -437,28 +415,19 @@ setCacheDirs recorder CacheDirs{..} dflags = do
           & maybe id setHieDir hieCacheDir
           & maybe id setODir oCacheDir
 
--- | Append the hash to the unit id to create unique cache folders.
---
--- This function generates a single, unified hash.
--- If an optional base hash (@mFirstHash@) is provided—which
--- is common for a single target with `-this-unit-id` as "main"-
--- we set the prefix to "main", extract the context generated
--- from the @mFirstHash@, and update the @opts@ into the same hash.
---
--- This guarantees a unique cache folder for different GHC
--- options(avoiding incompatible interface files) while
--- keeping the path short and clean.
-getCacheDirsDefault :: String -> Maybe B.ByteString -> [String] -> IO CacheDirs
-getCacheDirsDefault prefix mFirstHash opts = do
-    dir <- Just <$> getXdgDirectory XdgCache (cacheDir </> prefix' ++ "-" ++ opts_hash)
+getCacheDirsDefault :: String -> String -> [String] -> IO CacheDirs
+getCacheDirsDefault root prefix opts = do
+    dir <- Just <$> getXdgDirectory XdgCache (cacheDir </> prefix ++ "-" ++ opts_hash)
     return $ CacheDirs dir dir dir
     where
-        -- Create a unique folder per set of different GHC options.
-        prefix' = if isJust mFirstHash then "main" else prefix
-        basectx = case mFirstHash of
-          Just h  -> H.updates H.init [h]
-          Nothing -> H.init
-        opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates basectx (map B.pack opts)
+        -- Create a unique folder per set of different GHC options, assuming that each different set of
+        -- GHC options will create incompatible interface files.
+        opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
+        -- opts_hash = "fixed"
+        -- opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack [root])
+
+getOptionHash :: [String] -> String
+getOptionHash opts = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
 
 setNameCache :: NameCache -> HscEnv -> HscEnv
 setNameCache nc hsc = hsc { hsc_NC = nc }
@@ -471,7 +440,7 @@ emptyHscEnv :: NameCache -> FilePath -> IO HscEnv
 emptyHscEnv nc libDir = do
     -- We call setSessionDynFlags so that the loader is initialised
     -- We need to do this before we call initUnits.
-    env <- liftIO $ runGhc (Just libDir) $
+    env <- mask_ $ liftIO $ runGhc (Just libDir) $
       getSessionDynFlags >>= setSessionDynFlags >> getSession
     pure $ setNameCache nc (hscSetFlags ((hsc_dflags env){useUnicode = True }) env)
 

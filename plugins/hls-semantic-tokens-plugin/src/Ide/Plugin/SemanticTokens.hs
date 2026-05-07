@@ -9,6 +9,7 @@ import           Ide.Plugin.SemanticTokens.Types
 import           Ide.Types
 import           Language.LSP.Protocol.Message
 
+-- This should make more sense now, only firing at the specific point to avoid giving more than needed
 descriptor :: Recorder (WithPriority SemanticLog) -> PluginId -> PluginDescriptor IdeState
 descriptor recorder plId =
   (defaultPluginDescriptor plId "Provides semantic tokens")

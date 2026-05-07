@@ -249,15 +249,9 @@
         "scope": "resource",
         "type": "boolean"
     },
-    "haskell.plugin.notes.completionOn": {
+    "haskell.plugin.moduleName.globalOn": {
         "default": true,
-        "description": "Enables notes completions",
-        "scope": "resource",
-        "type": "boolean"
-    },
-    "haskell.plugin.notes.hoverOn": {
-        "default": true,
-        "description": "Enables notes hover",
+        "description": "Enables moduleName plugin",
         "scope": "resource",
         "type": "boolean"
     },
@@ -297,21 +291,21 @@
         "scope": "resource",
         "type": "boolean"
     },
-    "haskell.plugin.rename.codeLensOn": {
-        "default": true,
-        "description": "Enables rename code lenses",
-        "scope": "resource",
-        "type": "boolean"
-    },
     "haskell.plugin.rename.config.crossModule": {
-        "default": true,
+        "default": false,
         "markdownDescription": "Enable experimental cross-module renaming",
         "scope": "resource",
         "type": "boolean"
     },
-    "haskell.plugin.rename.renameOn": {
+    "haskell.plugin.rename.globalOn": {
         "default": true,
-        "description": "Enables rename rename",
+        "description": "Enables rename plugin",
+        "scope": "resource",
+        "type": "boolean"
+    },
+    "haskell.plugin.retrie.globalOn": {
+        "default": true,
+        "description": "Enables retrie plugin",
         "scope": "resource",
         "type": "boolean"
     },

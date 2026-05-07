@@ -24,8 +24,9 @@ import           Test.Hls                       (CodeAction (..), Command,
                                                  liftIO, mkPluginTestDescriptor,
                                                  openDoc, runSessionWithServer,
                                                  testCase, testGroup, toEither,
-                                                 type (|?), waitForBuildQueue,
-                                                 waitForDiagnostics, (@?=))
+                                                 type (|?),
+                                                 waitForDiagsAndBuildQueue,
+                                                 (@?=))
 import           Text.Regex.TDFA                ((=~))
 
 main :: IO ()
@@ -41,7 +42,7 @@ test :: TestTree
 test = testGroup "changeTypeSignature" [
         testRegexes
         , codeActionTest "TExpectedActual" 4 11
-        , knownBrokenForGhcVersions [GHC96 .. GHC914] "Error Message in 9.6+ does not provide enough info" $
+        , knownBrokenForGhcVersions [GHC96 .. GHC912] "Error Message in 9.6+ does not provide enough info" $
             codeActionTest "TRigidType" 4 14
         , codeActionTest "TRigidType2" 4 8
         , codeActionTest "TLocalBinding" 7 22
@@ -71,8 +72,7 @@ goldenChangeSignature fp = goldenWithHaskellDoc def changeTypeSignaturePlugin (f
 
 codeActionTest :: FilePath -> Int -> Int -> TestTree
 codeActionTest fp line col = goldenChangeSignature fp $ \doc -> do
-    void waitForDiagnostics  -- code actions are triggered from Diagnostics
-    void waitForBuildQueue  -- apparently some tests need this to get the CodeAction to show up
+    void $ waitForDiagsAndBuildQueue doc
     actions <- getCodeActions doc (pointRange line col)
     foundActions <- findChangeTypeActions actions
     liftIO $ length foundActions @?= 1

@@ -1,1 +1,0 @@
-cradle: {direct: {arguments: ["A.hs-boot", "B.hs-boot", "A.hs", "B.hs"]}}

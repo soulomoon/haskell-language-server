@@ -3,6 +3,7 @@ module Development.IDE.Types.HscEnvEq
 (   HscEnvEq,
     hscEnv, newHscEnvEq,
     updateHscEnvEq,
+    hscOptionHash,
     envPackageExports,
     envVisibleModuleNames,
 ) where
@@ -33,6 +34,11 @@ import           OpenTelemetry.Eventlog          (withSpan)
 data HscEnvEq = HscEnvEq
     { envUnique             :: !Unique
     , hscEnv                :: !HscEnv
+    , hscOptionHash         :: !String
+        -- ^ A hash of the options used to create this HscEnv.
+        -- Used to determine if recompilation is necessary.
+        -- Invariant, same envUnique => same hscOptionHash
+        -- but not vice versa.
     , envPackageExports     :: IO ExportsMap
     , envVisibleModuleNames :: IO (Maybe [ModuleName])
         -- ^ 'listVisibleModuleNames' is a pure function,
@@ -47,8 +53,8 @@ updateHscEnvEq oldHscEnvEq newHscEnv = do
   update <$> Unique.newUnique
 
 -- | Wrap an 'HscEnv' into an 'HscEnvEq'.
-newHscEnvEq :: HscEnv -> IO HscEnvEq
-newHscEnvEq hscEnv' = do
+newHscEnvEq :: HscEnv -> String -> IO HscEnvEq
+newHscEnvEq hscEnv' hscOptionHash = do
 
     mod_cache <- newIORef emptyInstalledModuleEnv
     -- This finder cache is for things which are outside of things which are tracked
@@ -57,19 +63,11 @@ newHscEnvEq hscEnv' = do
     let hscEnv = hscEnv'
                { hsc_FC = FinderCache
                         { flushFinderCaches = \_ -> error "GHC should never call flushFinderCaches outside the driver"
-#if MIN_VERSION_ghc(9,13,0)
-                        , addToFinderCache  = \im val -> do
-#else
                         , addToFinderCache  = \(GWIB im _) val -> do
-#endif
                             if moduleUnit im `elem` hsc_all_home_unit_ids hscEnv'
                             then error "tried to add home module to FC"
                             else atomicModifyIORef' mod_cache $ \c -> (extendInstalledModuleEnv c im val, ())
-#if MIN_VERSION_ghc(9,13,0)
-                        , lookupFinderCache = \im -> do
-#else
                         , lookupFinderCache = \(GWIB im _) -> do
-#endif
                             if moduleUnit im `elem` hsc_all_home_unit_ids hscEnv'
                             then error ("tried to lookup home module from FC" ++ showSDocUnsafe (ppr (im, hsc_all_home_unit_ids hscEnv')))
                             else lookupInstalledModuleEnv <$> readIORef mod_cache <*> pure im
@@ -128,7 +126,7 @@ instance Eq HscEnvEq where
   a == b = envUnique a == envUnique b
 
 instance NFData HscEnvEq where
-  rnf (HscEnvEq a b _ _) =
+  rnf (HscEnvEq a b _ _ _) =
       -- deliberately skip the package exports map and visible module names
       rnf (Unique.hashUnique a) `seq` rwhnf b
 

@@ -13,7 +13,6 @@ import           Data.Functor                       (void)
 import           Data.List                          (delete)
 import           Data.Maybe                         (fromJust)
 import           Data.Text                          (Text, pack)
-import           GHC.Stack                          (withFrozenCallStack)
 import           Ide.Types
 import           Language.LSP.Protocol.Capabilities
 import qualified Language.LSP.Protocol.Lens         as L
@@ -30,11 +29,7 @@ tests =
             runSession hlsLspCommand progressCaps "test/testdata/diagnostics" $ do
                 let path = "Foo.hs"
                 _ <- openDoc path "haskell"
-                expectProgressMessages
-                  ["Processing"]
-                  [pack ("Setting up diagnostics (for " ++ path ++ ")"), "Indexing"]
-                  []
-                  []
+                expectProgressMessages [pack ("Setting up diagnostics (for " ++ path ++ ")"), "Processing", "Indexing"] [] []
         , requiresEvalPlugin $ testCase "eval plugin sends progress reports" $
             runSession hlsLspCommand progressCaps "plugins/hls-eval-plugin/test/testdata" $ do
               doc <- openDoc "TIO.hs" "haskell"
@@ -42,8 +37,7 @@ tests =
 
               (codeLensResponse, createdProgressTokens, activeProgressTokens) <- expectProgressMessagesTill
                 (responseForId SMethod_TextDocumentCodeLens lspId)
-                ["Setting up testdata (for TIO.hs)"]
-                ["Processing", "Indexing"]
+                ["Setting up testdata (for TIO.hs)", "Processing"]
                 []
                 []
 
@@ -59,24 +53,24 @@ tests =
                           (command ^. L.command)
                           (decode $ encode $ fromJust $ command ^. L.arguments)
 
-                      expectProgressMessages ["Evaluating"] ["Processing", "Indexing"] createdProgressTokens activeProgressTokens
+                      expectProgressMessages ["Evaluating"] createdProgressTokens activeProgressTokens
                   _ -> error $ "Unexpected response result: " ++ show response
         , requiresOrmoluPlugin $ testCase "ormolu plugin sends progress notifications" $ do
             runSessionWithConfig (def { ignoreConfigurationRequests = False }) hlsLspCommand progressCaps "test/testdata/format" $ do
                 void configurationRequest
                 setHlsConfig (formatLspConfig "ormolu")
                 doc <- openDoc "Format.hs" "haskell"
-                expectProgressMessages ["Setting up format (for Format.hs)"] ["Processing", "Indexing"] [] []
+                expectProgressMessages ["Setting up format (for Format.hs)", "Processing", "Indexing"] [] []
                 _ <- sendRequest SMethod_TextDocumentFormatting $ DocumentFormattingParams Nothing doc (FormattingOptions 2 True Nothing Nothing Nothing)
-                expectProgressMessages ["Formatting Format.hs"] ["Processing", "Indexing"] [] []
+                expectProgressMessages ["Formatting Format.hs"] [] []
         , requiresFourmoluPlugin $ testCase "fourmolu plugin sends progress notifications" $ do
             runSessionWithConfig (def { ignoreConfigurationRequests = False }) hlsLspCommand progressCaps "test/testdata/format" $ do
                 void configurationRequest
                 setHlsConfig (formatLspConfig "fourmolu")
                 doc <- openDoc "Format.hs" "haskell"
-                expectProgressMessages ["Setting up format (for Format.hs)"] ["Processing", "Indexing"] [] []
+                expectProgressMessages ["Setting up format (for Format.hs)", "Processing", "Indexing"] [] []
                 _ <- sendRequest SMethod_TextDocumentFormatting $ DocumentFormattingParams Nothing doc (FormattingOptions 2 True Nothing Nothing Nothing)
-                expectProgressMessages ["Formatting Format.hs"] ["Processing", "Indexing"] [] []
+                expectProgressMessages ["Formatting Format.hs"] [] []
         ]
 
 formatLspConfig :: Text -> Config
@@ -120,82 +114,58 @@ interestingMessage :: Session a -> Session (InterestingMessage a)
 interestingMessage theMessage =
   fmap InterestingMessage theMessage <|> fmap ProgressMessage progressMessage
 
-expectProgressMessagesTill :: HasCallStack => Session a -> [Text] -> [Text] -> [ProgressToken] -> [ProgressToken] -> Session (a, [ProgressToken], [ProgressToken])
-expectProgressMessagesTill stopMessage requiredTitles optionalTitles createdProgressTokens activeProgressTokens = do
+expectProgressMessagesTill :: Session a -> [Text] -> [ProgressToken] -> [ProgressToken] -> Session (a, [ProgressToken], [ProgressToken])
+expectProgressMessagesTill stopMessage expectedTitles createdProgressTokens activeProgressTokens = do
   message <- skipManyTill anyMessage (interestingMessage stopMessage)
-  withFrozenCallStack $ do
-    case message of
-      InterestingMessage a -> do
-        liftIO $ null requiredTitles @? "Required progress titles were not seen (consider moving to the optional list): " <> show requiredTitles
-        pure (a, createdProgressTokens, activeProgressTokens)
-      ProgressMessage progressMessage ->
-        updateExpectProgressStateAndRecurseWith
-          (expectProgressMessagesTill stopMessage)
-          progressMessage
-          requiredTitles
-          optionalTitles
-          createdProgressTokens
-          activeProgressTokens
+  case message of
+    InterestingMessage a -> do
+      liftIO $ null expectedTitles @? "Expected titles not empty " <> show expectedTitles
+      pure (a, createdProgressTokens, activeProgressTokens)
+    ProgressMessage progressMessage ->
+      updateExpectProgressStateAndRecurseWith
+        (expectProgressMessagesTill stopMessage)
+        progressMessage
+        expectedTitles
+        createdProgressTokens
+        activeProgressTokens
 
 {- | Test that the server is correctly producing a sequence of progress related
- messages. `create` can be dangling, but `begin` cannot. Each `begin` should
- have a respective `end`, optionally with some progress in between. Tokens must
- match between these requests. The `begin` messages have titles describing the
- work that is in-progress.
-
- 'requiredTitles' must all be consumed before the loop terminates.
- 'optionalTitles' may appear (and if they do, their titles must match), but
- their absence is not an error. The LSP spec permits a server to create a
- progress token and then abandon it without ever sending a `begin` notification
- (e.g. when the underlying work completes before the progress-reporting thread
- starts). Any `begin` title that is neither required nor optional is treated as
- unexpected and fails the test.
-
- The loop terminates when all required titles have been seen and all active progress
- sessions have ended.
+ messages. Creates can be dangling, but should be paired with a corresponding begin and end,
+ optionally with some progress in between. Tokens must match. The begin
+ messages have titles describing the work that is in-progress, we check that
+ the titles we see are those we expect.
 -}
-expectProgressMessages :: HasCallStack => [Text] -> [Text] -> [ProgressToken] -> [ProgressToken] -> Session ()
-expectProgressMessages [] _ _ [] = pure ()
-expectProgressMessages requiredTitles optionalTitles createdProgressTokens activeProgressTokens = do
+expectProgressMessages :: [Text] -> [ProgressToken] -> [ProgressToken] -> Session ()
+expectProgressMessages [] _ [] = pure ()
+expectProgressMessages expectedTitles createdProgressTokens activeProgressTokens = do
   message <- skipManyTill anyMessage progressMessage
-  withFrozenCallStack $
-    updateExpectProgressStateAndRecurseWith expectProgressMessages message requiredTitles optionalTitles createdProgressTokens activeProgressTokens
+  updateExpectProgressStateAndRecurseWith expectProgressMessages message expectedTitles createdProgressTokens activeProgressTokens
 
-updateExpectProgressStateAndRecurseWith :: HasCallStack
-                                        => ([Text] -> [Text] -> [ProgressToken] -> [ProgressToken] -> Session a)
+updateExpectProgressStateAndRecurseWith :: ([Text] -> [ProgressToken] -> [ProgressToken] -> Session a)
                                         -> ProgressMessage
-                                        -> [Text]
                                         -> [Text]
                                         -> [ProgressToken]
                                         -> [ProgressToken]
                                         -> Session a
-updateExpectProgressStateAndRecurseWith f progressMessage requiredTitles optionalTitles createdProgressTokens activeProgressTokens = do
+updateExpectProgressStateAndRecurseWith f progressMessage expectedTitles createdProgressTokens activeProgressTokens = do
   case progressMessage of
     ProgressCreate params -> do
-      f requiredTitles optionalTitles ((params ^. L.token): createdProgressTokens) activeProgressTokens
+      f expectedTitles ((params ^. L.token): createdProgressTokens) activeProgressTokens
     ProgressBegin token params -> do
       liftIO $ token `expectedIn` createdProgressTokens
-      let title = params ^. L.title
-          (requiredTitles', optionalTitles')
-            | title `elem` requiredTitles = (delete title requiredTitles, optionalTitles)
-             -- Note that we do not delete from the optional titles list.
-            | title `elem` optionalTitles = (requiredTitles, optionalTitles)
-            | otherwise = error $ "Unexpected progress title: " ++ show title
-                ++ "\n  required: " ++ show requiredTitles
-                ++ "\n  optional: " ++ show optionalTitles
-      f requiredTitles' optionalTitles' (delete token createdProgressTokens) (token:activeProgressTokens)
+      f (delete (params ^. L.title) expectedTitles) (delete token createdProgressTokens) (token:activeProgressTokens)
     ProgressReport token _ -> do
       liftIO $ token `expectedIn` activeProgressTokens
-      f requiredTitles optionalTitles createdProgressTokens activeProgressTokens
+      f expectedTitles createdProgressTokens activeProgressTokens
     ProgressEnd token _ -> do
       liftIO $ token `expectedIn` activeProgressTokens
-      f requiredTitles optionalTitles createdProgressTokens (delete token activeProgressTokens)
+      f expectedTitles createdProgressTokens (delete token activeProgressTokens)
 
 
-expectedIn :: (Foldable t, Eq a, Show a, HasCallStack) => a -> t a -> Assertion
+expectedIn :: (Foldable t, Eq a, Show a) => a -> t a -> Assertion
 expectedIn a as = a `elem` as @? "Unexpected " ++ show a
 
-getMessageResult :: (Show (ErrorData m), HasCallStack) => TResponseMessage m -> MessageResult m
+getMessageResult :: Show (ErrorData m) => TResponseMessage m -> MessageResult m
 getMessageResult rsp =
   case rsp ^. L.result of
     Right x  -> x

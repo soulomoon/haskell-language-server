@@ -91,14 +91,20 @@
             },
             "globalOn": true
         },
+        "hlint": {
+            "codeActionsOn": true,
+            "config": {
+                "flags": []
+            },
+            "diagnosticsOn": true
+        },
         "importLens": {
             "codeActionsOn": true,
             "codeLensOn": true,
             "inlayHintsOn": true
         },
-        "notes": {
-            "completionOn": true,
-            "hoverOn": true
+        "moduleName": {
+            "globalOn": true
         },
         "ormolu": {
             "config": {
@@ -121,11 +127,10 @@
             "globalOn": true
         },
         "rename": {
-            "codeLensOn": true,
             "config": {
-                "crossModule": true
+                "crossModule": false
             },
-            "renameOn": true
+            "globalOn": true
         },
         "semanticTokens": {
             "config": {

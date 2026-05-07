@@ -15,7 +15,6 @@ import           Control.Concurrent.Extra                 (withNumCapabilities)
 import           Control.Concurrent.MVar                  (MVar, newEmptyMVar,
                                                            putMVar, tryReadMVar)
 import           Control.Concurrent.STM.Stats             (dumpSTMStats)
-import           Control.Exception.Safe                   as Safe
 import           Control.Monad.Extra                      (concatMapM, unless,
                                                            when)
 import           Control.Monad.IO.Class                   (liftIO)
@@ -40,7 +39,7 @@ import           Development.IDE.Core.IdeConfiguration    (IdeConfiguration (..)
                                                            modifyClientSettings,
                                                            registerIdeConfiguration)
 import           Development.IDE.Core.OfInterest          (FileOfInterestStatus (OnDisk),
-                                                           kick,
+                                                           doKick,
                                                            setFilesOfInterest)
 import           Development.IDE.Core.Rules               (mainRule)
 import qualified Development.IDE.Core.Rules               as Rules
@@ -78,8 +77,9 @@ import           Development.IDE.Types.Location           (NormalizedUri,
                                                            toNormalizedFilePath')
 import           Development.IDE.Types.Monitoring         (Monitoring)
 import           Development.IDE.Types.Options            (IdeGhcSession,
-                                                           IdeOptions (optCheckParents, optCheckProject, optReportProgress, optRunSubset),
+                                                           IdeOptions (..),
                                                            IdeTesting (IdeTesting),
+                                                           ProgressReportingStyle (TestReporting),
                                                            clientSupportsProgress,
                                                            defaultIdeOptions,
                                                            optModifyDynFlags,
@@ -115,17 +115,16 @@ import qualified Language.LSP.Server                      as LSP
 import           Numeric.Natural                          (Natural)
 import           Options.Applicative                      hiding (action)
 import qualified System.Directory.Extra                   as IO
-import           System.Exit                              (ExitCode (ExitFailure, ExitSuccess),
+import           System.Exit                              (ExitCode (ExitFailure),
                                                            exitWith)
 import           System.FilePath                          (takeExtension,
-                                                           takeFileName, (</>))
+                                                           takeFileName)
 import           System.IO                                (BufferMode (LineBuffering, NoBuffering),
                                                            Handle, hFlush,
                                                            hPutStrLn,
                                                            hSetBuffering,
                                                            hSetEncoding, stderr,
                                                            stdin, stdout, utf8)
-import           System.Process                           (readProcessWithExitCode)
 import           System.Random                            (newStdGen)
 import           System.Time.Extra                        (Seconds, offsetTime,
                                                            showDuration)
@@ -143,7 +142,6 @@ data Log
   | LogSession Session.Log
   | LogPluginHLS PluginHLS.Log
   | LogRules Rules.Log
-  | LogUsingGit
   deriving Show
 
 instance Pretty Log where
@@ -167,7 +165,6 @@ instance Pretty Log where
     LogSession msg -> pretty msg
     LogPluginHLS msg -> pretty msg
     LogRules msg -> pretty msg
-    LogUsingGit -> "Using git to list file, relying on .gitignore"
 
 data Command
     = Check [FilePath]  -- ^ Typecheck some paths and print diagnostics. Exit code is the number of failures
@@ -280,7 +277,10 @@ testing recorder projectRoot plugins =
       let
         defOptions = argsIdeOptions config sessionLoader
       in
-        defOptions{ optTesting = IdeTesting True }
+        defOptions{
+            optTesting = IdeTesting True
+            , optProgressStyle = TestReporting
+            }
     lspOptions = argsLspOptions { LSP.optProgressStartDelay = 0, LSP.optProgressUpdateDelay = 0 }
   in
     arguments
@@ -304,7 +304,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
         argsParseConfig = getConfigFromNotification argsHlsPlugins
         rules = do
             argsRules
-            unless argsDisableKick $ action kick
+            unless argsDisableKick $ action $ doKick
             pluginRules plugins
         -- install the main and ghcide-plugin rules
         -- install the kick action, which triggers a typecheck on every
@@ -378,7 +378,8 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
         Check argFiles -> do
           let dir = argsProjectRoot
           dbLoc <- getHieDbLoc dir
-          runWithWorkerThreads (cmapWithPrio LogSession recorder) dbLoc mempty $ \hiedb threadQueue -> do
+          ideMVar <- newEmptyMVar
+          runWithWorkerThreads (cmapWithPrio LogLanguageServer recorder) ideMVar dbLoc $ \hiedb threadQueue -> do
             -- GHC produces messages with UTF8 in them, so make sure the terminal doesn't error
             hSetEncoding stdout utf8
             hSetEncoding stderr utf8
@@ -387,7 +388,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
             putStrLn "Report bugs at https://github.com/haskell/haskell-language-server/issues"
 
             putStrLn $ "\nStep 1/4: Finding files to test in " ++ dir
-            files <- expandFiles recorder (argFiles ++ ["." | null argFiles])
+            files <- expandFiles (argFiles ++ ["." | null argFiles])
             -- LSP works with absolute file paths, so try and behave similarly
             absoluteFiles <- nubOrd <$> mapM IO.canonicalizePath files
             putStrLn $ "Found " ++ show (length absoluteFiles) ++ " files"
@@ -407,6 +408,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
                         , optModifyDynFlags = optModifyDynFlags def_options <> pluginModifyDynflags plugins
                         }
             ide <- initialise (cmapWithPrio LogService recorder) argsDefaultHlsConfig argsHlsPlugins rules Nothing debouncer ideOptions hiedb threadQueue mempty dir
+            putMVar ideMVar ide
             shakeSessionInit (cmapWithPrio LogShake recorder) ide
             registerIdeConfiguration (shakeExtras ide) $ IdeConfiguration mempty (hashed Nothing)
 
@@ -436,7 +438,8 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
         Custom (IdeCommand c) -> do
           let root = argsProjectRoot
           dbLoc <- getHieDbLoc root
-          runWithWorkerThreads (cmapWithPrio LogSession recorder) dbLoc mempty $ \hiedb threadQueue -> do
+          ideMVar <- newEmptyMVar
+          runWithWorkerThreads (cmapWithPrio LogLanguageServer recorder) ideMVar dbLoc $ \hiedb threadQueue -> do
             sessionLoader <- loadSessionWithOptions (cmapWithPrio LogSession recorder) argsSessionLoadingOptions "." (tLoaderQueue threadQueue)
             let def_options = argsIdeOptions argsDefaultHlsConfig sessionLoader
                 ideOptions = def_options
@@ -445,49 +448,21 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
                     , optModifyDynFlags = optModifyDynFlags def_options <> pluginModifyDynflags plugins
                     }
             ide <- initialise (cmapWithPrio LogService recorder) argsDefaultHlsConfig argsHlsPlugins rules Nothing debouncer ideOptions hiedb threadQueue mempty root
+            putMVar ideMVar ide
             shakeSessionInit (cmapWithPrio LogShake recorder) ide
             registerIdeConfiguration (shakeExtras ide) $ IdeConfiguration mempty (hashed Nothing)
             c ide
 
--- | List the haskell files given some paths
---
--- It will rely on git if possible to filter-out ignored files.
-expandFiles :: Recorder (WithPriority Log) -> [FilePath] -> IO [FilePath]
-expandFiles recorder paths = do
-  let haskellFind x =
-        let recurse "." = True
-            recurse y | "." `isPrefixOf` takeFileName y = False -- skip .git etc
-            recurse y = takeFileName y `notElem` ["dist", "dist-newstyle"] -- cabal directories
-        in filter (\y -> takeExtension y `elem` [".hs", ".lhs"]) <$> IO.listFilesInside (return . recurse) x
-      git args = do
-        mResult <- (Just <$> readProcessWithExitCode "git" args "") `Safe.catchAny`const (pure Nothing)
-        pure $
-            case mResult of
-              Just (ExitSuccess, gitStdout, _) -> Just gitStdout
-              _                                -> Nothing
-  mHasGit <- git ["status"]
-  when (isJust mHasGit) $ logWith recorder Info LogUsingGit
-  let findFiles =
-        case mHasGit of
-          Just _ -> \path -> do
-            let lookups =
-                  if takeExtension path `elem` [".hs", ".lhs"]
-                      then [path]
-                      else [path </> "*.hs", path </> "*.lhs"]
-                gitLines args = fmap lines <$> git args
-            mTracked <- gitLines ("ls-files":lookups)
-            mUntracked <- gitLines ("ls-files":"-o":lookups)
-            case mTracked <> mUntracked of
-              Nothing    -> haskellFind path
-              Just files -> pure files
-          _ -> haskellFind
-
-  flip concatMapM paths $ \x -> do
+expandFiles :: [FilePath] -> IO [FilePath]
+expandFiles = concatMapM $ \x -> do
     b <- IO.doesFileExist x
     if b
         then return [x]
         else do
-            files <- findFiles x
+            let recurse "." = True
+                recurse y | "." `isPrefixOf` takeFileName y = False -- skip .git etc
+                recurse y = takeFileName y `notElem` ["dist", "dist-newstyle"] -- cabal directories
+            files <- filter (\y -> takeExtension y `elem` [".hs", ".lhs"]) <$> IO.listFilesInside (return . recurse) x
             when (null files) $
                 fail $ "Couldn't find any .hs/.lhs files inside directory: " ++ x
             return files

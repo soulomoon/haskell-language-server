@@ -41,10 +41,14 @@ import           Data.String                                  (IsString)
 import           Data.Text                                    (Text)
 import qualified Data.Text                                    as T
 import qualified Data.Text.Utf16.Rope.Mixed                   as Rope
-import           Development.IDE.Core.FileStore               (getUriContents, setSomethingModified)
+import           Development.IDE.Core.FileStore               (getUriContents)
 import           Development.IDE.Core.Rules                   (IdeState,
                                                                runAction)
-import           Development.IDE.Core.Shake                   (use_, uses_, VFSModified (VFSUnmodified), useWithSeparateFingerprintRule_)
+import           Development.IDE.Core.RuleTypes               (LinkableResult (linkableHomeMod),
+                                                               TypeCheck (..),
+                                                               tmrTypechecked)
+import           Development.IDE.Core.Shake                   (useNoFile_, use_,
+                                                               uses_)
 import           Development.IDE.GHC.Compat                   hiding (typeKind,
                                                                unitState)
 import           Development.IDE.GHC.Compat.Util              (OverridingBool (..))
@@ -72,26 +76,20 @@ import           GHC                                          (ClsInst,
 
 import           Development.IDE.Core.RuleTypes               (GetLinkable (GetLinkable),
                                                                GetModSummary (GetModSummary),
-                                                               GetModuleGraphTransDepsFingerprints (GetModuleGraphTransDepsFingerprints),
+                                                               GetModuleGraph (GetModuleGraph),
                                                                GhcSessionDeps (GhcSessionDeps),
-                                                               ModSummaryResult (msrModSummary),
-                                                               LinkableResult (linkableHomeMod),
-                                                               TypeCheck (..),
-                                                               tmrTypechecked, GetModuleGraphTransDepsFingerprints(..), GetModuleGraph(..))
+                                                               ModSummaryResult (msrModSummary))
+import           Development.IDE.Core.Shake                   (VFSModified (VFSUnmodified))
 import qualified Development.IDE.GHC.Compat.Core              as Compat (InteractiveImport (IIModule))
 import qualified Development.IDE.GHC.Compat.Core              as SrcLoc (unLoc)
 import           Development.IDE.Types.HscEnvEq               (HscEnvEq (hscEnv))
 import qualified GHC.LanguageExtensions.Type                  as LangExt (Extension (..))
 
 import           Data.List.Extra                              (unsnoc)
+import           Development.IDE.Core.FileStore               (setSomethingModified)
 import           Development.IDE.Core.PluginUtils
 import           Development.IDE.Types.Shake                  (toKey)
 import           GHC.Types.SrcLoc                             (UnhelpfulSpanReason (UnhelpfulInteractive))
-#if MIN_VERSION_ghc(9,13,0)
-import           GHC.Types.Avail                              (DetOrdAvails (DefinitelyDeterministicAvails),
-                                                               sortAvails)
-import           GHC.Types.Name.Set                           (nameSetElemsStable)
-#endif
 import           Ide.Logger                                   (Priority (..),
                                                                Recorder,
                                                                WithPriority,
@@ -258,7 +256,7 @@ initialiseSessionForEval needs_quickcheck st nfp = do
     ms <- msrModSummary <$> use_ GetModSummary nfp
     deps_hsc <- hscEnv <$> use_ GhcSessionDeps nfp
 
-    linkables_needed <- transitiveDeps <$> useWithSeparateFingerprintRule_ GetModuleGraphTransDepsFingerprints GetModuleGraph nfp <*> pure nfp
+    linkables_needed <- transitiveDeps <$> useNoFile_ GetModuleGraph <*> pure nfp
     linkables <- uses_ GetLinkable (nfp : maybe [] transitiveModuleDeps linkables_needed)
     -- We unset the global rdr env in mi_globals when we generate interfaces
     -- See Note [Clearing mi_globals after generating an iface]
@@ -267,12 +265,11 @@ initialiseSessionForEval needs_quickcheck st nfp = do
     -- it back to the iface for the current module.
     tm <- tmrTypechecked <$> use_ TypeCheck nfp
     let rdr_env = tcg_rdr_env tm
+    let linkable_hsc = loadModulesHome (map (addRdrEnv . linkableHomeMod) linkables) deps_hsc
         addRdrEnv hmi
           | iface <- hm_iface hmi
           , ms_mod ms == mi_module iface
-#if MIN_VERSION_ghc(9,13,0)
-          = hmi { hm_iface = set_mi_top_env (IfaceTopEnv (sortAvails $ gresToAvailInfo $ globalRdrEnvElts $ globalRdrEnvLocal rdr_env) (mkIfaceImports $ tcg_import_decls tm)) iface}
-#elif MIN_VERSION_ghc(9,11,0)
+#if MIN_VERSION_ghc(9,11,0)
           = hmi { hm_iface = set_mi_top_env (Just $ IfaceTopEnv (forceGlobalRdrEnv (globalRdrEnvLocal rdr_env)) (mkIfaceImports $ tcg_import_decls tm)) iface}
 #else
           = hmi { hm_iface = iface { mi_globals = Just $!
@@ -283,20 +280,12 @@ initialiseSessionForEval needs_quickcheck st nfp = do
                 }}
 #endif
           | otherwise = hmi
-#if MIN_VERSION_ghc(9,13,0)
-    linkable_hsc <- liftIO $ loadModulesHome (map (addRdrEnv . linkableHomeMod) linkables) deps_hsc
-#else
-    let linkable_hsc = loadModulesHome (map (addRdrEnv . linkableHomeMod) linkables) deps_hsc
-#endif
+
     return (ms, linkable_hsc)
   -- Bit awkward we need to use evalGhcEnv here but setContext requires to run
   -- in the Ghc monad
   env2 <- liftIO $ evalGhcEnv env1 $ do
-#if MIN_VERSION_ghc(9,13,0)
-            setContext [Compat.IIModule (ms_mod ms)]
-#else
             setContext [Compat.IIModule (moduleName (ms_mod ms))]
-#endif
             let df = flip xopt_set    LangExt.ExtendedDefaultRules
                    . flip xopt_unset  LangExt.MonomorphismRestriction
                    . flip gopt_set    Opt_ImplicitImportQualified
@@ -310,14 +299,7 @@ initialiseSessionForEval needs_quickcheck st nfp = do
             getSession
   return env2
 
-#if MIN_VERSION_ghc(9,13,0)
-mkIfaceImports :: [ImportUserSpec] -> [IfaceImport]
-mkIfaceImports = map go
-  where
-    go (ImpUserSpec decl ImpUserAll) = IfaceImport decl ImpIfaceAll
-    go (ImpUserSpec decl (ImpUserExplicit avails parents)) = IfaceImport decl (ImpIfaceExplicit (DefinitelyDeterministicAvails avails) (nameSetElemsStable parents))
-    go (ImpUserSpec decl (ImpUserEverythingBut ns)) = IfaceImport decl (ImpIfaceEverythingBut (nameSetElemsStable ns))
-#elif MIN_VERSION_ghc(9,11,0)
+#if MIN_VERSION_ghc(9,11,0)
 mkIfaceImports :: [ImportUserSpec] -> [IfaceImport]
 mkIfaceImports = map go
   where
@@ -484,18 +466,10 @@ evals recorder mark_exception fp df stmts = do
             dbg $ LogEvalFlags flags
             ndf <- getInteractiveDynFlags
             dbg $ LogEvalPreSetDynFlags ndf
-#if MIN_VERSION_ghc(9,13,0)
-            hsc_env <- getSession
-            eans <-
-                liftIO $ try @GhcException $
-                parseDynamicFlagsCmdLine (hsc_logger hsc_env) ndf
-                    (map (L $ UnhelpfulSpan unhelpfulReason) flags)
-#else
             eans <-
                 liftIO $ try @GhcException $
                 parseDynamicFlagsCmdLine ndf
                 (map (L $ UnhelpfulSpan unhelpfulReason) flags)
-#endif
             dbg $ LogEvalParsedFlags eans
             case eans of
                 Left err -> pure $ Just $ errorLines $ show err

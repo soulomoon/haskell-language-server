@@ -14,7 +14,7 @@ import qualified Ide.Plugin.Cabal
 import           Ide.Plugin.Cabal.Completion.Types
 import           System.FilePath
 import           Test.Hls
-import qualified Test.Hls.FileSystem               as FS
+import           Test.Hls.FileSystem               (VirtualFileTree)
 
 
 cabalPlugin :: PluginTestDescriptor Ide.Plugin.Cabal.Log
@@ -48,26 +48,26 @@ simpleCabalPrefixInfoFromFp prefix fp =
 filePathComplTestDir :: FilePath
 filePathComplTestDir = addTrailingPathSeparator $ testDataDir </> "filepath-completions"
 
-runCabalTestCaseSession :: TestName -> FilePath -> Session () -> TestTree
+runCabalTestCaseSession :: TestName -> FilePath -> (FilePath -> Session ()) -> TestTree
 runCabalTestCaseSession title subdir = testCase title . runCabalSession subdir
 
 runHaskellTestCaseSession :: TestName -> FilePath -> Session () -> TestTree
-runHaskellTestCaseSession title subdir = testCase title . runHaskellAndCabalSession (FS.mkVirtualFileTree testDataDir [FS.copyDir subdir])
+runHaskellTestCaseSession title subdir = testCase title . runHaskellAndCabalSession subdir
 
-runCabalSession :: FilePath -> Session a -> IO a
+runCabalSession :: FilePath -> (FilePath -> Session a) -> IO a
 runCabalSession subdir =
-    failIfSessionTimeout . runSessionWithServerInTmpDir def cabalPlugin (FS.mkVirtualFileTree testDataDir [FS.copyDir subdir])
+    failIfSessionTimeout . runSessionWithServer' def cabalPlugin (testDataDir </> subdir)
 
-runCabalTestCaseSessionVft :: TestName -> FS.VirtualFileTree -> Session () -> TestTree
+runCabalTestCaseSessionVft :: TestName -> VirtualFileTree -> Session () -> TestTree
 runCabalTestCaseSessionVft title vft = testCase title . runCabalSessionVft vft
 
-runCabalSessionVft :: FS.VirtualFileTree -> Session a -> IO a
+runCabalSessionVft :: VirtualFileTree -> Session a -> IO a
 runCabalSessionVft vft =
     failIfSessionTimeout . runSessionWithServerInTmpDir def cabalPlugin vft
 
-runHaskellAndCabalSession :: FS.VirtualFileTree -> Session a -> IO a
-runHaskellAndCabalSession vft =
-    failIfSessionTimeout . runSessionWithServerInTmpDir def (cabalPlugin <> cabalHaskellPlugin) vft
+runHaskellAndCabalSession :: FilePath -> Session a -> IO a
+runHaskellAndCabalSession subdir =
+    failIfSessionTimeout . runSessionWithServer def (cabalPlugin <> cabalHaskellPlugin) (testDataDir </> subdir)
 
 runCabalGoldenSession :: TestName -> FilePath -> FilePath -> (TextDocumentIdentifier -> Session ()) -> TestTree
 runCabalGoldenSession title subdir fp act = goldenWithCabalDoc def cabalPlugin title testDataDir (subdir </> fp) "golden" "cabal" act

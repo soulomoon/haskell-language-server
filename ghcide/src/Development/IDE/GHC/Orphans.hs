@@ -26,9 +26,6 @@ import           GHC.Iface.Ext.Types
 import           GHC.Parser.Annotation
 import           GHC.Types.PkgQual
 import           GHC.Types.SrcLoc
-#if MIN_VERSION_ghc(9,13,0)
-import           GHC.Types.Basic                   (ImportLevel)
-#endif
 
 -- See Note [Guidelines For Using CPP In GHCIDE Import Statements]
 
@@ -47,9 +44,7 @@ instance Show CgGuts where show = unpack . printOutputable . cg_module
 instance NFData CgGuts where rnf = rwhnf
 instance Show ModDetails where show = const "<moddetails>"
 instance NFData ModDetails where rnf = rwhnf
-#if !MIN_VERSION_ghc(9,13,0)
 instance NFData SafeHaskellMode where rnf = rwhnf
-#endif
 instance Show Linkable where show = unpack . printOutputable
 #if MIN_VERSION_ghc(9,11,0)
 instance NFData Linkable where rnf (Linkable a b c) = rnf a `seq` rnf b `seq` rnf c
@@ -141,10 +136,8 @@ instance Hashable ModuleName where
 instance NFData a => NFData (IdentifierDetails a) where
     rnf (IdentifierDetails a b) = rnf a `seq` rnf (length b)
 
-#if !MIN_VERSION_ghc(9,13,0)
 instance NFData RealSrcSpan where
     rnf = rwhnf
-#endif
 
 srcSpanFileTag, srcSpanStartLineTag, srcSpanStartColTag,
     srcSpanEndLineTag, srcSpanEndColTag :: String
@@ -216,10 +209,8 @@ instance NFData PkgQual where
   rnf (ThisPkg uid)  = rnf uid
   rnf (OtherPkg uid) = rnf uid
 
-#if !MIN_VERSION_ghc(9,13,0)
 instance NFData UnitId where
   rnf = rwhnf
-#endif
 
 instance NFData NodeKey where
   rnf = rwhnf
@@ -244,8 +235,3 @@ instance NFData Extension where
 
 instance NFData (UniqFM Name [Name]) where
   rnf (ufmToIntMap -> m) = rnf m
-
-#if MIN_VERSION_ghc(9,13,0)
-instance NFData ImportLevel where
-  rnf = rwhnf
-#endif

@@ -36,8 +36,6 @@ import           Ide.Types                                     (CommandId (Comma
                                                                 PluginId)
 
 import           Control.Lens                                  ((^.))
-import qualified Data.Aeson                                    as Aeson
-import           Development.IDE.Session.Diagnostics
 import qualified Language.LSP.Protocol.Lens                    as JL
 import           Language.LSP.Protocol.Types                   (CodeActionKind (..),
                                                                 VersionedTextDocumentIdentifier)
@@ -45,6 +43,7 @@ import qualified Language.LSP.Protocol.Types                   as J
 import           System.FilePath
 import           Text.PrettyPrint                              (render)
 import           Text.Regex.TDFA
+
 --------------------------------------------
 -- Add module to cabal file
 --------------------------------------------
@@ -149,16 +148,13 @@ mkRelativeModulePathM hsSourceDirs cabalSrcPath' haskellFilePath =
   cabalSrcPath = takeDirectory cabalSrcPath'
 
 isUnknownModuleDiagnostic :: J.Diagnostic -> Bool
-isUnknownModuleDiagnostic diag =
-  case diag ^. JL.data_ of
-    Nothing -> False
-    Just v ->
-      case Aeson.fromJSON v of
-        Aeson.Success details ->
-          case structuredCradleError details of
-            Just (UnknownModuleError _) -> True
-            _                           -> False
-        _ -> False
+isUnknownModuleDiagnostic diag = (msg =~ regex)
+ where
+  msg :: T.Text
+  msg = diag ^. JL.message
+  regex :: T.Text
+  regex = "Loading the module [\8216'][^\8217']*[\8217'] failed."
+
 --------------------------
 -- Below are several utility functions which create a StanzaItem for each of the possible Stanzas,
 -- these all have specific constructors we need to match, so we can't generalise this process well.

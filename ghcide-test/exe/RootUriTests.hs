@@ -30,10 +30,9 @@ tests = testCase "use rootUri" . runTest "dirA" "dirB" $ \dir -> do
         def
         {
             testPluginDescriptor = dummyPlugin
-            , testDirLocation = Right $ mkIdeTestFs [copyDir "rootUri"]
+            , testDirLocation = mkIdeTestFs [copyDir "rootUri"]
             , testServerRoot = Just dir1
             , testClientRoot = Just dir2
-            , testShiftRoot = True
         }
 
 

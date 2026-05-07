@@ -12,7 +12,6 @@ module Development.IDE.Plugin.Test
   ) where
 
 import           Control.Concurrent                   (threadDelay)
-import qualified Control.Exception                    as E
 import           Control.Monad
 import           Control.Monad.Except                 (ExceptT (..), throwError)
 import           Control.Monad.IO.Class
@@ -24,7 +23,6 @@ import qualified Data.Aeson.Types                     as A
 import           Data.Bifunctor
 import           Data.CaseInsensitive                 (CI, original)
 import qualified Data.HashMap.Strict                  as HM
-import qualified Data.HashSet                         as Set
 import           Data.Maybe                           (isJust)
 import           Data.Proxy
 import           Data.String
@@ -41,11 +39,9 @@ import           Development.IDE.Graph.Database       (ShakeDatabase,
                                                        shakeGetBuildStep,
                                                        shakeGetCleanKeys)
 import           Development.IDE.Graph.Internal.Types (Result (resultBuilt, resultChanged, resultVisited),
-                                                       Step (Step))
+                                                       Step (..))
 import qualified Development.IDE.Graph.Internal.Types as Graph
-import           Development.IDE.Session              (clearSessionLoaderPendingBarrier,
-                                                       setSessionLoaderPendingBarrier)
-import           Development.IDE.Types.Action
+import           Development.IDE.Types.Action         (countQueue)
 import           Development.IDE.Types.HscEnvEq       (HscEnvEq (hscEnv))
 import           Development.IDE.Types.Location       (fromUri)
 import           GHC.Generics                         (Generic)
@@ -57,22 +53,20 @@ import qualified "list-t" ListT
 import qualified StmContainers.Map                    as STM
 import           System.Time.Extra
 
-type Age = Int
 data TestRequest
     = BlockSeconds Seconds           -- ^ :: Null
     | GetInterfaceFilesDir Uri       -- ^ :: String
     | GetShakeSessionQueueCount      -- ^ :: Number
     | WaitForShakeQueue -- ^ Block until the Shake queue is empty. Returns Null
     | WaitForIdeRule String Uri      -- ^ :: WaitForIdeRuleResult
-    | WaitForIdeRules String [Uri]   -- ^ :: [WaitForIdeRuleResult]
     | GetBuildKeysVisited        -- ^ :: [(String]
     | GetBuildKeysBuilt          -- ^ :: [(String]
     | GetBuildKeysChanged        -- ^ :: [(String]
     | GetBuildEdgesCount         -- ^ :: Int
-    | GarbageCollectDirtyKeys CheckParents Age    -- ^ :: [String] (list of keys collected)
     | GetStoredKeys                  -- ^ :: [String] (list of keys in store)
     | GetFilesOfInterest             -- ^ :: [FilePath]
     | GetRebuildsCount               -- ^ :: Int (number of times we recompiled with GHC)
+    | WaitForDiagnosticPublished
     deriving Generic
     deriving anyclass (FromJSON, ToJSON)
 
@@ -109,26 +103,11 @@ testRequestHandler s (GetInterfaceFilesDir file) = liftIO $ do
 testRequestHandler s GetShakeSessionQueueCount = liftIO $ do
     n <- atomically $ countQueue $ actionQueue $ shakeExtras s
     return $ Right (toJSON n)
-testRequestHandler s WaitForShakeQueue = liftIO $ do
-    atomically $ do
-        n <- countQueue $ actionQueue $ shakeExtras s
-        when (n>0) retry
-    return $ Right A.Null
+testRequestHandler s WaitForShakeQueue = waitForIdeIdle s
 testRequestHandler s (WaitForIdeRule k file) = liftIO $ do
     let nfp = fromUri $ toNormalizedUri file
     success <- runAction ("WaitForIdeRule " <> k <> " " <> show file) s $ parseAction (fromString k) nfp
     let res = WaitForIdeRuleResult <$> success
-    return $ bimap PluginInvalidParams toJSON res
-testRequestHandler s (WaitForIdeRules k files) = liftIO $ do
-    let nfps = fmap (fromUri . toNormalizedUri) files
-        uniqueCount = Set.size (Set.fromList nfps)
-        act = runAction ("WaitForIdeRules " <> k <> " " <> show files) s $ parseActions (fromString k) nfps
-    success <-
-      if uniqueCount > 0
-        then (setSessionLoaderPendingBarrier s uniqueCount >> act)
-              `E.finally` clearSessionLoaderPendingBarrier s
-        else act
-    let res = fmap (fmap WaitForIdeRuleResult) success
     return $ bimap PluginInvalidParams toJSON res
 testRequestHandler s GetBuildKeysBuilt = liftIO $ do
     keys <- getDatabaseKeys resultBuilt $ shakeDb s
@@ -142,11 +121,8 @@ testRequestHandler s GetBuildKeysVisited = liftIO $ do
 testRequestHandler s GetBuildEdgesCount = liftIO $ do
     count <- shakeGetBuildEdges $ shakeDb s
     return $ Right $ toJSON count
-testRequestHandler s (GarbageCollectDirtyKeys parents age) = do
-    res <- liftIO $ runAction "garbage collect dirty" s $ garbageCollectDirtyKeysOlderThan age parents
-    return $ Right $ toJSON $ map show res
 testRequestHandler s GetStoredKeys = do
-    keys <- liftIO $ atomically $ map fst <$> ListT.toList (STM.listT $ state $ shakeExtras s)
+    keys <- liftIO $ atomically $ map fst <$> ListT.toList (STM.listT $ stateValues $ shakeExtras s)
     return $ Right $ toJSON $ map show keys
 testRequestHandler s GetFilesOfInterest = do
     ff <- liftIO $ getFilesOfInterest s
@@ -154,6 +130,15 @@ testRequestHandler s GetFilesOfInterest = do
 testRequestHandler s GetRebuildsCount = do
     count <- liftIO $ runAction "get build count" s getRebuildCount
     return $ Right $ toJSON count
+testRequestHandler s WaitForDiagnosticPublished = waitForIdeIdle s
+
+waitForIdeIdle ::  IdeState
+                -> HandlerM config (Either PluginError Value)
+waitForIdeIdle s =
+    liftIO $ do
+    waitUntilIdle <- runAction "wait for diagnostics published" s $ waitUntilDiagnosticsPublished
+    waitUntilIdle
+    return $ Right A.Null
 
 getDatabaseKeys :: (Graph.Result -> Step)
     -> ShakeDatabase
@@ -174,18 +159,6 @@ parseAction "ghcsessiondeps" fp = Right . isJust <$> use GhcSessionDeps fp
 parseAction "gethieast" fp = Right . isJust <$> use GetHieAst fp
 parseAction "getFileContents" fp = Right . isJust <$> use GetFileContents fp
 parseAction other _ = return $ Left $ "Cannot parse ide rule: " <> pack (original other)
-
-parseActions :: CI String -> [NormalizedFilePath] -> Action (Either Text [Bool])
-parseActions "typecheck" fps = Right . fmap isJust <$> uses TypeCheck fps
-parseActions "getLocatedImports" fps = Right . fmap isJust <$> uses GetLocatedImports fps
-parseActions "getmodsummary" fps = Right . fmap isJust <$> uses GetModSummary fps
-parseActions "getmodsummarywithouttimestamps" fps = Right . fmap isJust <$> uses GetModSummaryWithoutTimestamps fps
-parseActions "getparsedmodule" fps = Right . fmap isJust <$> uses GetParsedModule fps
-parseActions "ghcsession" fps = Right . fmap isJust <$> uses GhcSession fps
-parseActions "ghcsessiondeps" fps = Right . fmap isJust <$> uses GhcSessionDeps fps
-parseActions "gethieast" fps = Right . fmap isJust <$> uses GetHieAst fps
-parseActions "getFileContents" fps = Right . fmap isJust <$> uses GetFileContents fps
-parseActions other _ = return $ Left $ "Cannot parse ide rule: " <> pack (original other)
 
 -- | a command that blocks forever. Used for testing
 blockCommandId :: Text

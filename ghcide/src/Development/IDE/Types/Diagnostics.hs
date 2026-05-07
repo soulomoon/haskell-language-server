@@ -29,6 +29,7 @@ module Development.IDE.Types.Diagnostics (
   attachReason,
   attachedReason) where
 
+import           Control.Applicative            ((<|>))
 import           Control.DeepSeq
 import           Control.Lens
 import qualified Data.Aeson                     as JSON

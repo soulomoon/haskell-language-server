@@ -137,24 +137,26 @@ data HieFunMaskKind kind where
 
 data SemanticLog
   = LogShake Shake.Log
-  | LogDependencyError PluginError
+  | LogDependencyError NormalizedFilePath PluginError
   | LogNoAST FilePath
   | LogConfig SemanticTokensConfig
   | LogMsg String
-  | LogNoVF
+  | LogNoVF NormalizedFilePath
   | LogSemanticTokensDeltaMisMatch Text (Maybe Text)
 
 instance Pretty SemanticLog where
   pretty theLog = case theLog of
     LogShake shakeLog -> pretty shakeLog
-    LogNoAST path     -> "no HieAst exist for file" <> pretty path
-    LogNoVF           -> "no VirtualSourceFile exist for file"
-    LogConfig config  -> "SemanticTokensConfig_: " <> pretty (show config)
-    LogMsg msg        -> "SemanticLog Debug Message: " <> pretty msg
-    LogSemanticTokensDeltaMisMatch previousIdFromRequest previousIdFromCache
-                      -> "SemanticTokensDeltaMisMatch: previousIdFromRequest: " <> pretty previousIdFromRequest
-                      <> " previousIdFromCache: " <> pretty previousIdFromCache
-    LogDependencyError err -> "SemanticTokens' dependency error: " <> pretty err
+    LogNoAST path -> "no HieAst exist for file" <> pretty path
+    LogNoVF path -> "no VirtualSourceFile exist for file" <> pretty (show path)
+    LogConfig config -> "SemanticTokensConfig_: " <> pretty (show config)
+    LogMsg msg -> "SemanticLog Debug Message: " <> pretty msg
+    LogSemanticTokensDeltaMisMatch previousIdFromRequest previousIdFromCache ->
+      "SemanticTokensDeltaMisMatch: previousIdFromRequest: "
+        <> pretty previousIdFromRequest
+        <> " previousIdFromCache: "
+        <> pretty previousIdFromCache
+    LogDependencyError path err -> "SemanticTokens' dependency error: " <> pretty err <> " for file " <> pretty (show path)
 
 
 type SemanticTokenId = Text

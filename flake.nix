@@ -2,7 +2,9 @@
   description = "haskell-language-server development flake";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    # Don't use nixpkgs-unstable as aarch64-darwin is currently broken there.
+    # Check again, when https://github.com/NixOS/nixpkgs/pull/414242 is resolved.
+    nixpkgs.url = "github:NixOS/nixpkgs/c742ae7908a82c9bf23ce27bfca92a00e9bcd541";
     flake-utils.url = "github:numtide/flake-utils";
     # For default.nix
     flake-compat = {
@@ -27,7 +29,7 @@
             ps.myst-parser
             ps.pip
             ps.sphinx
-            ps.sphinx-rtd-theme
+            ps.sphinx_rtd_theme
           ]);
 
         docs = pkgs.stdenv.mkDerivation {
@@ -109,7 +111,6 @@
           shell-ghc98 = mkDevShell pkgs.haskell.packages.ghc98;
           shell-ghc910 = mkDevShell pkgs.haskell.packages.ghc910;
           shell-ghc912 = mkDevShell pkgs.haskell.packages.ghc912;
-          shell-ghc914 = mkDevShell pkgs.haskell.packages.ghc914;
         };
 
         packages = { inherit docs; };

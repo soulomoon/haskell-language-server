@@ -24,7 +24,9 @@ import           Data.Maybe
 import qualified Data.Text                                as T
 import           Development.IDE.GHC.Util
 import           Development.IDE.Plugin.Completions.Types (extendImportCommandId)
-import           Development.IDE.Test
+import           Development.IDE.Test                     hiding
+                                                          (waitForBuildQueue,
+                                                           waitForTypecheck)
 import           Development.IDE.Types.Location
 import           Development.Shake                        (getDirectoryFilesIO)
 import qualified Language.LSP.Protocol.Lens               as L
@@ -49,7 +51,10 @@ import           Test.Hls
 import qualified Development.IDE.GHC.ExactPrint
 import           Development.IDE.Plugin.CodeAction        (NotInScope (..))
 import qualified Development.IDE.Plugin.CodeAction        as Refactor
+import           Development.IDE.Plugin.Test              (TestRequest (..))
 import qualified Test.AddArgument
+import           Test.Hls.FileSystem                      (VirtualFileTree (..),
+                                                           copyDir)
 
 main :: IO ()
 main = defaultTestRunner tests
@@ -241,17 +246,21 @@ completionTests =
             "FormatParse"
         ]
         , testGroup "Package completion"
-          [ completionCommandTest
+          [
+            completionCommandTest
                   "import Data.Sequence"
                   ["module A where", "foo :: Seq"]
-                  (Position 1 9)
+                   -- Place cursor after the full identifier to avoid fuzzy matching on "Se"
+                  -- Off-by-one here can make the prefix "Se" instead of "Seq" and hide the desired item
+                  (Position 1 10)
                   "Seq"
                   ["module A where", "import Data.Sequence (Seq)", "foo :: Seq"]
 
           , completionCommandTest
                   "qualified import"
                   ["module A where", "foo :: Seq.Seq"]
-                  (Position 1 13)
+                  -- Place cursor after the trailing 'q' so the prefix is exactly "Seq"
+                  (Position 1 14)
                   "Seq"
                   ["module A where", "import qualified Data.Sequence as Seq", "foo :: Seq.Seq"]
           ]
@@ -261,6 +270,7 @@ completionCommandTest :: TestName -> [T.Text] -> Position -> T.Text -> [T.Text] 
 completionCommandTest name src pos wanted expected = testSession name $ do
   docId <- createDoc "A.hs" "haskell" (T.unlines src)
   _ <- waitForDiagnostics
+  void $ callTestPluginWithDiag WaitForDiagnosticPublished
   compls <- skipManyTill anyMessage (getCompletions docId pos)
   let wantedC = mapMaybe (\case
         CompletionItem {_insertText = Just x, _command = Just cmd}
@@ -622,12 +632,13 @@ renameActionTests = testGroup "rename actions"
         ]
   ]
   where
-    check :: TestName -> [T.Text] -> (T.Text, Range) -> [T.Text] -> TestTree
+    check :: HasCallStack => TestName -> [T.Text] -> (T.Text, Range) -> [T.Text] -> TestTree
     check testName linesOrig (actionTitle, actionRange) linesExpected  =
       testSession testName $ do
         let contentBefore = T.unlines linesOrig
         doc <- createDoc "Testing.hs" "haskell" contentBefore
         _ <- waitForDiagnostics
+        waitForBuildQueue
         action <- pickActionWithTitle actionTitle =<< getCodeActions doc actionRange
         executeCodeAction action
         contentAfter <- documentContents doc
@@ -3288,7 +3299,7 @@ removeRedundantConstraintsTests = let
     ]
 
   typeSignatureLined3 = T.unlines $ header <>
-    [ "foo :: (Eq a"
+    [ "foo :: ( Eq a"
     , "       , Show a"
     , "       )"
     , "    => a -> Bool"
@@ -3296,7 +3307,7 @@ removeRedundantConstraintsTests = let
     ]
 
   typeSignatureLined3' = T.unlines $ header <>
-    [ "foo :: (Eq a"
+    [ "foo :: ( Eq a"
     , "       )"
     , "    => a -> Bool"
     , "foo x = x == x"
@@ -3379,9 +3390,7 @@ addSigActionTests = let
     executeCodeAction chosenAction
     modifiedCode <- documentContents doc
     liftIO $ expectedCode @=? modifiedCode
-  issue806 = if ghcVersion >= GHC914 then
-                  "hello = print"           >:: "hello :: GHC.Internal.Types.ZonkAny 0 -> IO ()" -- GHC 9.14 moved to GHC.Internal.Types
-                else if ghcVersion >= GHC910 then
+  issue806 = if ghcVersion >= GHC910 then
                   "hello = print"           >:: "hello :: GHC.Types.ZonkAny 0 -> IO ()" -- GHC now returns ZonkAny 0 instead of Any. https://gitlab.haskell.org/ghc/ghc/-/issues/25895
                 else
                   "hello = print"           >:: "hello :: GHC.Types.Any -> IO ()" -- Documents current behavior outlined in #806
@@ -3981,7 +3990,7 @@ extendImportTestsRegEx = testGroup "regex parsing"
         template message expected = do
             liftIO $ expected @=? matchRegExMultipleImports message
 
-pickActionWithTitle :: T.Text -> [Command |? CodeAction] -> Session CodeAction
+pickActionWithTitle :: HasCallStack => T.Text -> [Command |? CodeAction] -> Session CodeAction
 pickActionWithTitle title actions =
   case matches of
     [] -> liftIO . assertFailure $ "CodeAction with title " <> show title <> " not found in " <> show titles
@@ -4033,31 +4042,32 @@ testSessionWithExtraFiles :: HasCallStack => FilePath -> TestName -> (FilePath -
 testSessionWithExtraFiles prefix name = testCase name . runWithExtraFiles prefix
 
 runWithExtraFiles :: HasCallStack => FilePath -> (FilePath -> Session a) -> IO a
-runWithExtraFiles prefix s = withTempDir $ \dir -> do
-  copyTestDataFiles dir prefix
-  runInDir dir (s dir)
+runWithExtraFiles prefix s =
+  let rootPath = "plugins/hls-refactor-plugin/test/data" </> prefix
+  in runInDir (VirtualFileTree [copyDir "./"] rootPath) s
 
-copyTestDataFiles :: HasCallStack => FilePath -> FilePath -> IO ()
-copyTestDataFiles dir prefix = do
-  -- Copy all the test data files to the temporary workspace
-  testDataFiles <- getDirectoryFilesIO ("plugins/hls-refactor-plugin/test/data" </> prefix) ["//*"]
-  for_ testDataFiles $ \f -> do
-    createDirectoryIfMissing True $ dir </> takeDirectory f
-    copyFile ("plugins/hls-refactor-plugin/test/data" </> prefix </> f) (dir </> f)
+-- copyTestDataFiles :: HasCallStack => FilePath -> FilePath -> IO ()
+-- copyTestDataFiles dir prefix = do
+--   -- Copy all the test data files to the temporary workspace
+--   testDataFiles <- getDirectoryFilesIO ("plugins/hls-refactor-plugin/test/data" </> prefix) ["//*"]
+--   for_ testDataFiles $ \f -> do
+--     createDirectoryIfMissing True $ dir </> takeDirectory f
+--     copyFile ("plugins/hls-refactor-plugin/test/data" </> prefix </> f) (dir </> f)
 
 run :: Session a -> IO a
 run s = run' (const s)
 
 run' :: (FilePath -> Session a) -> IO a
-run' s = withTempDir $ \dir -> runInDir dir (s dir)
+run' = runInDir (VirtualFileTree [] "")
 
-runInDir :: FilePath -> Session a -> IO a
-runInDir dir act =
+runInDir :: VirtualFileTree -> (FilePath -> Session a) -> IO a
+runInDir vft act =
     runSessionWithTestConfig def
-        { testDirLocation = Left dir
+        { testDirLocation = vft
         , testPluginDescriptor = refactorPlugin
-        , testConfigCaps = lspTestCaps }
-        $ const act
+        , testConfigCaps = lspTestCaps
+        }
+        $ act
 
 lspTestCaps :: ClientCapabilities
 lspTestCaps = fullLatestClientCaps { _window = Just $ WindowClientCapabilities (Just True) Nothing Nothing }

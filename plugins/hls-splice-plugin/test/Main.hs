@@ -90,8 +90,8 @@ goldenTestWithEdit fp expect tc line col =
 
      void waitForDiagnostics
      void waitForBuildQueue
-     alt <- liftIO $ T.readFile (testDataDir </> fp <.> "error.hs")
-     void $ applyEdit doc $ TextEdit theRange alt
+     alt <- liftIO $ T.readFile (fp <.> "error.hs")
+    --  void $ applyEdit doc $ TextEdit theRange alt
      changeDoc doc [TextDocumentContentChangeEvent $ InL
         TextDocumentContentChangePartial {_range = theRange, _rangeLength = Nothing, _text = alt}
         ]

@@ -18,22 +18,9 @@ import           System.FilePath
 
 data CradleErrorDetails =
   CradleErrorDetails
-    { cradleDependencies    :: [FilePath]
+    { cabalProjectFiles :: [FilePath]
     -- ^ files related to the cradle error
     -- i.e. .cabal, cabal.project, etc.
-    , structuredCradleError :: Maybe StructuredCradleError
-    -- ^ structured information about the cradle error
-    -- i.e. unknownModules error
-    } deriving (Show, Eq, Ord, Read, Generic, Aeson.ToJSON, Aeson.FromJSON)
-
-data StructuredCradleError
-  = UnknownModuleError UnknownModuleDetails
-  deriving (Show, Eq, Ord, Read, Generic, Aeson.ToJSON, Aeson.FromJSON)
-
-data UnknownModuleDetails =
-  UnknownModuleDetails
-    { moduleFilePath      :: FilePath
-    , suggestedModuleName :: String
     } deriving (Show, Eq, Ord, Read, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 {- | Takes a cradle error, the corresponding cradle and the file path where
@@ -46,12 +33,7 @@ renderCradleError cradleError cradle nfp =
         ideErrorWithSource (Just "cradle") (Just DiagnosticSeverity_Error) nfp (T.unlines $ map T.pack userFriendlyMessage) Nothing
   in
   if HieBios.isCabalCradle cradle
-     then noDetails & fdLspDiagnosticL %~ \diag -> diag
-            { _data_ = Just $ Aeson.toJSON CradleErrorDetails
-                { cradleDependencies = absDeps
-                , structuredCradleError = fmap UnknownModuleError mkUnknownModuleDetails
-                }
-            }
+     then noDetails & fdLspDiagnosticL %~ \diag -> diag{_data_ = Just $ Aeson.toJSON CradleErrorDetails{cabalProjectFiles=absDeps}}
      else noDetails
   where
     ms = cradleErrorStderr cradleError
@@ -59,18 +41,13 @@ renderCradleError cradleError cradle nfp =
     absDeps = fmap (cradleRootDir cradle </>) (cradleErrorDependencies cradleError)
     userFriendlyMessage :: [String]
     userFriendlyMessage
-      | HieBios.isCabalCradle cradle = fromMaybe ms $ fileMissingMessage <|> (unknownModuleMessage (fromNormalizedFilePath nfp) <$ mkUnknownModuleDetails)
+      | HieBios.isCabalCradle cradle = fromMaybe ms $ fileMissingMessage <|> mkUnknownModuleMessage
       | otherwise = ms
 
-    -- Produce structured details when unknown module error is detected
-    mkUnknownModuleDetails :: Maybe UnknownModuleDetails
-    mkUnknownModuleDetails
+    mkUnknownModuleMessage :: Maybe [String]
+    mkUnknownModuleMessage
       | any (isInfixOf "Failed extracting script block:") ms =
-          let fp = fromNormalizedFilePath nfp
-          in Just UnknownModuleDetails
-               { moduleFilePath   = fp
-               , suggestedModuleName = dropExtension (takeFileName fp)
-               }
+          Just $ unknownModuleMessage (fromNormalizedFilePath nfp)
       | otherwise = Nothing
 
     fileMissingMessage :: Maybe [String]

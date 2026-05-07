@@ -27,18 +27,18 @@ module Development.IDE.Core.PluginUtils
 -- * Diagnostics
 , activeDiagnosticsInRange
 , activeDiagnosticsInRangeMT
-, injectServerDiagnostics
 -- * Formatting handlers
 , mkFormattingHandlers) where
 
 import           Control.Concurrent.STM
-import           Control.Lens
+import           Control.Lens                         ((^.))
 import           Control.Monad.Error.Class            (MonadError (throwError))
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
 import           Control.Monad.Reader                 (runReaderT)
 import           Control.Monad.Trans.Except
 import           Control.Monad.Trans.Maybe
+import           Data.Functor.Identity
 import qualified Data.Text                            as T
 import qualified Data.Text.Utf16.Rope.Mixed           as Rope
 import           Development.IDE.Core.FileStore
@@ -46,11 +46,11 @@ import           Development.IDE.Core.PositionMapping
 import           Development.IDE.Core.Service         (runAction)
 import           Development.IDE.Core.Shake           (IdeAction, IdeRule,
                                                        IdeState (shakeExtras),
-                                                       mkDelayedAction,
                                                        shakeEnqueue)
 import qualified Development.IDE.Core.Shake           as Shake
 import           Development.IDE.GHC.Orphans          ()
 import           Development.IDE.Graph                hiding (ShakeValue)
+import           Development.IDE.Graph.Database       (mkDelayedAction)
 import           Development.IDE.Types.Diagnostics
 import           Development.IDE.Types.Location       (NormalizedFilePath)
 import qualified Development.IDE.Types.Location       as Location
@@ -60,7 +60,6 @@ import           Ide.PluginUtils                      (rangesOverlap)
 import           Ide.Types
 import qualified Language.LSP.Protocol.Lens           as LSP
 import           Language.LSP.Protocol.Message        (SMethod (..))
-import           Language.LSP.Protocol.Types          (CodeActionParams)
 import qualified Language.LSP.Protocol.Types          as LSP
 import qualified StmContainers.Map                    as STM
 
@@ -72,13 +71,13 @@ import qualified StmContainers.Map                    as STM
 runActionE :: MonadIO m => String -> IdeState -> ExceptT e Action a -> ExceptT e m a
 runActionE herald ide act =
   mapExceptT liftIO . ExceptT $
-    join $ shakeEnqueue (shakeExtras ide) (mkDelayedAction herald Logger.Debug $ runExceptT act)
+    join $ shakeEnqueue (shakeExtras ide) =<< (mkDelayedAction herald Logger.Debug $ runExceptT act)
 
 -- |MaybeT version of `runAction`, takes a MaybeT Action
 runActionMT :: MonadIO m => String -> IdeState -> MaybeT Action a -> MaybeT m a
 runActionMT herald ide act =
   mapMaybeT liftIO . MaybeT $
-    join $ shakeEnqueue (shakeExtras ide) (mkDelayedAction herald Logger.Debug $ runMaybeT act)
+    join $ shakeEnqueue (shakeExtras ide) =<< (mkDelayedAction herald Logger.Debug $ runMaybeT act)
 
 -- |ExceptT version of `use` that throws a PluginRuleFailed upon failure
 useE :: IdeRule k v => k -> NormalizedFilePath -> ExceptT PluginError Action v
@@ -223,18 +222,6 @@ activeDiagnosticsInRangeMT ide nfp range = do
 -- | Just like 'activeDiagnosticsInRangeMT'. See the docs of 'activeDiagnosticsInRangeMT' for details.
 activeDiagnosticsInRange :: MonadIO m => Shake.ShakeExtras -> NormalizedFilePath -> LSP.Range -> m (Maybe [FileDiagnostic])
 activeDiagnosticsInRange ide nfp range = runMaybeT (activeDiagnosticsInRangeMT ide nfp range)
-
--- Prefer server-side diagnostics if available; they are authoritative.
-injectServerDiagnostics :: IdeState -> CodeActionParams -> IO CodeActionParams
-injectServerDiagnostics ide params@LSP.CodeActionParams{_textDocument=LSP.TextDocumentIdentifier{_uri}, _range} = do
-  serverDiags <- case LSP.uriToNormalizedFilePath (LSP.toNormalizedUri _uri) of
-    Nothing  -> pure []
-    Just nfp -> do
-      mDiags <- activeDiagnosticsInRange (shakeExtras ide) nfp _range
-      case mDiags of
-        Nothing    -> pure []
-        Just diags -> pure $ diags ^.. traverse . fdLspDiagnosticL
-  pure $ params & LSP.context . LSP.diagnostics .~ serverDiags
 
 -- ----------------------------------------------------------------------------
 -- Formatting handlers

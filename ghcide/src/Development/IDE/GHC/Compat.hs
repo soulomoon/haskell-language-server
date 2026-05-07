@@ -66,7 +66,6 @@ module Development.IDE.GHC.Compat(
     simplifyExpr,
     tidyExpr,
     emptyTidyEnv,
-    tidyOpenType,
     corePrepExpr,
     corePrepPgm,
     lintInteractiveExpr,
@@ -74,7 +73,6 @@ module Development.IDE.GHC.Compat(
     HomePackageTable,
     lookupHpt,
     loadModulesHome,
-    hugElts,
     bcoFreeNames,
     ModIfaceAnnotation,
     pattern Annotation,
@@ -89,9 +87,7 @@ module Development.IDE.GHC.Compat(
     emptyInScopeSet,
     Unfolding(..),
     noUnfolding,
-#if !MIN_VERSION_ghc(9,13,0)
     loadExpr,
-#endif
     byteCodeGen,
     bc_bcos,
     loadDecls,
@@ -139,7 +135,6 @@ import           Prelude                                 hiding (mod)
 
 import qualified GHC.Core.Opt.Pipeline                   as GHC
 import           GHC.Core.Tidy                           (tidyExpr)
-import           GHC.Core.TyCo.Tidy                      (tidyOpenType)
 import           GHC.CoreToStg.Prep                      (corePrepPgm)
 import qualified GHC.CoreToStg.Prep                      as GHC
 import           GHC.Driver.Hooks                        (hscCompileCoreExprHook)
@@ -178,11 +173,7 @@ import           GHC.Driver.Config.CoreToStg.Prep        (initCorePrepConfig)
 import           GHC.Driver.Config.Stg.Pipeline
 import           GHC.Driver.Env                          as Env
 import           GHC.Iface.Env
-import           GHC.Linker.Loader                       (loadDecls
-#if !MIN_VERSION_ghc(9,13,0)
-                                                         , loadExpr
-#endif
-                                                         )
+import           GHC.Linker.Loader                       (loadDecls, loadExpr)
 import           GHC.Runtime.Context                     (icInteractiveModule)
 import           GHC.Stg.Pipeline
 import           GHC.Stg.Syntax
@@ -190,22 +181,13 @@ import           GHC.StgToByteCode
 import           GHC.Types.CostCentre
 import           GHC.Types.IPE
 import           GHC.Types.SrcLoc                        (combineRealSrcSpans)
-#if MIN_VERSION_ghc(9,13,0)
-import           GHC.Unit.Home.PackageTable              (HomePackageTable,
-                                                          lookupHpt)
-#else
 import           GHC.Unit.Home.ModInfo                   (HomePackageTable,
                                                           lookupHpt)
-#endif
 import           GHC.Unit.Module.Deps                    (Dependencies (dep_direct_mods),
                                                           Usage (..))
 import           GHC.Unit.Module.ModIface
 
 -- See Note [Guidelines For Using CPP In GHCIDE Import Statements]
-
-#if MIN_VERSION_ghc(9,13,0)
-import           GHC.Unit.Home.Graph                     (addHomeModInfoToHug, unitEnv_assocs)
-#endif
 
 #if MIN_VERSION_ghc(9,7,0)
 import           GHC.Tc.Zonk.TcType                      (tcInitTidyEnv)
@@ -283,11 +265,7 @@ reLocA = reLoc
 #endif
 
 getDependentMods :: ModIface -> [ModuleName]
-#if MIN_VERSION_ghc(9,13,0)
-getDependentMods = map (gwib_mod . (\(_,_,x) -> x)) . S.toList . dep_direct_mods . mi_deps
-#else
 getDependentMods = map (gwib_mod . snd) . S.toList . dep_direct_mods . mi_deps
-#endif
 
 simplifyExpr :: DynFlags -> HscEnv -> CoreExpr -> IO CoreExpr
 simplifyExpr _ env = GHC.simplifyExpr (Development.IDE.GHC.Compat.Env.hsc_logger env) (ue_eps (Development.IDE.GHC.Compat.Env.hsc_unit_env env)) (initSimplifyExprOpts (hsc_dflags env) (hsc_IC env))
@@ -382,11 +360,7 @@ nameListFromAvails as =
 
 
 getModuleHash :: ModIface -> Fingerprint
-#if MIN_VERSION_ghc(9,13,0)
-getModuleHash = mi_mod_hash
-#else
 getModuleHash = mi_mod_hash . mi_final_exts
-#endif
 
 
 disableWarningsAsErrors :: DynFlags -> DynFlags
@@ -437,16 +411,13 @@ data GhcVersion
   | GHC98
   | GHC910
   | GHC912
-  | GHC914
   deriving (Eq, Ord, Show, Enum)
 
 ghcVersionStr :: String
 ghcVersionStr = VERSION_ghc
 
 ghcVersion :: GhcVersion
-#if MIN_VERSION_GLASGOW_HASKELL(9,14,0,0)
-ghcVersion = GHC914
-#elif MIN_VERSION_GLASGOW_HASKELL(9,12,0,0)
+#if MIN_VERSION_GLASGOW_HASKELL(9,12,0,0)
 ghcVersion = GHC912
 #elif MIN_VERSION_GLASGOW_HASKELL(9,10,0,0)
 ghcVersion = GHC910
@@ -484,28 +455,14 @@ mkAstNode n = Node (SourcedNodeInfo $ Map.singleton GeneratedInfo n)
 loadModulesHome
     :: [HomeModInfo]
     -> HscEnv
-#if MIN_VERSION_ghc(9,13,0)
-    -> IO HscEnv
-loadModulesHome mod_infos e = do
-  let hug = hsc_HUG (e { hsc_type_env_vars = emptyKnotVars })
-  mapM_ (`addHomeModInfoToHug` hug) mod_infos
-  pure (e { hsc_type_env_vars = emptyKnotVars })
-#else
     -> HscEnv
 loadModulesHome mod_infos e =
   hscUpdateHUG (\hug -> foldl' (flip addHomeModInfoToHug) hug mod_infos) (e { hsc_type_env_vars = emptyKnotVars })
-#endif
-
-#if MIN_VERSION_ghc(9,13,0)
-hugElts :: HomeUnitGraph -> [(UnitId, HomeUnitEnv)]
-hugElts = unitEnv_assocs
-#endif
 
 recDotDot :: HsRecFields (GhcPass p) arg -> Maybe Int
 recDotDot x =
             unRecFieldsDotDot <$>
             unLoc <$> rec_dotdot x
 
-extract_cons :: DataDefnCons a -> [a]
 extract_cons (NewTypeCon x)      = [x]
 extract_cons (DataTypeCons _ xs) = xs

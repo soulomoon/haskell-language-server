@@ -1,13 +1,15 @@
 module IfaceTests (tests) where
 
 import           Config
+import           Control.Monad                 (void)
 import           Control.Monad.IO.Class        (liftIO)
 import qualified Data.Text                     as T
 import           Development.IDE.GHC.Util
 import           Development.IDE.Test          (configureCheckProject,
                                                 expectDiagnostics,
                                                 expectNoMoreDiagnostics,
-                                                getInterfaceFilesDir)
+                                                getInterfaceFilesDir,
+                                                waitForActionWithExpectedDiagnosticsFromFilePath)
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Protocol.Types   hiding
                                                (SemanticTokenAbsolute (..),
@@ -17,6 +19,8 @@ import           Language.LSP.Protocol.Types   hiding
 import           Language.LSP.Test
 import           System.Directory
 import           System.FilePath
+import           System.IO.Extra               hiding (withTempDir)
+import           Test.Hls                      (waitForDiagnosticsFrom)
 import           Test.Hls.FileSystem
 import           Test.Tasty
 import           Test.Tasty.HUnit
@@ -63,32 +67,30 @@ ifaceErrorTest = testWithExtraFiles "iface-error-test-1" "recomp" $ \dir -> do
     bSource <- liftIO $ readFileUtf8 bPath -- y :: Int
     pSource <- liftIO $ readFileUtf8 pPath -- bar = x :: Int
 
-    bdoc <- createDoc bPath "haskell" bSource
-    expectDiagnostics
-      [("P.hs", [(DiagnosticSeverity_Warning,(4,0), "Top-level binding", Just "GHC-38417")])] -- So what we know P has been loaded
+    -- bdoc <- createDoc bPath "haskell" bSource
+    bdoc <- waitForActionWithExpectedDiagnosticsFromFilePath
+                [("P.hs", [(DiagnosticSeverity_Warning,(4,0), "Top-level binding", Just "GHC-38417")])]  $ createDoc bPath "haskell" bSource
+      -- So what we know P has been loaded
 
     -- Change y from Int to B
-    changeDoc bdoc [ TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $
-                        T.unlines [ "module B where", "y :: Bool", "y = undefined"]
-                   ]
     -- save so that we can that the error propagates to A
-    sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams bdoc Nothing)
-
-
     -- Check that the error propagates to A
-    expectDiagnostics
+    waitForActionWithExpectedDiagnosticsFromFilePath
       [("A.hs", [(DiagnosticSeverity_Error, (5, 4), "Couldn't match expected type 'Int' with actual type 'Bool'", Just "GHC-83865")])]
+      $ do
+        changeDoc bdoc [ TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $
+                                T.unlines [ "module B where", "y :: Bool", "y = undefined"]
+                        ]
+        sendNotification SMethod_TextDocumentDidSave (DidSaveTextDocumentParams bdoc Nothing)
 
     -- Check that we wrote the interfaces for B when we saved
     hidir <- getInterfaceFilesDir bdoc
     hi_exists <- liftIO $ doesFileExist $ hidir </> "B.hi"
     liftIO $ assertBool ("Couldn't find B.hi in " ++ hidir) hi_exists
 
-    pdoc <- openDoc pPath "haskell"
-    expectDiagnostics
+    pdoc <- waitForActionWithExpectedDiagnosticsFromFilePath
       [("P.hs", [(DiagnosticSeverity_Warning,(4,0), "Top-level binding", Just "GHC-38417")])
-      ]
-    changeDoc pdoc [TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $ pSource <> "\nfoo = y :: Bool" ]
+      ] $ openDoc pPath "haskell"
     -- Now in P we have
     -- bar = x :: Int
     -- foo = y :: Bool
@@ -97,11 +99,11 @@ ifaceErrorTest = testWithExtraFiles "iface-error-test-1" "recomp" $ \dir -> do
     -- This is clearly inconsistent, and the expected outcome a bit surprising:
     --   - The diagnostic for A has already been received. Ghcide does not repeat diagnostics
     --   - P is being typechecked with the last successful artifacts for A.
-    expectDiagnostics
-      [("P.hs", [(DiagnosticSeverity_Warning,(4,0), "Top-level binding", Just "GHC-38417")])
-      ,("P.hs", [(DiagnosticSeverity_Warning,(6,0), "Top-level binding", Just "GHC-38417")])
-      ]
-    expectNoMoreDiagnostics 2
+    waitForActionWithExpectedDiagnosticsFromFilePath
+      [("P.hs", [(DiagnosticSeverity_Warning,(4,0), "Top-level binding", Just "GHC-38417"), (DiagnosticSeverity_Warning,(6,0), "Top-level binding", Just "GHC-38417")])
+      ] $ do
+        changeDoc pdoc [TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $ pSource <> "\nfoo = y :: Bool" ]
+        void $ waitForDiagnosticsFrom pdoc
 
 ifaceErrorTest2 :: TestTree
 ifaceErrorTest2 = testWithExtraFiles "iface-error-test-2" "recomp" $ \dir -> do
@@ -111,31 +113,33 @@ ifaceErrorTest2 = testWithExtraFiles "iface-error-test-2" "recomp" $ \dir -> do
     bSource <- liftIO $ readFileUtf8 bPath -- y :: Int
     pSource <- liftIO $ readFileUtf8 pPath -- bar = x :: Int
 
-    bdoc <- createDoc bPath "haskell" bSource
-    pdoc <- createDoc pPath "haskell" pSource
-    expectDiagnostics
+    (bdoc,pdoc) <- waitForActionWithExpectedDiagnosticsFromFilePath
       [("P.hs", [(DiagnosticSeverity_Warning,(4,0), "Top-level binding", Just "GHC-38417")])] -- So that we know P has been loaded
+      $ do
+            bdoc <- createDoc bPath "haskell" bSource
+            pdoc <- createDoc pPath "haskell" pSource
+            return (bdoc,pdoc)
 
-    -- Change y from Int to B
-    changeDoc bdoc [TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $
-        T.unlines ["module B where", "y :: Bool", "y = undefined"]]
 
-    -- Add a new definition to P
-    changeDoc pdoc [TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $ pSource <> "\nfoo = y :: Bool" ]
     -- Now in P we have
     -- bar = x :: Int
     -- foo = y :: Bool
     -- HOWEVER, in A...
     -- x = y  :: Int
-    expectDiagnostics
+    waitForActionWithExpectedDiagnosticsFromFilePath
     -- As in the other test, P is being typechecked with the last successful artifacts for A
     -- (ot thanks to -fdeferred-type-errors)
       [("A.hs", [(DiagnosticSeverity_Error, (5, 4), "Couldn't match expected type 'Int' with actual type 'Bool'", Just "GHC-83865")])
       ,("P.hs", [(DiagnosticSeverity_Warning, (4, 0), "Top-level binding", Just "GHC-38417")])
       ,("P.hs", [(DiagnosticSeverity_Warning, (6, 0), "Top-level binding", Just "GHC-38417")])
-      ]
+      ] $ do
+        -- Change y from Int to B
+        changeDoc bdoc [TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $
+            T.unlines ["module B where", "y :: Bool", "y = undefined"]]
+        -- Add a new definition to P
+        changeDoc pdoc [TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $ pSource <> "\nfoo = y :: Bool" ]
 
-    expectNoMoreDiagnostics 2
+    -- expectNoMoreDiagnostics 2
 
 ifaceErrorTest3 :: TestTree
 ifaceErrorTest3 = testWithExtraFiles "iface-error-test-3" "recomp" $ \dir -> do

@@ -21,11 +21,13 @@
 /plugins/hls-code-range-plugin @kokobd
 /plugins/hls-eval-plugin
 /plugins/hls-explicit-fixity-plugin
-/plugins/hls-explicit-imports-plugin
+/plugins/hls-explicit-imports-plugin 
 /plugins/hls-explicit-record-fields-plugin @ozkutuk
+/plugins/hls-floskell-plugin @peterbecich
 /plugins/hls-fourmolu-plugin @georgefst
 /plugins/hls-gadt-plugin @July541
 /plugins/hls-hlint-plugin @eddiemundo
+/plugins/hls-module-name-plugin
 /plugins/hls-notes-plugin @jvanbruegge
 /plugins/hls-ormolu-plugin @georgefst
 /plugins/hls-overloaded-record-dot-plugin @joyfulmantis
@@ -33,6 +35,7 @@
 /plugins/hls-qualify-imported-names-plugin @eddiemundo
 /plugins/hls-refactor-plugin @santiweight
 /plugins/hls-rename-plugin
+/plugins/hls-retrie-plugin @wz1000
 /plugins/hls-semantic-tokens-plugin @soulomoon
 /plugins/hls-signature-help-plugin @jian-lin
 /plugins/hls-splice-plugin @konn
@@ -40,13 +43,14 @@
 /plugins/hls-stylish-haskell-plugin @michaelpj
 
 # Benchmarking
-/shake-bench
-/bench
+/shake-bench 
+/bench 
 
 # Docs
 /docs @michaelpj
 
 # CI
+/.circleci
 /.github @michaelpj @fendor
 
 # Build
