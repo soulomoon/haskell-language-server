@@ -124,7 +124,7 @@ versions:
 
 
 # - 1.8.0.0
-- upstream: origin/master
+- upstream: codex/hls-graph-runtime-engine
 # - HEAD~1
 - HEAD
 
