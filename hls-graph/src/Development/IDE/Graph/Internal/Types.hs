@@ -6,7 +6,7 @@
 module Development.IDE.Graph.Internal.Types where
 
 import           Control.Concurrent.STM             (STM)
-import           Control.Monad                      ((>=>))
+import           Control.Monad                      (void, (>=>))
 import           Control.Monad.Catch
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Reader
@@ -89,7 +89,7 @@ waitForDatabaseRunningKeysAction = getDatabase >>= liftIO . waitForDatabaseRunni
 data ShakeDatabase = ShakeDatabase !Int [Action ()] Database
 
 newtype Step = Step Int
-    deriving newtype (Eq,Ord,Hashable,Show)
+    deriving newtype (Eq,Ord,Hashable,Show,Num,Enum,Real,Integral)
 
 ---------------------------------------------------------------------
 -- Keys
@@ -129,23 +129,23 @@ data Status
     = Clean !Result
     | Dirty (Maybe Result)
     | Running {
-        runningStep   :: !Step,
-        runningWait   :: !(IO ()),
-        runningResult :: Result,     -- LAZY
-        runningPrev   :: !(Maybe Result)
+        runningStep :: !Step,
+        runningWait :: !(IO Result),
+        -- runningResult :: Result,     -- LAZY
+        runningPrev :: !(Maybe Result)
         }
 
 viewDirty :: Step -> Status -> Status
-viewDirty currentStep (Running s _ _ re) | currentStep /= s = Dirty re
+viewDirty currentStep (Running s _ re) | currentStep /= s = Dirty re
 viewDirty _ other = other
 
 getResult :: Status -> Maybe Result
-getResult (Clean re)           = Just re
-getResult (Dirty m_re)         = m_re
-getResult (Running _ _ _ m_re) = m_re -- watch out: this returns the previous result
+getResult (Clean re)         = Just re
+getResult (Dirty m_re)       = m_re
+getResult (Running _ _ m_re) = m_re -- watch out: this returns the previous result
 
 waitRunning :: Status -> IO ()
-waitRunning Running{..} = runningWait
+waitRunning Running{..} = void runningWait
 waitRunning _           = return ()
 
 data Result = Result {
