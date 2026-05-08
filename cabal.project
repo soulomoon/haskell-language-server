@@ -51,7 +51,6 @@ allow-newer:
   cabal-install-parsers:Cabal-syntax,
 
 if impl(ghc >= 9.13)
-  benchmarks: False
   allow-newer:
     cabal-install-parsers:base,
     cabal-install-parsers:time,
