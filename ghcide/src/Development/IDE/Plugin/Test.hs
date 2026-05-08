@@ -75,7 +75,6 @@ data TestRequest
     | GetStoredKeys                  -- ^ :: [String] (list of keys in store)
     | GetFilesOfInterest             -- ^ :: [FilePath]
     | GetRebuildsCount               -- ^ :: Int (number of times we recompiled with GHC)
-    | WaitForDiagnosticPublished
     deriving Generic
     deriving anyclass (FromJSON, ToJSON)
 
@@ -112,7 +111,11 @@ testRequestHandler s (GetInterfaceFilesDir file) = liftIO $ do
 testRequestHandler s GetShakeSessionQueueCount = liftIO $ do
     n <- atomically $ countQueue $ actionQueue $ shakeExtras s
     return $ Right (toJSON n)
-testRequestHandler s WaitForShakeQueue = waitForIdeIdle s
+testRequestHandler s WaitForShakeQueue = liftIO $ do
+    atomically $ do
+        n <- countQueue $ actionQueue $ shakeExtras s
+        when (n>0) retry
+    return $ Right A.Null
 testRequestHandler s (WaitForIdeRule k file) = liftIO $ do
     let nfp = fromUri $ toNormalizedUri file
     success <- runAction ("WaitForIdeRule " <> k <> " " <> show file) s $ parseAction (fromString k) nfp
@@ -153,15 +156,6 @@ testRequestHandler s GetFilesOfInterest = do
 testRequestHandler s GetRebuildsCount = do
     count <- liftIO $ runAction "get build count" s getRebuildCount
     return $ Right $ toJSON count
-testRequestHandler s WaitForDiagnosticPublished = waitForIdeIdle s
-
-waitForIdeIdle ::  IdeState
-                -> HandlerM config (Either PluginError Value)
-waitForIdeIdle s =
-    liftIO $ do
-    waitUntilIdle <- runAction "wait for diagnostics published" s $ waitUntilDiagnosticsPublished
-    waitUntilIdle
-    return $ Right A.Null
 
 getDatabaseKeys :: (Graph.Result -> Step)
     -> ShakeDatabase

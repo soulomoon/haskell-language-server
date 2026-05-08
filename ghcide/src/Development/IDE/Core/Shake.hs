@@ -77,7 +77,7 @@ module Development.IDE.Core.Shake(
     Log(..),
     VFSModified(..), getClientConfigAction,
     ThreadQueue(..),
-    runWithSignal, runRestartTask, waitUntilDiagnosticsPublished, runWithSignalAction, waitUntilDiagnosticsPublishedAction,
+    runWithSignal, runRestartTask, runWithSignalAction,
     askShake
     ) where
 
@@ -224,7 +224,6 @@ data Log
   | LogDelayedAction !(DelayedAction ()) !Seconds
   | LogBuildSessionFinish !Step !(Either SomeException [Either SomeException ()])
   | LogDiagsDiffButNoLspEnv ![FileDiagnostic]
-  | LogDiagsPublishLog !Key ![FileDiagnostic] ![FileDiagnostic]
   | LogDefineEarlyCutoffRuleNoDiagHasDiag !FileDiagnostic
   | LogDefineEarlyCutoffRuleCustomNewnessHasDiag !FileDiagnostic
   | LogCancelledAction !T.Text
@@ -252,12 +251,6 @@ instance Pretty Log where
           ]
     LogMonitering name value ->
       "Monitoring:" <+> pretty name <+> "value:" <+> pretty value
-    LogDiagsPublishLog key lastDiags diags ->
-        vcat
-            [ "Publishing diagnostics for" <+> pretty (show key)
-            , "Last published:" <+> pretty (showDiagnosticsColored lastDiags) <+> "diagnostics"
-            , "New:" <+> pretty (showDiagnosticsColored diags) <+> "diagnostics"
-            ]
     LogShakeText msg -> pretty msg
     LogCreateHieDbExportsMapStart ->
       "Initializing exports map from hiedb"
@@ -335,14 +328,12 @@ type DBQue = TaskQueue ShakeRestartArgs
 type ShakeQueue = DBQue
 type ShakeControlQueue = ShakeQueue
 type LoaderQueue = TaskQueue (IO ())
-type DiagQueue = TaskQueue (IO ())
 
 
 data ThreadQueue = ThreadQueue {
     tIndexQueue          :: IndexQueue
     , tShakeControlQueue :: ShakeControlQueue
     , tLoaderQueue       :: LoaderQueue
-    , tDiagQueue         :: DiagQueue
 }
 
 -- Note [Semantic Tokens Cache Location]
@@ -416,27 +407,7 @@ data ShakeExtras = ShakeExtras
       -- ^ Queue of restart actions to be run.
     , loaderQueue :: LoaderQueue
       -- ^ Queue of loader actions to be run.
-    , diagQueue :: DiagQueue
     }
-
-waitUntilDiagnosticsPublished :: Action (IO ())
-waitUntilDiagnosticsPublished = do
-    -- wait until the diag queue is empty
-    ShakeExtras{..} <- getShakeExtras
-    opts <- getIdeOptions
-    res <- optGhcSession opts
-    return $ atomicallyNamed "waitUntilDiagnosticsPublished" $ do
-        pdc <- pendingFilesCount res
-        debouncerEmpty <- debouncerIsEmpty debouncer
-        diagQueueEmpty <- isEmptyTaskQueue diagQueue
-        shakeControlQueueEmpty <- isEmptyTaskQueue shakeControlQueue
-        -- actionQueue should also be empty, otherwise there might be more diagnostics to publish
-        actionQueueEmpty <- isActionQueueEmpty actionQueue
-        check (pdc == 0 && shakeControlQueueEmpty && actionQueueEmpty && debouncerEmpty && diagQueueEmpty)
-
-waitUntilDiagnosticsPublishedAction :: Action ()
-waitUntilDiagnosticsPublishedAction = do
-    waitUntilDiagnosticsPublished >>= liftIO
 
 type WithProgressFunc = forall a.
     T.Text -> LSP.ProgressCancellable -> ((LSP.ProgressAmount -> IO ()) -> IO a) -> IO a
@@ -771,7 +742,6 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
     -- see Note [Serializing runs in separate thread]
     let indexQueue = tIndexQueue threadQueue
         shakeControlQueue = tShakeControlQueue threadQueue
-        diagQueue = tDiagQueue threadQueue
         loaderQueue = tLoaderQueue threadQueue
 
 #if MIN_VERSION_ghc(9,13,0)
@@ -1375,7 +1345,7 @@ defineEarlyCutoff'
     -> (Value v -> Action (Maybe BS.ByteString, IdeResult v))
     -> Action (RunResult (A (RuleResult k)))
 defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
-    ShakeExtras{stateValues, progress, dirtyKeys, diagQueue} <- getShakeExtras
+    ShakeExtras{stateValues, progress, dirtyKeys} <- getShakeExtras
     options <- getIdeOptions
     let trans g x =  withRunInIO $ \run -> g (run x)
     (if optSkipProgress options key then id else trans (inProgress progress file)) $ do
@@ -1387,9 +1357,8 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                     -- an existing successful result.
                     Just (v@(Succeeded _ x), diags) -> do
                         ver <- estimateFileVersionUnsafely key (Just x) file
-                        actionCtx <- ask
-                        return $ Just $ RunResult ChangedNothing old (A v)
-                            $ writeTaskQueue diagQueue $ flip runActionMonad actionCtx $ doDiagnostics (vfsVersion =<< ver) $ Vector.toList diags
+                        doDiagnostics (vfsVersion =<< ver) $ Vector.toList diags
+                        return $ Just $ RunResult ChangedNothing old (A v) $ return ()
                     _ -> return Nothing
             _ ->
                 -- assert that a "clean" rule is never a cache miss
@@ -1413,8 +1382,7 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                     Nothing -> do
                         pure (toShakeValue ShakeStale mbBs, staleV)
                     Just v -> pure (maybe ShakeNoCutoff ShakeResult mbBs, Succeeded ver v)
-                -- doDiagnostics (vfsVersion =<< ver) diags
-                actionCtx <- ask
+                doDiagnostics (vfsVersion =<< ver) diags
                 let eq = case (bs, fmap decodeShakeValue mbOld) of
                         (ShakeResult a, Just (ShakeResult b)) -> cmp a b
                         (ShakeStale a, Just (ShakeStale b))   -> cmp a b
@@ -1429,8 +1397,6 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
                         -- see Note [Housekeeping rule cache and dirty key outside of hls-graph]
                         setValues stateValues key file res (Vector.fromList diags)
                         modifyTVar' dirtyKeys (deleteKeySet $ toKey key file)
-                        -- shakeControlQueue
-                        writeTaskQueue diagQueue $ flip runActionMonad actionCtx $ doDiagnostics (vfsVersion =<< ver) diags
         return res
   where
     -- Highly unsafe helper to compute the version of a file
@@ -1493,9 +1459,7 @@ updateFileDiagnostics :: MonadIO m
   -> ShakeExtras
   -> [FileDiagnostic] -- ^ current results
   -> m ()
-updateFileDiagnostics recorder fp ver k ShakeExtras{diagnostics, hiddenDiagnostics, publishedDiagnostics, debouncer, lspEnv, ideTesting} current0 =
-    -- void $ liftIO $ async $ do
-    void $ liftIO $ do
+updateFileDiagnostics recorder fp ver k ShakeExtras{diagnostics, hiddenDiagnostics, publishedDiagnostics, debouncer, lspEnv, ideTesting} current0 = do
   liftIO $ withTrace ("update diagnostics " <> fromString (fromNormalizedFilePath fp)) $ \ addTag -> do
     addTag "key" (show k)
     let (currentShown, currentHidden) = partition ((== ShowDiag) . fdShouldShowDiagnostic) current
@@ -1516,18 +1480,17 @@ updateFileDiagnostics recorder fp ver k ShakeExtras{diagnostics, hiddenDiagnosti
         let uri' = filePathToUri' fp
         let delay = if null newDiags then 0.1 else 0
         registerEvent debouncer delay uri' $ withTrace ("report diagnostics " <> fromString (fromNormalizedFilePath fp)) $ \tag -> do
-          join $ mask_ $ do
-                  lastPublish <- atomicallyNamed "diagnostics - publish" $ STM.focus (Focus.lookupWithDefault [] <* Focus.insert newDiags) uri' publishedDiagnostics
-                  let action = when (lastPublish /= newDiags) $ case lspEnv of
-                          -- case lspEnv of
-                          Nothing -> -- Print an LSP event.
-                              logWith recorder Info $ LogDiagsDiffButNoLspEnv newDiags
-                              -- return ()
-                          Just env -> LSP.runLspT env $ do
-                              logWith recorder Info $ LogDiagsPublishLog k lastPublish newDiags
-                              LSP.sendNotification SMethod_TextDocumentPublishDiagnostics $
-                                  LSP.PublishDiagnosticsParams (fromNormalizedUri uri') (fmap fromIntegral ver) (map fdLspDiagnostic newDiags)
-                  return action
+            join $ mask_ $ do
+                lastPublish <- atomicallyNamed "diagnostics - publish" $ STM.focus (Focus.lookupWithDefault [] <* Focus.insert newDiags) uri' publishedDiagnostics
+                let action = when (lastPublish /= newDiags) $ case lspEnv of
+                        Nothing -> -- Print an LSP event.
+                            logWith recorder Info $ LogDiagsDiffButNoLspEnv newDiags
+                        Just env -> LSP.runLspT env $ do
+                            liftIO $ tag "count" (show $ Prelude.length newDiags)
+                            liftIO $ tag "key" (show k)
+                            LSP.sendNotification SMethod_TextDocumentPublishDiagnostics $
+                                LSP.PublishDiagnosticsParams (fromNormalizedUri uri') (fmap fromIntegral ver) (map fdLspDiagnostic newDiags)
+                return action
     where
         diagsFromRule :: Diagnostic -> Diagnostic
         diagsFromRule c@Diagnostic{_range}
@@ -1617,10 +1580,9 @@ updatePositionMappingHelper ver changes mappingForUri = snd $
 -- being used in cabal and hlint plugin tests to know when its time
 -- to look for file diagnostics
 kickSignal :: KnownSymbol s => Bool -> Maybe (LSP.LanguageContextEnv c) -> [NormalizedFilePath] -> Proxy s -> Action ()
-kickSignal testing lspEnv files msg = when testing $ do
-    waitUntilDiagnosticsPublishedAction
-    liftIO $ mRunLspT lspEnv $
-        LSP.sendNotification (LSP.SMethod_CustomMethod msg) $ toJSON $ map fromNormalizedFilePath files
+kickSignal testing lspEnv files msg = when testing $ liftIO $ mRunLspT lspEnv $
+  LSP.sendNotification (LSP.SMethod_CustomMethod msg) $
+  toJSON $ map fromNormalizedFilePath files
 
 -- | Add kick start/done signal to rule
 runWithSignal :: (KnownSymbol s0, KnownSymbol s1, IdeRule k v) => Proxy s0 -> Proxy s1 -> [NormalizedFilePath] -> k -> Action ()

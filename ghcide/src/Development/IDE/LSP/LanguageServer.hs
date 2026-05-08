@@ -382,8 +382,7 @@ runWithWorkerThreads recorder mide dbLoc shutdownSession f = evalContT $ do
   ContT $ \action -> action () `finally` shutdownSession
   sessionRestartTQueue <- runShakeThread recorder mide
   sessionLoaderTQueue <- withWorkerQueueSimple (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) "SessionLoaderTQueue"
-  sessionDiagTQueue <- withWorkerQueueSimple (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) "SessionDiagTQueue"
-  liftIO $ f hiedb (ThreadQueue threadQueue sessionRestartTQueue sessionLoaderTQueue sessionDiagTQueue)
+  liftIO $ f hiedb (ThreadQueue threadQueue sessionRestartTQueue sessionLoaderTQueue)
 
 -- | Runs the action until it ends or until the given MVar is put.
 --   It is important, that the thread that puts the 'MVar' is not dropped before it puts the 'MVar' i.e. it should
