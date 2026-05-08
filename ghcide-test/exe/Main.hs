@@ -102,7 +102,7 @@ main = do
     , ClientSettingsTests.tests
     , ReferenceTests.tests
     , ResolveTests.tests
-    -- , GarbageCollectionTests.tests
+    , GarbageCollectionTests.tests
     , HieDbRetry.tests
     , ExceptionTests.tests
     ]

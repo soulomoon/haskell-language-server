@@ -153,7 +153,7 @@ semanticTokensConfigTest =
             { ignoreConfigurationRequests = False
             }
           , testConfigCaps = fullLatestClientCaps
-          , testDirLocation = fs
+          , testDirLocation = Right fs
           , testLspConfig = mkSemanticConfig funcVar
           }
         $ const $ do
@@ -232,8 +232,14 @@ semanticTokensTests =
         Test.Hls.runSessionWithServerInTmpDir def semanticTokensPlugin (mkFs $ FS.directProjectMulti [file1, file2]) $ do
           doc1 <- openDoc file1 "haskell"
           doc2 <- openDoc file2 "haskell"
-          WaitForIdeRuleResult _ <- waitForAction "TypeCheck" doc1
-          WaitForIdeRuleResult _ <- waitForAction "TypeCheck" doc2
+          check1 <- waitForAction "TypeCheck" doc1
+          check2 <- waitForAction "TypeCheck" doc2
+          case check1 of
+            Right (WaitForIdeRuleResult _) -> return ()
+            Left _                         -> error "TypeCheck1 failed"
+          case check2 of
+            Right (WaitForIdeRuleResult _) -> return ()
+            Left _                         -> error "TypeCheck2 failed"
 
           result <- docSemanticTokensString def doc2
           let expect =

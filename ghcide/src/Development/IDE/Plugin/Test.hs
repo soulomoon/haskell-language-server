@@ -49,6 +49,7 @@ import           Development.IDE.Types.Action         (countQueue)
 import           Development.IDE.Types.HscEnvEq       (HscEnvEq (hscEnv))
 import           Development.IDE.Types.Location       (fromUri)
 import           GHC.Generics                         (Generic)
+import           Ide.Plugin.Config                    (CheckParents)
 import           Ide.Plugin.Error
 import           Ide.Types
 import           Language.LSP.Protocol.Message
@@ -56,6 +57,8 @@ import           Language.LSP.Protocol.Types
 import qualified "list-t" ListT
 import qualified StmContainers.Map                    as STM
 import           System.Time.Extra
+
+type Age = Int
 
 data TestRequest
     = BlockSeconds Seconds           -- ^ :: Null
@@ -68,6 +71,7 @@ data TestRequest
     | GetBuildKeysBuilt          -- ^ :: [(String]
     | GetBuildKeysChanged        -- ^ :: [(String]
     | GetBuildEdgesCount         -- ^ :: Int
+    | GarbageCollectDirtyKeys CheckParents Age    -- ^ :: [String] (list of keys collected)
     | GetStoredKeys                  -- ^ :: [String] (list of keys in store)
     | GetFilesOfInterest             -- ^ :: [FilePath]
     | GetRebuildsCount               -- ^ :: Int (number of times we recompiled with GHC)
@@ -137,6 +141,9 @@ testRequestHandler s GetBuildKeysVisited = liftIO $ do
 testRequestHandler s GetBuildEdgesCount = liftIO $ do
     count <- shakeGetBuildEdges $ shakeDb s
     return $ Right $ toJSON count
+testRequestHandler s (GarbageCollectDirtyKeys parents age) = do
+    res <- liftIO $ runAction "garbage collect dirty" s $ garbageCollectDirtyKeysOlderThan age parents
+    return $ Right $ toJSON $ map show res
 testRequestHandler s GetStoredKeys = do
     keys <- liftIO $ atomically $ map fst <$> ListT.toList (STM.listT $ stateValues $ shakeExtras s)
     return $ Right $ toJSON $ map show keys

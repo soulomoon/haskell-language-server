@@ -6,9 +6,9 @@ import           Control.Monad.IO.Class      (liftIO)
 import qualified Data.Text                   as T
 import           Development.IDE.GHC.Compat  (GhcVersion (..), ghcVersion)
 import           Development.IDE.GHC.Util
-import           Development.IDE.Test        (expectDiagnostics,
-                                              expectNoMoreDiagnostics,
-                                              waitForExpectedDiagnosticsFromDocsOne)
+import           Development.IDE.Test        (expectCurrentDiagnostics,
+                                              expectDiagnostics,
+                                              expectNoMoreDiagnostics)
 import           Language.LSP.Protocol.Types hiding (SemanticTokenAbsolute (..),
                                               SemanticTokenRelative (..),
                                               SemanticTokensEdit (..), mkRange)
@@ -280,17 +280,17 @@ thLinkingTest unboxed = testCase name $ runWithExtraFiles dir $ \dir -> do
     adoc <- createDoc aPath "haskell" aSource
     bdoc <- createDoc bPath "haskell" bSource
 
-    waitForExpectedDiagnosticsFromDocsOne (bdoc, [(DiagnosticSeverity_Warning, (4,1), "Top-level binding", Just "GHC-38417")])
+    expectDiagnostics [("THB.hs", [(DiagnosticSeverity_Warning, (4,1), "Top-level binding", Just "GHC-38417")])]
 
     let aSource' = T.unlines $ init (init (T.lines aSource)) ++ ["th :: DecsQ", "th = [d| a = False|]"]
     changeDoc adoc [TextDocumentContentChangeEvent . InR $ TextDocumentContentChangeWholeDocument aSource']
 
     -- modify b too
     let bSource' = T.unlines $ init (T.lines bSource) ++ ["$th"]
-
     changeDoc bdoc [TextDocumentContentChangeEvent . InR $ TextDocumentContentChangeWholeDocument bSource']
-    waitForExpectedDiagnosticsFromDocsOne (bdoc, [(DiagnosticSeverity_Warning, (4,1), "Top-level binding", Just "GHC-38417")])
-    -- expectCurrentDiagnostics bdoc [(DiagnosticSeverity_Warning, (4,1), "Top-level binding", Just "GHC-38417")]
+    _ <- waitForDiagnostics
+
+    expectCurrentDiagnostics bdoc [(DiagnosticSeverity_Warning, (4,1), "Top-level binding", Just "GHC-38417")]
 
     closeDoc adoc
     closeDoc bdoc

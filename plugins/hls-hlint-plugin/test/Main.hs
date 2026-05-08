@@ -118,9 +118,9 @@ suggestionsTests =
     , knownBrokenForGhcVersions [GHC910] "apply-refact doesn't work on 9.10" $ testCase "falls back to pre 3.8 code actions" $
         runSessionWithTestConfig def
             { testConfigCaps = noLiteralCaps
-            , testDirLocation = VirtualFileTree [copyDir "./"] testDir
+            , testDirLocation = Left testDir
             , testPluginDescriptor = hlintPlugin
-            } $ const $ do
+            , testShiftRoot = True} $ const $ do
         doc <- openDoc "Base.hs" "haskell"
 
         _ <- hlintCaptureKick
@@ -350,7 +350,8 @@ runHlintSession :: FilePath -> Session a -> IO a
 runHlintSession subdir = failIfSessionTimeout .
     runSessionWithTestConfig def
       { testConfigCaps = codeActionNoResolveCaps
-      , testDirLocation = VirtualFileTree [copyDir "./"] (testDir </> subdir)
+      , testShiftRoot = True
+      , testDirLocation = Left (testDir </> subdir)
       , testPluginDescriptor = hlintPlugin
       }
     . const
@@ -452,7 +453,6 @@ goldenTest :: TestName -> FilePath -> Point -> T.Text -> TestTree
 goldenTest testCaseName goldenFilename point hintText =
   setupGoldenHlintTest testCaseName goldenFilename codeActionNoResolveCaps $ \document -> do
     _ <- hlintCaptureKick
-    waitForBuildQueue
     actions <- getCodeActions document $ pointToRange point
     case find ((== Just hintText) . getCodeActionTitle) actions of
       Just (InR codeAction) -> do
@@ -464,11 +464,12 @@ goldenTest testCaseName goldenFilename point hintText =
 
 setupGoldenHlintTest :: TestName -> FilePath -> ClientCapabilities -> (TextDocumentIdentifier -> Session ()) -> TestTree
 setupGoldenHlintTest testName path config =
-    goldenWithTestConfigWithCustomWait def
+    goldenWithTestConfig def
     { testConfigCaps = config
+    , testShiftRoot = True
     , testPluginDescriptor = hlintPlugin
-    , testDirLocation = tree
-    } testName tree path "expected" "hs" (Just $ return ())
+    , testDirLocation = Right tree
+    } testName tree path "expected" "hs"
   where tree = mkVirtualFileTree testDir (directProject (path <.> "hs"))
 
 ignoreHintGoldenResolveTest :: TestName -> FilePath -> Point -> T.Text -> TestTree

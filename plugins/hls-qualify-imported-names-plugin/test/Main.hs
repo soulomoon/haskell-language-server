@@ -23,8 +23,7 @@ import           Test.Hls                        (CodeAction (CodeAction, _title
                                                   mkPluginTestDescriptor',
                                                   openDoc, runSessionWithServer,
                                                   testCase, testGroup,
-                                                  type (|?) (InR),
-                                                  waitForBuildQueue)
+                                                  type (|?) (InR))
 
 import           Prelude
 
@@ -57,14 +56,12 @@ main = defaultTestRunner $ testGroup "Qualify Imported Names"
       runSessionWithServer def pluginDescriptor testDataDir $ do
         let point = makePoint 1 1
         document <- openDoc "NoImport.hs" "haskell"
-        waitForBuildQueue
         actions <- getCodeActions document $ pointToRange point
         liftIO $ assertBool (makeCodeActionFoundAtString point) (isEmpty actions)
   , testCase "No CodeAction when import is qualified" $
       runSessionWithServer def pluginDescriptor testDataDir $ do
         let point = makePoint 3 1
         document <- openDoc "QualifiedImport.hs" "haskell"
-        waitForBuildQueue
         actions <- getCodeActions document $ pointToRange point
         liftIO $ assertBool (makeCodeActionFoundAtString point) (isEmpty actions)
   , codeActionGoldenTest

@@ -24,9 +24,8 @@ import           Test.Hls                       (CodeAction (..), Command,
                                                  liftIO, mkPluginTestDescriptor,
                                                  openDoc, runSessionWithServer,
                                                  testCase, testGroup, toEither,
-                                                 type (|?),
-                                                 waitForDiagsAndBuildQueue,
-                                                 (@?=))
+                                                 type (|?), waitForBuildQueue,
+                                                 waitForDiagnostics, (@?=))
 import           Text.Regex.TDFA                ((=~))
 
 main :: IO ()
@@ -72,7 +71,8 @@ goldenChangeSignature fp = goldenWithHaskellDoc def changeTypeSignaturePlugin (f
 
 codeActionTest :: FilePath -> Int -> Int -> TestTree
 codeActionTest fp line col = goldenChangeSignature fp $ \doc -> do
-    void $ waitForDiagsAndBuildQueue doc
+    void waitForDiagnostics  -- code actions are triggered from Diagnostics
+    void waitForBuildQueue  -- apparently some tests need this to get the CodeAction to show up
     actions <- getCodeActions doc (pointRange line col)
     foundActions <- findChangeTypeActions actions
     liftIO $ length foundActions @?= 1

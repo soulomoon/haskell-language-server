@@ -1,15 +1,13 @@
 module IfaceTests (tests) where
 
 import           Config
-import           Control.Monad                 (void)
 import           Control.Monad.IO.Class        (liftIO)
 import qualified Data.Text                     as T
 import           Development.IDE.GHC.Util
 import           Development.IDE.Test          (configureCheckProject,
                                                 expectDiagnostics,
                                                 expectNoMoreDiagnostics,
-                                                getInterfaceFilesDir,
-                                                waitForExpectedDiagnosticsFromFilePath)
+                                                getInterfaceFilesDir)
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Protocol.Types   hiding
                                                (SemanticTokenAbsolute (..),
@@ -19,7 +17,6 @@ import           Language.LSP.Protocol.Types   hiding
 import           Language.LSP.Test
 import           System.Directory
 import           System.FilePath
-import           Test.Hls                      (waitForDiagnosticsFrom)
 import           Test.Hls.FileSystem
 import           Test.Tasty
 import           Test.Tasty.HUnit
@@ -88,7 +85,7 @@ ifaceErrorTest = testWithExtraFiles "iface-error-test-1" "recomp" $ \dir -> do
     liftIO $ assertBool ("Couldn't find B.hi in " ++ hidir) hi_exists
 
     pdoc <- openDoc pPath "haskell"
-    waitForExpectedDiagnosticsFromFilePath
+    expectDiagnostics
       [("P.hs", [(DiagnosticSeverity_Warning,(4,0), "Top-level binding", Just "GHC-38417")])
       ]
     changeDoc pdoc [TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $ pSource <> "\nfoo = y :: Bool" ]
@@ -100,7 +97,7 @@ ifaceErrorTest = testWithExtraFiles "iface-error-test-1" "recomp" $ \dir -> do
     -- This is clearly inconsistent, and the expected outcome a bit surprising:
     --   - The diagnostic for A has already been received. Ghcide does not repeat diagnostics
     --   - P is being typechecked with the last successful artifacts for A.
-    waitForExpectedDiagnosticsFromFilePath
+    expectDiagnostics
       [("P.hs", [(DiagnosticSeverity_Warning,(4,0), "Top-level binding", Just "GHC-38417")])
       ,("P.hs", [(DiagnosticSeverity_Warning,(6,0), "Top-level binding", Just "GHC-38417")])
       ]

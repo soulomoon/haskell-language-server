@@ -58,8 +58,9 @@ mkIdeTestFs = FS.mkVirtualFileTree testDataDir
 testSessionWithPlugin :: Pretty b => FS.VirtualFileTree -> PluginTestDescriptor b -> (FilePath -> Session a) -> IO a
 testSessionWithPlugin fs plugin = runSessionWithTestConfig def
     { testPluginDescriptor = plugin
-    , testDirLocation = fs
+    , testDirLocation = Right fs
     , testConfigCaps = lspTestCaps
+    , testShiftRoot = True
     }
 
 -- * A dummy plugin for testing ghcIde
@@ -75,8 +76,9 @@ testWithConfig name conf s = testCase name $ runSessionWithTestConfig conf $ con
 runWithDummyPlugin' ::  FS.VirtualFileTree -> (FilePath -> Session a) -> IO a
 runWithDummyPlugin' fs = runSessionWithTestConfig def
     { testPluginDescriptor = dummyPlugin
-    , testDirLocation = fs
+    , testDirLocation = Right fs
     , testConfigCaps = lspTestCaps
+    , testShiftRoot = True
     }
 
 testWithDummyPlugin :: String -> FS.VirtualFileTree -> Session () -> TestTree
@@ -104,8 +106,7 @@ runInDir fs = runSessionWithServer def dummyPlugin fs
 
 run :: Session a -> IO a
 run = runSessionWithTestConfig def
-    { testDirLocation = (mkIdeTestFs [])
-    -- , testDisableKick = True
+    { testDirLocation = Right (mkIdeTestFs [])
     , testPluginDescriptor = dummyPlugin }
     . const
 

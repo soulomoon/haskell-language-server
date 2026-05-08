@@ -10,12 +10,12 @@ import           Control.Monad.IO.Class          (liftIO)
 import           Data.List.Extra
 import qualified Data.Text                       as T
 import           Development.IDE.GHC.Util
-import           Development.IDE.Test            (diagnostic, expectDiagnostics,
+import           Development.IDE.Test            (diagnostic,
+                                                  expectCurrentDiagnostics,
+                                                  expectDiagnostics,
                                                   expectDiagnosticsWithTags,
                                                   expectNoMoreDiagnostics,
-                                                  waitForAction,
-                                                  waitForExpectedDiagnosticsFromDocsOne,
-                                                  waitForExpectedDiagnosticsFromFilePath)
+                                                  flushMessages, waitForAction)
 import           Development.IDE.Types.Location
 import qualified Language.LSP.Protocol.Lens      as L
 import           Language.LSP.Protocol.Message
@@ -33,9 +33,9 @@ import           Control.Lens                    ((^.))
 import           Control.Monad.Extra             (whenJust)
 import           Data.Default                    (def)
 import           Development.IDE.Plugin.Test     (WaitForIdeRuleResult (..))
-import           Test.Hls                        (TestConfig (testDirLocation, testDisableKick, testPluginDescriptor),
+import           System.Time.Extra
+import           Test.Hls                        (TestConfig (testConfigCaps, testDirLocation, testDisableKick, testPluginDescriptor),
                                                   runSessionWithTestConfig,
-                                                  waitForDiagnosticsFrom,
                                                   waitForProgressBegin)
 import           Test.Hls.FileSystem
 import           Test.Tasty
@@ -69,17 +69,14 @@ tests = testGroup "diagnostics"
   , testWithDummyPluginEmpty "update syntax error" $ do
       let content = T.unlines [ "module Testing(missing) where" ]
       doc <- createDoc "Testing.hs" "haskell" content
-      waitForExpectedDiagnosticsFromFilePath
-        [("Testing.hs", [(DiagnosticSeverity_Error, (0, 15), "Not in scope: 'missing'", Just "GHC-76037")])]
+      expectDiagnostics [("Testing.hs", [(DiagnosticSeverity_Error, (0, 15), "Not in scope: 'missing'", Just "GHC-76037")])]
       let change = TextDocumentContentChangeEvent $ InL TextDocumentContentChangePartial
               { _range = Range (Position 0 15) (Position 0 16)
               , _rangeLength = Nothing
               , _text = "l"
               }
       changeDoc doc [change]
-      waitForExpectedDiagnosticsFromFilePath
-        [("Testing.hs", [(DiagnosticSeverity_Error, (0, 15), "Not in scope: 'lissing'", Just "GHC-76037")])]
-
+      expectDiagnostics [("Testing.hs", [(DiagnosticSeverity_Error, (0, 15), "Not in scope: 'lissing'", Just "GHC-76037")])]
   , testWithDummyPluginEmpty "variable not in scope" $ do
       let content = T.unlines
             [ "module Testing where"
@@ -173,8 +170,8 @@ tests = testGroup "diagnostics"
   , testCase "add missing module (non workspace)" $
     runSessionWithTestConfig def
         { testPluginDescriptor = dummyPlugin
-        -- , testConfigCaps = lspTestCapsNoFileWatches
-        , testDirLocation = (mkIdeTestFs [])
+        , testConfigCaps = lspTestCapsNoFileWatches
+        , testDirLocation = Right (mkIdeTestFs [])
         }
     $ \tmpDir -> do
     -- By default lsp-test sends FileWatched notifications for all files, which we don't want
@@ -529,8 +526,7 @@ tests = testGroup "diagnostics"
 
 cancellationTestGroup :: TestName -> (TextDocumentContentChangeEvent, TextDocumentContentChangeEvent) -> Bool -> Bool -> Bool -> TestTree
 cancellationTestGroup name edits sessionDepsOutcome parseOutcome tcOutcome = testGroup name
-    [
-    cancellationTemplate edits Nothing
+    [ cancellationTemplate edits Nothing
     , cancellationTemplate edits $ Just ("GetFileContents", True)
     , cancellationTemplate edits $ Just ("GhcSession", True)
       -- the outcome for GetModSummary is always True because parseModuleHeader never fails (!)
@@ -554,9 +550,8 @@ cancellationTemplate (edit, undoEdit) mbKey = testCase (maybe "-" fst mbKey) $ r
             ]
 
       -- for the example above we expect one warning
-      let missingSigDiags = (doc, [(DiagnosticSeverity_Warning, (3, 0), "Top-level binding", Just "GHC-38417")])
-      typeCheck doc
-      void $ waitForExpectedDiagnosticsFromDocsOne missingSigDiags
+      let missingSigDiags = [(DiagnosticSeverity_Warning, (3, 0), "Top-level binding", Just "GHC-38417") ]
+      typeCheck doc >> expectCurrentDiagnostics doc missingSigDiags
 
       -- Now we edit the document and wait for the given key (if any)
       changeDoc doc [edit]
@@ -567,17 +562,21 @@ cancellationTemplate (edit, undoEdit) mbKey = testCase (maybe "-" fst mbKey) $ r
       -- The 2nd edit cancels the active session and unbreaks the file
       -- wait for typecheck and check that the current diagnostics are accurate
       changeDoc doc [undoEdit]
-      typeCheck doc
-      void $ waitForExpectedDiagnosticsFromDocsOne missingSigDiags
+      typeCheck doc >> expectCurrentDiagnostics doc missingSigDiags
 
+      expectNoMoreDiagnostics 0.5
     where
         runTestNoKick s =
             runSessionWithTestConfig def
                 { testPluginDescriptor = dummyPlugin
-                , testDirLocation = (mkIdeTestFs [])
+                , testDirLocation = Right (mkIdeTestFs [])
                 , testDisableKick = True
                 } $ const s
 
         typeCheck doc = do
             WaitForIdeRuleResult {..} <- waitForAction "TypeCheck" doc
             liftIO $ assertBool "The file should typecheck" ideResultSuccess
+            -- wait for the debouncer to publish diagnostics if the rule runs
+            liftIO $ sleep 0.2
+            -- flush messages to ensure current diagnostics state is updated
+            flushMessages

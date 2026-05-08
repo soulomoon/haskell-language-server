@@ -40,7 +40,8 @@ tests = testGroup "GADT"
 
 gadtPragmaTest :: TestName -> Bool -> TestTree
 gadtPragmaTest title hasGADT = testCase title
-    $ runSessionWithServerEmptyDir def gadtPlugin $ \_dir -> do
+    $ withCanonicalTempDir
+    $ \dir -> runSessionWithServer def gadtPlugin dir $ do
         doc <- createDoc "A.hs" "haskell" (T.unlines ["module A where", "data Foo = Bar"])
         _ <- waitForProgressDone
         (act:_) <- findGADTAction <$> getCodeActions doc (Range (Position 1 0) (Position 1 1))

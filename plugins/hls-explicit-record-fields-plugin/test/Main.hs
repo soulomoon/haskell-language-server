@@ -44,8 +44,8 @@ test = testGroup "explicit-fields"
     , mkConversionTest "UnicodeStrings" "UnicodeStrings" 10 12 10 17
     ]
   , testGroup "inlay hints"
-    [ mkInlayHintsTest "Construction" Nothing 16 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLength $ dir </> "Construction"
+    [ mkInlayHintsTest "Construction" Nothing 16 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLength "Construction"
         foo <- mkLabelPart' 13 6 "foo"
         bar <- mkLabelPart' 14 6 "bar"
         baz <- mkLabelPart' 15 6 "baz"
@@ -61,8 +61,8 @@ test = testGroup "explicit-fields"
                         , _tooltip = Just $ InL "Expand record wildcard (needs extension: NamedFieldPuns)"
                         , _paddingLeft = Just True
                         }]
-  , mkInlayHintsTest "ConstructionDuplicateRecordFields" Nothing 16 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLength $ dir </> "ConstructionDuplicateRecordFields"
+    , mkInlayHintsTest "ConstructionDuplicateRecordFields" Nothing 16 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLength "ConstructionDuplicateRecordFields"
         foo <- mkLabelPart' 13 6 "foo"
         bar <- mkLabelPart' 14 6 "bar"
         baz <- mkLabelPart' 15 6 "baz"
@@ -79,8 +79,8 @@ test = testGroup "explicit-fields"
                         , _paddingLeft = Just True
                         }]
 
-  , mkInlayHintsTest "PositionalConstruction" Nothing 15 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLengthSub1 $ dir </> "PositionalConstruction"
+    , mkInlayHintsTest "PositionalConstruction" Nothing 15 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLengthSub1 "PositionalConstruction"
         foo <- mkLabelPart' 5 4 "foo="
         bar <- mkLabelPart' 6 4 "bar="
         baz <- mkLabelPart' 7 4 "baz="
@@ -104,8 +104,8 @@ test = testGroup "explicit-fields"
                          , _paddingLeft = Nothing
                          }
           ]
-  , mkInlayHintsTest "PositionalConstructionDuplicateRecordFields" Nothing 15 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLengthSub1 $ dir </> "PositionalConstructionDuplicateRecordFields"
+    , mkInlayHintsTest "PositionalConstructionDuplicateRecordFields" Nothing 15 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLengthSub1 "PositionalConstructionDuplicateRecordFields"
         foo <- mkLabelPart' 5 4 "foo="
         bar <- mkLabelPart' 6 4 "bar="
         baz <- mkLabelPart' 7 4 "baz="
@@ -129,8 +129,8 @@ test = testGroup "explicit-fields"
                          , _paddingLeft = Nothing
                          }
           ]
-  , mkInlayHintsTest "HsExpanded1" Nothing 17 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLength $ dir </> "HsExpanded1"
+    , mkInlayHintsTest "HsExpanded1" Nothing 17 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLength "HsExpanded1"
         foo <- mkLabelPart' 11 4 "foo"
         (@?=) ih
           [defInlayHint { _position = Position 17 19
@@ -139,8 +139,8 @@ test = testGroup "explicit-fields"
                         , _tooltip = Just $ InL "Expand record wildcard"
                         , _paddingLeft = Just True
                         }]
-  , mkInlayHintsTest "HsExpanded1" (Just " (positional)") 13 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLengthSub1 $ dir </> "HsExpanded1"
+    , mkInlayHintsTest "HsExpanded1" (Just " (positional)") 13 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLengthSub1 "HsExpanded1"
         foo <- mkLabelPart' 11 4 "foo="
         (@?=) ih
           [defInlayHint { _position = Position 13 21
@@ -149,8 +149,8 @@ test = testGroup "explicit-fields"
                         , _tooltip = Just $ InL "Convert to traditional record syntax"
                         , _paddingLeft = Nothing
                         }]
-  , mkInlayHintsTest "HsExpanded1DuplicateRecordFields" (Just " (positional)") 13 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLengthSub1 $ dir </> "HsExpanded1DuplicateRecordFields"
+    , mkInlayHintsTest "HsExpanded1DuplicateRecordFields" (Just " (positional)") 13 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLengthSub1 "HsExpanded1DuplicateRecordFields"
         foo <- mkLabelPart' 11 4 "foo="
         (@?=) ih
           [defInlayHint { _position = Position 13 21
@@ -159,8 +159,8 @@ test = testGroup "explicit-fields"
                         , _tooltip = Just $ InL "Convert to traditional record syntax"
                         , _paddingLeft = Nothing
                         }]
-  , mkInlayHintsTest "HsExpanded2" Nothing 23 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLength $ dir </> "HsExpanded2"
+    , mkInlayHintsTest "HsExpanded2" Nothing 23 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLength "HsExpanded2"
         bar <- mkLabelPart' 14 4 "bar"
         (@?=) ih
           [defInlayHint { _position = Position 23 21
@@ -169,8 +169,8 @@ test = testGroup "explicit-fields"
                         , _tooltip = Just $ InL "Expand record wildcard"
                         , _paddingLeft = Just True
                         }]
-  , mkInlayHintsTest "HsExpanded2" (Just " (positional)") 16 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLengthSub1 $ dir </> "HsExpanded2"
+    , mkInlayHintsTest "HsExpanded2" (Just " (positional)") 16 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLengthSub1 "HsExpanded2"
         foo <- mkLabelPart' 11 4 "foo="
         (@?=) ih
           [defInlayHint { _position = Position 16 21
@@ -179,8 +179,8 @@ test = testGroup "explicit-fields"
                         , _tooltip = Just $ InL "Convert to traditional record syntax"
                         , _paddingLeft = Nothing
                         }]
-  , mkInlayHintsTest "Mixed" Nothing 14 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLength $ dir </> "Mixed"
+    , mkInlayHintsTest "Mixed" Nothing 14 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLength "Mixed"
         baz <- mkLabelPart' 9 4 "baz"
         quux <- mkLabelPart' 10 4 "quux"
         (@?=) ih
@@ -192,8 +192,8 @@ test = testGroup "explicit-fields"
                         , _tooltip = Just $ InL "Expand record wildcard"
                         , _paddingLeft = Just True
                         }]
-  , mkInlayHintsTest "Unused" Nothing 12 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLength $ dir </> "Unused"
+    , mkInlayHintsTest "Unused" Nothing 12 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLength "Unused"
         foo <- mkLabelPart' 6 4 "foo"
         bar <- mkLabelPart' 7 4 "bar"
         baz <- mkLabelPart' 8 4 "baz"
@@ -209,8 +209,8 @@ test = testGroup "explicit-fields"
                         , _tooltip = Just $ InL "Expand record wildcard (needs extension: NamedFieldPuns)"
                         , _paddingLeft = Just True
                         }]
-  , mkInlayHintsTest "Unused2" Nothing 12 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLength $ dir </> "Unused2"
+    , mkInlayHintsTest "Unused2" Nothing 12 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLength "Unused2"
         foo <- mkLabelPart' 6 4 "foo"
         bar <- mkLabelPart' 7 4 "bar"
         baz <- mkLabelPart' 8 4 "baz"
@@ -226,8 +226,8 @@ test = testGroup "explicit-fields"
                         , _tooltip = Just $ InL "Expand record wildcard (needs extension: NamedFieldPuns)"
                         , _paddingLeft = Just True
                         }]
-  , mkInlayHintsTest "WildcardOnly" Nothing 12 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLength $ dir </> "WildcardOnly"
+    , mkInlayHintsTest "WildcardOnly" Nothing 12 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLength "WildcardOnly"
         foo <- mkLabelPart' 6 4 "foo"
         bar <- mkLabelPart' 7 4 "bar"
         baz <- mkLabelPart' 8 4 "baz"
@@ -243,8 +243,8 @@ test = testGroup "explicit-fields"
                         , _tooltip = Just $ InL "Expand record wildcard (needs extension: NamedFieldPuns)"
                         , _paddingLeft = Just True
                         }]
-  , mkInlayHintsTest "WithExplicitBind" Nothing 12 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLength $ dir </> "WithExplicitBind"
+    , mkInlayHintsTest "WithExplicitBind" Nothing 12 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLength "WithExplicitBind"
         bar <- mkLabelPart' 7 4 "bar"
         baz <- mkLabelPart' 8 4 "baz"
         (@?=) ih
@@ -258,8 +258,8 @@ test = testGroup "explicit-fields"
                         , _tooltip = Just $ InL "Expand record wildcard (needs extension: NamedFieldPuns)"
                         , _paddingLeft = Just True
                         }]
-    , mkInlayHintsTest "WithPun" Nothing 13 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLength $ dir </> "WithPun"
+    , mkInlayHintsTest "WithPun" Nothing 13 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLength "WithPun"
         bar <- mkLabelPart' 8 4 "bar"
         baz <- mkLabelPart' 9 4 "baz"
         (@?=) ih
@@ -271,8 +271,8 @@ test = testGroup "explicit-fields"
                         , _tooltip = Just $ InL "Expand record wildcard"
                         , _paddingLeft = Just True
                         }]
-    , mkInlayHintsTest "PolymorphicRecordConstruction" Nothing 15 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLengthSub1 (dir </> "PolymorphicRecordConstruction")
+    , mkInlayHintsTest "PolymorphicRecordConstruction" Nothing 15 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLengthSub1 "PolymorphicRecordConstruction"
         foo <- mkLabelPart' 5 4 "foo="
         bar <- mkLabelPart' 6 4 "bar="
         baz <- mkLabelPart' 7 4 "baz="
@@ -296,8 +296,8 @@ test = testGroup "explicit-fields"
                          , _paddingLeft = Nothing
                          }
           ]
-    , mkInlayHintsTest "UnicodeStrings" Nothing 10 $ \dir ih -> do
-        let mkLabelPart' = mkLabelPartOffsetLengthSub1 (dir </> "UnicodeStrings")
+    , mkInlayHintsTest "UnicodeStrings" Nothing 10 $ \ih -> do
+        let mkLabelPart' = mkLabelPartOffsetLengthSub1 "UnicodeStrings"
         name  <- mkLabelPart' 5 4 "αβγa="
         count <- mkLabelPart' 6 4 "count="
         (@?=) ih
@@ -314,7 +314,7 @@ test = testGroup "explicit-fields"
                          , _paddingLeft = Nothing
                          }
           ]
-    , mkInlayHintsTest "CursorRecords" Nothing 9 $ \_ ih -> do
+    , mkInlayHintsTest "CursorRecords" Nothing 9 $ \ih -> do
         let mkLabelPart' = mkLabelPartOffsetLength "CursorRecords"
         a0  <- mkLabelPart' 3 14 "a0"
         a1  <- mkLabelPart' 4 14 "a1"
@@ -359,7 +359,7 @@ test = testGroup "explicit-fields"
               , _data_ = Nothing
               }
           ]
-    , mkInlayHintsTest "CursorPositional" Nothing 15 $ \_ ih -> do
+    , mkInlayHintsTest "CursorPositional" Nothing 15 $ \ih -> do
         let mkLabelPart' = mkLabelPartOffsetLengthSub1 "CursorPositional"
         middle <- mkLabelPart' 2 2 "middle="
         inner  <- mkLabelPart' 6 2 "inner="
@@ -401,19 +401,20 @@ test = testGroup "explicit-fields"
     ]
   ]
 
-assertNoInlayHints :: String -> [InlayHint] -> Assertion
-assertNoInlayHints _ = assertBool "There exists an inlay hint whereas there should have been none" . null
+assertNoInlayHints :: [InlayHint] -> Assertion
+assertNoInlayHints = assertBool "There exists an inlay hint whereas there should have been none" . null
 
-mkInlayHintsTest :: FilePath -> Maybe TestName -> UInt -> (String -> [InlayHint] -> Assertion) -> TestTree
+mkInlayHintsTest :: FilePath -> Maybe TestName -> UInt -> ([InlayHint] -> Assertion) -> TestTree
 mkInlayHintsTest fp postfix line assert =
   testCase (fp ++ concat postfix) $
-    runSessionWithServer' def plugin testDataDir $ \dir -> do
+    runSessionWithServer def plugin testDataDir $ do
       doc <- openDoc (fp ++ ".hs") "haskell"
       inlayHints <- getInlayHints doc (lineRange line)
-      liftIO $ assert dir inlayHints
+      liftIO $ assert inlayHints
   where
     lineRange line = Range (Position line 0) (Position line 1000)
 
+mkTestNoAction :: TestName -> FilePath -> UInt -> UInt -> UInt -> UInt -> TestTree
 mkTestNoAction title fp x1 y1 x2 y2 =
   testCase title $
     runSessionWithServer def plugin (testDataDir </> "noop") $ do
@@ -482,7 +483,7 @@ mkLabelPart offset fp line start value = do
                             }
   where
     toUri = fromNormalizedUri . filePathToUri' . toNormalizedFilePath'
-    uri = canonicalizeUri $ toUri (fp ++ ".hs")
+    uri = canonicalizeUri $ toUri (testDataDir </> (fp ++ ".hs"))
     location uri line char = Location uri (Range (Position line char) (Position line (char + offset value)))
 
 mkLabelPartOffsetLength :: FilePath -> UInt -> UInt -> Text -> IO InlayHintLabelPart

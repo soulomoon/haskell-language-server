@@ -15,7 +15,6 @@ import qualified Language.LSP.Protocol.Lens  as L
 import           Language.LSP.Protocol.Types (Null (Null))
 import           System.FilePath
 import           Test.Hls
-import           Test.Hls.FileSystem         (VirtualFileTree (..), copyDir)
 
 main :: IO ()
 main = defaultTestRunner tests
@@ -129,7 +128,7 @@ renameTests = testGroup "Identifier"
 
     , testCase "fails when module does not compile" $ runRenameSession "" $ do
         doc <- openDoc "FunctionArgument.hs" "haskell"
-        expectDiagnosticsEmpty doc "typecheck"
+        expectNoMoreDiagnostics 3 doc "typecheck"
 
         -- Update the document so it doesn't compile
         let change = TextDocumentContentChangeEvent $ InL TextDocumentContentChangePartial
@@ -160,7 +159,7 @@ renameTests = testGroup "Identifier"
               , _text = "Int"
               }
         changeDoc doc [change']
-        expectDiagnosticsEmpty doc "typecheck"
+        expectNoMoreDiagnostics 3 doc "typecheck"
 
         -- Make sure renaming succeeds
         rename doc (Position 3 0) "foo'"
@@ -259,7 +258,7 @@ expectRenameError doc pos newName = do
 runRenameSession :: FilePath -> Session a -> IO a
 runRenameSession subdir = failIfSessionTimeout
   .  runSessionWithTestConfig def
-  { testDirLocation = VirtualFileTree [copyDir "./"] (testDataDir </> subdir)
+  { testDirLocation = Left $ testDataDir </> subdir
   , testPluginDescriptor = renamePlugin
   , testConfigCaps = codeActionNoResolveCaps }
   . const

@@ -14,11 +14,9 @@ import           Completer                       (completerTests)
 import           Context                         (contextTests)
 import           Control.Lens                    ((^.))
 import           Control.Lens.Fold               ((^?))
-import           Control.Monad                   (forM, guard)
+import           Control.Monad                   (forM_, guard)
 import qualified Data.ByteString                 as BS
 import           Data.Either                     (isRight)
-import           Data.List                       (nub)
-import           Data.Maybe                      (catMaybes)
 import qualified Data.Maybe                      as Maybe
 import           Data.Text                       (Text)
 import qualified Data.Text                       as T
@@ -208,16 +206,14 @@ codeActionTests = testGroup "Code Actions"
     ]
   where
     executeFirstActionPerDiagnostic doc = do
-      _ <- waitForDiagsAndBuildQueue doc
+      _ <- waitForDiagnosticsFrom doc
       diagnotics <- getCurrentDiagnostics doc
       -- Execute the first code action at each diagnostic point
-      !cas <- catMaybes <$> forM diagnotics (\diagnostic -> do
+      forM_ diagnotics $ \diagnostic -> do
         codeActions <- getCodeActions doc (diagnostic ^. range)
         case codeActions of
-          []     -> pure Nothing
-          ca : _ -> do
-            return (ca ^? _R))
-      mapM_ executeCodeAction $ nub cas
+          []     -> pure ()
+          ca : _ -> mapM_ executeCodeAction (ca ^? _R)
     getLicenseAction :: T.Text -> [Command |? CodeAction] -> [CodeAction]
     getLicenseAction license codeActions = do
         InR action@CodeAction{_title} <- codeActions

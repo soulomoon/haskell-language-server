@@ -48,7 +48,10 @@ module Test.Hls
     -- * Assertion helper functions
     waitForProgressDone,
     waitForAllProgressDone,
+    waitForBuildQueue,
     waitForProgressBegin,
+    waitForTypecheck,
+    waitForAction,
     hlsConfigToClientConfig,
     setHlsConfig,
     getLastBuildKeys,
@@ -66,11 +69,7 @@ module Test.Hls
     Priority(..),
     captureKickDiagnostics,
     kick,
-    TestConfig(..),
-    waitForDiagsAndBuildQueue,
-    runSessionWithServerEmptyDir,
-    runSessionWithServer',
-    goldenWithTestConfigWithCustomWait
+    TestConfig(..)
     )
 where
 
@@ -250,7 +249,7 @@ goldenWithHaskellAndCaps
 goldenWithHaskellAndCaps config clientCaps plugin title testDataDir path desc ext act =
   goldenGitDiff title (testDataDir </> path <.> desc <.> ext)
   $ runSessionWithTestConfig def {
-    testDirLocation = VirtualFileTree [copyDir "./"] testDataDir,
+    testDirLocation = Left testDataDir,
     testConfigCaps = clientCaps,
     testLspConfig = config,
     testPluginDescriptor = plugin
@@ -275,29 +274,12 @@ goldenWithTestConfig
   -> (TextDocumentIdentifier -> Session ())
   -> TestTree
 goldenWithTestConfig config title tree path desc ext act =
-    goldenWithTestConfigWithCustomWait config title tree path desc ext Nothing act
-
-
-goldenWithTestConfigWithCustomWait
-  :: Pretty b
-  => TestConfig b
-  -> TestName
-  -> VirtualFileTree
-  -> FilePath
-  -> FilePath
-  -> FilePath
-  -> Maybe (Session ())
-  -> (TextDocumentIdentifier -> Session ())
-  -> TestTree
-goldenWithTestConfigWithCustomWait config title tree path desc ext mWait act =
   goldenGitDiff title (vftOriginalRoot tree </> path <.> desc <.> ext)
   $ runSessionWithTestConfig config $ const
   $ TL.encodeUtf8 . TL.fromStrict
   <$> do
     doc <- openDoc (path <.> ext) "haskell"
-    case mWait of
-      Just waitAction -> waitAction
-      Nothing         -> void waitForBuildQueue
+    void waitForBuildQueue
     act doc
     documentContents doc
 
@@ -317,7 +299,7 @@ goldenWithHaskellAndCapsInTmpDir config clientCaps plugin title tree path desc e
   goldenGitDiff title (vftOriginalRoot tree </> path <.> desc <.> ext)
   $
   runSessionWithTestConfig def {
-    testDirLocation = tree,
+    testDirLocation = Right tree,
     testConfigCaps = clientCaps,
     testLspConfig = config,
     testPluginDescriptor = plugin
@@ -548,7 +530,7 @@ initializeTestRecorder envVars = do
 runSessionWithServerInTmpDir :: Pretty b => Config -> PluginTestDescriptor b -> VirtualFileTree -> Session a -> IO a
 runSessionWithServerInTmpDir config plugin tree act =
     runSessionWithTestConfig def
-    {testLspConfig=config, testPluginDescriptor = plugin, testDirLocation=tree}
+    {testLspConfig=config, testPluginDescriptor = plugin,  testDirLocation=Right tree}
     (const act)
 
 -- | Same as 'withTemporaryDataAndCacheDirectory', but materialises the given
@@ -624,32 +606,16 @@ runSessionWithServer config plugin fp act =
     runSessionWithTestConfig def {
         testLspConfig=config
         , testPluginDescriptor=plugin
-        , testDirLocation = VirtualFileTree [copyDir "./"] fp
+        , testDirLocation = Left fp
         } (const act)
-
-
-runSessionWithServer' :: Pretty b => Config -> PluginTestDescriptor b -> FilePath -> (FilePath -> Session a) -> IO a
-runSessionWithServer' config plugin fp act =
-    runSessionWithTestConfig def {
-        testLspConfig=config
-        , testPluginDescriptor=plugin
-        , testDirLocation = VirtualFileTree [copyDir "./"] fp
-        } act
-
-runSessionWithServerEmptyDir :: Pretty b => Config -> PluginTestDescriptor b -> (FilePath -> Session a) -> IO a
-runSessionWithServerEmptyDir config plugin act =
-    runSessionWithTestConfig def {
-        testLspConfig=config
-        , testPluginDescriptor=plugin
-        , testDirLocation = VirtualFileTree [] ""
-        } act
 
 
 instance Default (TestConfig b) where
   def = TestConfig {
-    testDirLocation = VirtualFileTree [] "",
+    testDirLocation = Right $ VirtualFileTree [] "",
     testClientRoot = Nothing,
     testServerRoot = Nothing,
+    testShiftRoot = False,
     testDisableKick = False,
     testDisableDefaultPlugin = False,
     testPluginDescriptor = mempty,
@@ -792,7 +758,7 @@ lockForTempDirs = unsafePerformIO newLock
 
 data TestConfig b = TestConfig
   {
-    testDirLocation          :: VirtualFileTree
+    testDirLocation          :: Either FilePath VirtualFileTree
     -- ^ The file tree to use for the test, either a directory or a virtual file tree
     -- if using a virtual file tree,
     -- Creates a temporary directory, and materializes the VirtualFileTree
@@ -811,6 +777,8 @@ data TestConfig b = TestConfig
     -- Don't forget to use 'TASTY_PATTERN' to debug only a subset of tests.
     --
     -- For plugin test logs, look at the documentation of 'mkPluginTestDescriptor'.
+  , testShiftRoot            :: Bool
+    -- ^ Whether to shift the current directory to the root of the project
   , testClientRoot           :: Maybe FilePath
     -- ^ Specify the root of (the client or LSP context),
     -- if Nothing it is the same as the testDirLocation
@@ -881,10 +849,7 @@ runSessionWithTestConfig TestConfig{..} session =
 
     let plugins = testPluginDescriptor recorder <> lspRecorderPlugin
     timeoutOverride <- fmap read <$> lookupEnv "LSP_TIMEOUT"
-    let sconf' = testConfigSession { lspConfig = hlsConfigToClientConfig testLspConfig
-        , messageTimeout = fromMaybe (messageTimeout defaultConfig) timeoutOverride
-        , logStdErr = True
-        }
+    let sconf' = testConfigSession { lspConfig = hlsConfigToClientConfig testLspConfig, messageTimeout = fromMaybe (messageTimeout defaultConfig) timeoutOverride}
         arguments = testingArgs serverRoot recorderIde plugins
 
     -- Make an explicit call to keepAlive to protect both pipes from being GC'd.
@@ -911,8 +876,14 @@ runSessionWithTestConfig TestConfig{..} session =
       pure result
 
     where
-        shiftRoot shiftTarget f  = withLock lock $ keepCurrentDirectory $ setCurrentDirectory shiftTarget >> f
-        runSessionInVFS vfs act =
+        shiftRoot shiftTarget f  =
+            if testShiftRoot
+                then withLock lock $ keepCurrentDirectory $ setCurrentDirectory shiftTarget >> f
+                else f
+        runSessionInVFS (Left testConfigRoot) act = do
+            root <- makeAbsolute testConfigRoot
+            withTemporaryDataAndCacheDirectory (const $ act root)
+        runSessionInVFS (Right vfs) act =
             withVfsTestDataDirectory vfs $ \fs -> do
                 act (fsRoot fs)
         testingArgs prjRoot recorderIde plugins =
@@ -945,30 +916,52 @@ waitForProgressBegin = skipManyTill anyMessage $ satisfyMaybe $ \case
 
 -- | Wait for the next progress end step
 waitForProgressDone :: Session ()
-waitForProgressDone = void $ waitForBuildQueue
---     skipManyTill anyMessage $ satisfyMaybe $ \case
---   FromServerMess  SMethod_Progress  (TNotificationMessage _ _ (ProgressParams _ v)) | is _workDoneProgressEnd v-> Just ()
---   _ -> Nothing
+waitForProgressDone = skipManyTill anyMessage $ satisfyMaybe $ \case
+  FromServerMess  SMethod_Progress  (TNotificationMessage _ _ (ProgressParams _ v)) | is _workDoneProgressEnd v-> Just ()
+  _ -> Nothing
 
 -- | Wait for all progress to be done
 -- Needs at least one progress done notification to return
 waitForAllProgressDone :: Session ()
-waitForAllProgressDone = void $ waitForBuildQueue
---   where
---     loop = do
---       ~() <- skipManyTill anyMessage $ satisfyMaybe $ \case
---         FromServerMess  SMethod_Progress  (TNotificationMessage _ _ (ProgressParams _ v)) | is _workDoneProgressEnd v -> Just ()
---         _ -> Nothing
---       done <- null <$> getIncompleteProgressSessions
---       unless done loop
+waitForAllProgressDone = loop
+  where
+    loop = do
+      ~() <- skipManyTill anyMessage $ satisfyMaybe $ \case
+        FromServerMess  SMethod_Progress  (TNotificationMessage _ _ (ProgressParams _ v)) | is _workDoneProgressEnd v -> Just ()
+        _ -> Nothing
+      done <- null <$> getIncompleteProgressSessions
+      unless done loop
 
+-- | Wait for the build queue to be empty
+waitForBuildQueue :: Session Seconds
+waitForBuildQueue = do
+    let m = SMethod_CustomMethod (Proxy @"test")
+    waitId <- sendRequest m (toJSON WaitForShakeQueue)
+    (td, resp) <- duration $ skipManyTill anyMessage $ responseForId m waitId
+    case resp of
+        TResponseMessage{_result=Right Null} -> return td
+        -- assume a ghcide binary lacking the WaitForShakeQueue method
+        _                                    -> return 0
 
-waitForDiagsAndBuildQueue :: TextDocumentIdentifier -> Session Seconds
-waitForDiagsAndBuildQueue doc = do
-      _ <- waitForDiagnosticsFromSource doc ""
-      waitForBuildQueue
+callTestPlugin :: (A.FromJSON b) => TestRequest -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) b)
+callTestPlugin cmd = do
+    let cm = SMethod_CustomMethod (Proxy @"test")
+    waitId <- sendRequest cm (A.toJSON cmd)
+    TResponseMessage{_result} <- skipManyTill anyMessage $ responseForId cm waitId
+    return $ do
+      e <- _result
+      case A.fromJSON e of
+        A.Error err -> Left $ TResponseError (InR ErrorCodes_InternalError) (T.pack err) Nothing
+        A.Success a -> pure a
 
-getLastBuildKeys :: Session [T.Text]
+waitForAction :: String -> TextDocumentIdentifier -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) WaitForIdeRuleResult)
+waitForAction key TextDocumentIdentifier{_uri} =
+    callTestPlugin (WaitForIdeRule key _uri)
+
+waitForTypecheck :: TextDocumentIdentifier -> Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) Bool)
+waitForTypecheck tid = fmap ideResultSuccess <$> waitForAction "typecheck" tid
+
+getLastBuildKeys :: Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) [T.Text])
 getLastBuildKeys = callTestPlugin GetBuildKeysBuilt
 
 hlsConfigToClientConfig :: Config -> A.Object
@@ -997,9 +990,7 @@ captureKickDiagnostics start done = do
             _ -> Nothing
 
 waitForKickDone :: Session ()
-waitForKickDone = do
-    void $ skipManyTill anyMessage nonTrivialKickDone
-    void $ waitForBuildQueue
+waitForKickDone = void $ skipManyTill anyMessage nonTrivialKickDone
 
 waitForKickStart :: Session ()
 waitForKickStart = void $ skipManyTill anyMessage nonTrivialKickStart

@@ -2,7 +2,6 @@
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs                 #-}
-{-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE OverloadedStrings     #-}
 module Test.Hls.Util
   (  -- * Test Capabilities
@@ -40,9 +39,7 @@ module Test.Hls.Util
     , inspectDiagnosticAny
     , waitForDiagnosticsFrom
     , waitForDiagnosticsFromSource
-    , waitForActionWithDiagnosticsFromDocs
-    , waitForExpectedDiagnosticsFromDocs
-    , flushMessages
+    , waitForDiagnosticsFromSourceWithTimeout
     -- * Temporary directories
     , withCurrentDirectoryInTmp
     , withCurrentDirectoryInTmp'
@@ -51,43 +48,13 @@ module Test.Hls.Util
     , extractCursorPositions
     , mkParameterisedLabel
     , __i
-    -- * Diagnostic checking
-    , expectDiagnosticsWithTags-- * Extract positions from input file.
-    , diagnostic
-    , referenceReady
-    , expectCurrentDiagnostics
-    , checkDiagnosticsForDoc
-    , canonicalizeUri
-    -- * Extra test plugin calls
-    , waitForAction
-    , waitForTypecheck
-    , callTestPlugin
-    , callTestPluginWithDiag
-    , callTestPluginWithSMethod
-    , expectDiagnosticsEmpty
-    , getStoredKeys
-    , getInterfaceFilesDir
-    , waitForBuildQueue
-    , getFilesOfInterest
-    , expectDiagnosticsWithTags'
-    , expectedDiagnosticWithNothing
-    , expectMessages
-    , expectDiagnostics
-    , filePathTextDocumentIdentifier
-    , waitForExpectedDiagnosticsFromFilePath
-    , waitForExpectedDiagnosticsFromDocsOne
-    , waitForCustomMessage
-    , waitForGC
-    , configureCheckProject
-    , isReferenceReady
   )
 where
 
 import           Control.Applicative.Combinators          (skipManyTill, (<|>))
 import           Control.Exception                        (catch, throwIO)
-import           Control.Lens                             (_1, _Just,
-                                                           traverseOf, (&),
-                                                           (.~), (?~), (^.))
+import           Control.Lens                             (_Just, (&), (.~),
+                                                           (?~), (^.))
 import           Control.Monad
 import           Control.Monad.IO.Class
 import qualified Data.Aeson                               as A
@@ -107,30 +74,18 @@ import           System.FilePath
 import           System.Info.Extra                        (isMac, isWindows)
 import qualified System.IO.Extra
 import           System.IO.Temp
-import           System.Time.Extra                        (Seconds, duration,
-                                                           sleep)
+import           System.Time.Extra                        (Seconds, sleep)
 import           Test.Tasty                               (TestTree)
 import           Test.Tasty.ExpectedFailure               (expectFailBecause,
                                                            ignoreTestBecause)
-import           Test.Tasty.HUnit                         (Assertion,
-                                                           HasCallStack,
-                                                           assertFailure)
+import           Test.Tasty.HUnit                         (assertFailure)
 
-import           Control.Arrow
 import qualified Data.List                                as List
-import qualified Data.Map                                 as Map
-import           Data.Maybe
 import           Data.String.Interpolate                  (__i)
 import qualified Data.Text.Internal.Search                as T
 import qualified Data.Text.Utf16.Rope.Mixed               as Rope
 import           Development.IDE.Plugin.Completions.Logic (getCompletionPrefixFromRope)
 import           Development.IDE.Plugin.Completions.Types (PosPrefixInfo (..))
-import           Development.IDE.Plugin.Test              (TestRequest (..),
-                                                           WaitForIdeRuleResult (ideResultSuccess))
-import           Development.IDE.Test.Diagnostic
-import           GHC.TypeLits
-import           Ide.Plugin.Config
-import           Language.LSP.Test
 
 noLiteralCaps :: ClientCapabilities
 noLiteralCaps = def & L.textDocument ?~ textDocumentCaps
@@ -331,263 +286,50 @@ waitForDiagnosticsFrom doc = do
        then waitForDiagnosticsFrom doc
        else return diags
 
-
-waitForTypecheck :: TextDocumentIdentifier -> Test.Session Bool
-waitForTypecheck tid = ideResultSuccess <$> waitForAction "typecheck" tid
-
-waitForActionWithDiagnosticsFromDocs :: (HasCallStack) => [TextDocumentIdentifier] -> Test.Session [[Diagnostic]]
-waitForActionWithDiagnosticsFromDocs docs = do
-  -- The test request waits until HLS has no pending diagnostic work. While
-  -- waiting for the response, lsp-test consumes publishDiagnostics messages and
-  -- updates its current-diagnostics cache.
-  mapM_ waitForTypecheck docs
-  void $ callTestPluginWithDiag WaitForDiagnosticPublished
-  mapM Test.getCurrentDiagnostics docs
-
-flushMessages :: Test.Session ()
-flushMessages = do
-    -- let cm = SMethod_CustomMethod (Proxy @"non-existent-method")
-    let cm = SMethod_CustomMethod (Proxy @"test")
-    i <- Test.sendRequest cm A.Null
-    void (Test.responseForId cm i) <|> ignoreOthers cm i
-    where
-        ignoreOthers cm i = skipManyTill Test.anyMessage (Test.responseForId cm i) >> flushMessages
-
-
 waitForDiagnosticsFromSource :: TextDocumentIdentifier -> String -> Test.Session [Diagnostic]
-waitForDiagnosticsFromSource doc src = do
-      diags <- concat <$> waitForActionWithDiagnosticsFromDocs [doc]
-      return $ filter (\d -> d ^. L.source == Just (T.pack src)) diags
+waitForDiagnosticsFromSource = waitForDiagnosticsFromSourceWithTimeout 5
 
-expectDiagnosticsEmpty :: TextDocumentIdentifier -> String -> Test.Session ()
-expectDiagnosticsEmpty doc src = do
-    diagsA <- concat <$> waitForActionWithDiagnosticsFromDocs [doc]
-    let diags = filter (\d -> d ^. L.source == Just (T.pack src)) diagsA
+-- | wait for @timeout@ seconds and report an assertion failure
+-- if any diagnostic messages arrive in that period
+expectNoMoreDiagnostics :: Seconds -> TextDocumentIdentifier -> String -> Test.Session ()
+expectNoMoreDiagnostics timeout doc src = do
+    diags <- waitForDiagnosticsFromSourceWithTimeout timeout doc src
     unless (null diags) $
-        liftIO $ assertFailure $ "Expected no diagnostics for " <> show (doc ^. L.uri) <>
+        liftIO $ assertFailure $
+            "Got unexpected diagnostics for " <> show (doc ^. L.uri) <>
             " got " <> show diags
 
--- | 'waitForExpectedDiagnosticsFromDocs' waits for diagnostics to be published for the given documents,
--- and checks that they match the expected diagnostics. The expected diagnostics are specified as a list
--- of pairs of 'TextDocumentIdentifier' and a list of 'ExpectedDiagnostic'.
--- timeout is outdated and should be removed, as the function will until the system is idle,
--- which is the correct behaviour for the tests.
-expectNoMoreDiagnostics :: HasCallStack => Seconds -> Test.Session ()
-expectNoMoreDiagnostics _timeout = do
-    diags <- callTestPluginWithDiag WaitForDiagnosticPublished
-    unless (null diags) $ liftIO $
-      assertFailure $
-        "Expected no diagnostics, but got: "
-          <> show (map unwrapDiagnostic diags)
-
-expectDiagnosticsWithTags :: HasCallStack => [(FilePath, [ExpectedDiagnosticWithTag])] -> Test.Session ()
-expectDiagnosticsWithTags expected = do
-    let toSessionPath = getDocUri >=> liftIO . canonicalizeUri >=> pure . toNormalizedUri
-        next = unwrapDiagnostic <$> skipManyTill anyMessage diagnostic
-    expected' <- Map.fromListWith (<>) <$> traverseOf (traverse . _1) toSessionPath expected
-    expectDiagnosticsWithTags' next expected'
-
-
-expectDiagnosticsWithTags' ::
-  HasCallStack =>
-  Session (Uri, [Diagnostic]) ->
-  Map.Map NormalizedUri [ExpectedDiagnosticWithTag] ->
-  Session ()
-expectDiagnosticsWithTags' next m | null m = do
-    (_,actual) <- next
-    case actual of
-        [] ->
-            return ()
-        _ ->
-            liftIO $ assertFailure $ "Got unexpected diagnostics:" <> show actual
-expectDiagnosticsWithTags' next expected = go expected
+-- | wait for @timeout@ seconds and return diagnostics for the given @document and @source.
+-- If timeout is 0 it will wait until the session timeout
+waitForDiagnosticsFromSourceWithTimeout :: Seconds -> TextDocumentIdentifier -> String -> Test.Session [Diagnostic]
+waitForDiagnosticsFromSourceWithTimeout timeout document source = do
+    when (timeout > 0) $
+        -- Give any further diagnostic messages time to arrive.
+        liftIO $ sleep timeout
+        -- Send a dummy message to provoke a response from the server.
+        -- This guarantees that we have at least one message to
+        -- process, so message won't block or timeout.
+    testId <- Test.sendRequest (SMethod_CustomMethod (Proxy @"test")) A.Null
+    handleMessages testId
   where
-    go m
-      | Map.null m = pure ()
-      | otherwise = do
-        (fileUri, actual) <- next
-        canonUri <- liftIO $ toNormalizedUri <$> canonicalizeUri fileUri
-        case Map.lookup canonUri m of
-          Nothing -> do
-            liftIO $
-              assertFailure $
-                "Got diagnostics for " <> show fileUri
-                  <> " but only expected diagnostics for "
-                  <> show (Map.keys m)
-                  <> " got "
-                  <> show actual
-          Just expected -> do
-            liftIO $ mapM_ (requireDiagnosticM actual) expected
-            liftIO $
-              unless (length expected == length actual) $
-                assertFailure $
-                  "Incorrect number of diagnostics for " <> show fileUri
-                    <> ", expected "
-                    <> show expected
-                    <> " but got "
-                    <> show actual
-            go $ Map.delete canonUri m
+    matches :: Diagnostic -> Bool
+    matches d = d ^. L.source == Just (T.pack source)
 
-requireDiagnosticM
-    :: (Foldable f, Show (f Diagnostic), HasCallStack)
-    => f Diagnostic
-    -> ExpectedDiagnosticWithTag
-    -> Assertion
-requireDiagnosticM actuals expected = case requireDiagnostic actuals expected of
-    Nothing  -> pure ()
-    Just err -> assertFailure err
+    handleMessages testId = handleDiagnostic testId <|> handleMethod_CustomMethodResponse testId <|> ignoreOthers testId
+    handleDiagnostic testId = do
+        diagsNot <- Test.message SMethod_TextDocumentPublishDiagnostics
+        let fileUri = diagsNot ^. L.params . L.uri
+            diags = diagsNot ^. L.params . L.diagnostics
+            res = filter matches diags
+        if fileUri == document ^. L.uri && not (null res)
+            then return res else handleMessages testId
+    handleMethod_CustomMethodResponse testId = do
+        _ <- Test.responseForId (SMethod_CustomMethod (Proxy @"test")) testId
+        pure []
 
-expectedDiagnosticWithNothing :: ExpectedDiagnostic -> ExpectedDiagnosticWithTag
-expectedDiagnosticWithNothing (ds, c, t, code) = (ds, c, t, code, Nothing)
+    ignoreOthers testId = void Test.anyMessage >> handleMessages testId
 
-
-expectMessages :: SMethod m -> Seconds -> (TServerMessage m -> Session ()) -> Session ()
-expectMessages m timeout handle = do
-    -- Give any further diagnostic messages time to arrive.
-    i <- callTestPluginWithSMethod m WaitForDiagnosticPublished
-    -- Send a dummy message to provoke a response from the server.
-    -- This guarantees that we have at least one message to
-    -- process, so message won't block or timeout.
-    -- let cm = SMethod_CustomMethod (Proxy @"test")
-    -- i <- sendRequest cm $ A.toJSON GetShakeSessionQueueCount
-    mapM_ handle i
-
--- | It is not possible to use 'expectDiagnostics []' to assert the absence of diagnostics,
---   only that existing diagnostics have been cleared.
---
---   Rather than trying to assert the absence of diagnostics, introduce an
---   expected diagnostic (e.g. a redundant import) and assert the singleton diagnostic.
-expectDiagnostics :: HasCallStack => [(FilePath, [ExpectedDiagnostic])] -> Session ()
-expectDiagnostics
-  = expectDiagnosticsWithTags
-  . map (second (map expectedDiagnosticWithNothing))
-
-
-filePathTextDocumentIdentifier :: FilePath -> Session TextDocumentIdentifier
-filePathTextDocumentIdentifier fp =
-  TextDocumentIdentifier <$> getDocUri fp
-
-waitForExpectedDiagnosticsFromFilePath :: (HasCallStack) => [(FilePath, [ExpectedDiagnostic])] -> Session ()
-waitForExpectedDiagnosticsFromFilePath oxs = do
-    -- merge diagnostics for same file paths
-  let xs = Map.toList $ Map.fromListWith (++) [(fp, ed) | (fp, ed) <- oxs]
-  res <- forM xs $ \(fp, ed) -> do
-    tdi <- filePathTextDocumentIdentifier fp
-    return (tdi, ed)
-  waitForExpectedDiagnosticsFromDocs res
-
-waitForExpectedDiagnosticsFromDocsOne :: (HasCallStack) => (TextDocumentIdentifier, [ExpectedDiagnostic]) -> Session ()
-waitForExpectedDiagnosticsFromDocsOne x = waitForExpectedDiagnosticsFromDocs [x]
-
-waitForExpectedDiagnosticsFromDocs :: (HasCallStack) => [(TextDocumentIdentifier, [ExpectedDiagnostic])] -> Session ()
-waitForExpectedDiagnosticsFromDocs expected = do
-  docDiags <- waitForActionWithDiagnosticsFromDocs (map fst expected)
-  forM_ (zip expected docDiags) $ \((doc, exDiags), diags) -> do
-    checkDiagnosticsForDoc doc exDiags diags
-
-expectCurrentDiagnostics :: HasCallStack => TextDocumentIdentifier -> [ExpectedDiagnostic] -> Session ()
-expectCurrentDiagnostics doc expected = do
-    diags <- getCurrentDiagnostics doc
-    checkDiagnosticsForDoc doc expected diags
-
-checkDiagnosticsForDoc :: HasCallStack => TextDocumentIdentifier -> [ExpectedDiagnostic] -> [Diagnostic] -> Session ()
-checkDiagnosticsForDoc TextDocumentIdentifier {_uri} expected obtained = do
-    let expected' = Map.singleton nuri (map expectedDiagnosticWithNothing expected)
-        nuri = toNormalizedUri _uri
-    expectDiagnosticsWithTags' (return (_uri, obtained)) expected'
-
-
-waitForCustomMessage :: T.Text -> (A.Value -> Maybe res) -> Session res
-waitForCustomMessage msg pred =
-    skipManyTill anyMessage $ satisfyMaybe $ \case
-        FromServerMess (SMethod_CustomMethod p) (NotMess TNotificationMessage{_params = value})
-            | symbolVal p == T.unpack msg -> pred value
-        _ -> Nothing
-
-waitForGC :: Session [T.Text]
-waitForGC = waitForCustomMessage "ghcide/GC" $ \v ->
-    case A.fromJSON v of
-        A.Success x -> Just x
-        _           -> Nothing
-
-configureCheckProject :: Bool -> Session ()
-configureCheckProject overrideCheckProject = setConfigSection "haskell" (A.toJSON $ def{checkProject = overrideCheckProject})
-
--- | Pattern match a message from ghcide indicating that a file has been indexed
-isReferenceReady :: FilePath -> Session ()
-isReferenceReady p = void $ referenceReady (equalFilePath p)
-
-referenceReady :: (FilePath -> Bool) -> Session FilePath
-referenceReady pred = satisfyMaybe $ \case
-  FromServerMess (SMethod_CustomMethod p) (NotMess TNotificationMessage{_params})
-    | A.Success fp <- A.fromJSON _params
-    , pred fp
-    , symbolVal p == "ghcide/reference/ready"
-    -> Just fp
-  _ -> Nothing
-
-diagnostic :: Session (TNotificationMessage Method_TextDocumentPublishDiagnostics)
-diagnostic = Test.message SMethod_TextDocumentPublishDiagnostics
-
-canonicalizeUri :: Uri -> IO Uri
-canonicalizeUri uri = filePathToUri <$> canonicalizePath (fromJust (uriToFilePath uri))
-
-unwrapDiagnostic :: TServerMessage Method_TextDocumentPublishDiagnostics  -> (Uri, [Diagnostic])
-unwrapDiagnostic diagsNot = (diagsNot^. L.params . L.uri, diagsNot^. L.params . L.diagnostics)
-
-callTestPluginWithSMethod ::
-    forall {t :: MessageKind} {a} {m :: Method ServerToClient t}.
-    A.ToJSON a => SServerMethod m -> a -> Test.Session [TMessage m]
-callTestPluginWithSMethod sm cmd = do
-    let cm = SMethod_CustomMethod (Proxy @"test")
-    waitId <- Test.sendRequest cm (A.toJSON cmd)
-    let go acc = do
-            res <- skipManyTill Test.anyMessage $ do
-
-                (fmap Right (Test.responseForId cm waitId) <|> fmap Left (Test.message sm))
-            case res of
-                            Right TResponseMessage{_result} -> return (_result, acc)
-                            Left a -> go (a:acc)
-    (res, diagsNots) <- go []
-    case res of
-        Left (TResponseError t err _) -> error $ show t <> ": " <> T.unpack err
-        Right _a                      -> return diagsNots
-
--- callTestPlugin :: (A.FromJSON b) => TestRequest -> Test.Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) b)
--- callTestPlugin cmd = do
---     let cm = SMethod_CustomMethod (Proxy @"test")
---     waitId <- Test.sendRequest cm (A.toJSON cmd)
---     TResponseMessage{_result} <- skipManyTill Test.anyMessage $ Test.responseForId cm waitId
---     return $ do
---       e <- _result
---       case A.fromJSON e of
---         A.Error err -> Left $ TResponseError (InR ErrorCodes_InternalError) (T.pack err) Nothing
---         A.Success a -> pure a
-
-tryCallTestPlugin :: (A.FromJSON b) => TestRequest -> Test.Session (Either (TResponseError @ClientToServer (Method_CustomMethod "test")) b)
-tryCallTestPlugin cmd = do
-    let cm = SMethod_CustomMethod (Proxy @"test")
-    waitId <- Test.sendRequest cm (A.toJSON cmd)
-    TResponseMessage{_result} <- skipManyTill Test.anyMessage $ Test.responseForId cm waitId
-    return $ case _result of
-         Left e -> Left e
-         Right json -> case A.fromJSON json of
-             A.Success a -> Right a
-             A.Error e   -> error e
-
-callTestPlugin :: (A.FromJSON b) => TestRequest -> Test.Session b
-callTestPlugin cmd = do
-    res <- tryCallTestPlugin cmd
-    case res of
-        Left (TResponseError t err _) -> error $ show t <> ": " <> T.unpack err
-        Right a                       -> pure a
-
-callTestPluginWithDiag ::
-    A.ToJSON a => a -> Test.Session [TNotificationMessage Method_TextDocumentPublishDiagnostics]
-callTestPluginWithDiag = callTestPluginWithSMethod SMethod_TextDocumentPublishDiagnostics
-
-
-failIfSessionTimeout :: HasCallStack => IO a -> IO a
+failIfSessionTimeout :: IO a -> IO a
 failIfSessionTimeout action = action `catch` errorHandler
     where errorHandler :: Test.SessionException -> IO a
           errorHandler e@(Test.Timeout _) = assertFailure $ show e
@@ -724,30 +466,3 @@ addTextLine state l = state
     { foldStateFinalText = l : foldStateFinalText state
     , foldStateRows = foldStateRows state + 1
     }
-
-waitForAction :: String -> TextDocumentIdentifier -> Test.Session WaitForIdeRuleResult
-waitForAction key TextDocumentIdentifier{_uri} =
-    callTestPlugin (WaitForIdeRule key _uri)
-
-getInterfaceFilesDir :: TextDocumentIdentifier -> Test.Session FilePath
-getInterfaceFilesDir TextDocumentIdentifier{_uri} = callTestPlugin (GetInterfaceFilesDir _uri)
-
--- garbageCollectDirtyKeys :: CheckParents -> Int -> Session [String]
--- garbageCollectDirtyKeys parents age = callTestPlugin (GarbageCollectDirtyKeys parents age)
-
-getStoredKeys :: Test.Session [T.Text]
-getStoredKeys = callTestPlugin GetStoredKeys
-
--- | Wait for the build queue to be empty
-waitForBuildQueue :: Test.Session Seconds
-waitForBuildQueue = do
-    let m = SMethod_CustomMethod (Proxy @"test")
-    waitId <- Test.sendRequest m (A.toJSON WaitForShakeQueue)
-    (td, resp) <- duration $ skipManyTill Test.anyMessage $ Test.responseForId m waitId
-    case resp of
-        TResponseMessage{_result=Right A.Null} -> return td
-        -- assume a ghcide binary lacking the WaitForShakeQueue method
-        _                                      -> return 0
-
-getFilesOfInterest :: Test.Session [FilePath]
-getFilesOfInterest = callTestPlugin GetFilesOfInterest
