@@ -88,13 +88,16 @@ incDatabase db Nothing = do
 -- computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], ([Key], [Key]), Int)
 -- computeToPreserve :: Database -> KeySet -> STM (KeySet, ([Key], [Key]), Int)
 computeToPreserve :: Database -> KeySet -> STM (KeySet, ([Key], [Key]), Int, [Key])
-computeToPreserve db dirtySet = do
-  -- All keys that depend (directly or transitively) on any dirty key
---   traceEvent ("markDirty base " ++ show dirtySet) $ return ()
+computeToPreserve db@Database{..} dirtySet = do
+  -- Still use the affected closure to decide which running work to cancel, but
+  -- mark every stored key dirty for this branch experiment. This removes the
+  -- differential dirty-set pruning from the restart path while keeping the
+  -- current tuple-shaped API.
   (oldKeys, newKeys, affected) <- transitiveDirtyListBottomUpDiff db (toListKeySet dirtySet) []
---   traceEvent ("oldKeys " ++ show oldKeys) $ return ()
---   traceEvent ("newKeys " ++ show newKeys) $ return ()
-  pure (affected, (oldKeys, newKeys), length newKeys, [])
+  storedKeys <- map fst <$> ListT.toList (SMap.listT databaseValues)
+  let rootKey = newKey "root"
+      restartDirtyKeys = filter (/= rootKey) storedKeys
+  pure (affected, ([], restartDirtyKeys), length restartDirtyKeys, oldKeys <> newKeys)
 
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
@@ -421,4 +424,3 @@ spawnRefresh db@Database {..} stack key barrier prevResult registerHook  refresh
 -- If the parent is Dirty, and every direct child is either Clean/Exception/Running for a step < eventStep,
 -- and no child changed at/after eventStep, mark parent Clean (preserving its last Clean result),
 -- and recursively attempt the same for its own parents.
-
