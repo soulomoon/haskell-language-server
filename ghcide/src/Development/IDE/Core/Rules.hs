@@ -615,9 +615,12 @@ typeCheckRule :: Recorder (WithPriority Log) -> Rules ()
 typeCheckRule recorder = define (cmapWithPrio LogShake recorder) $ \TypeCheck file -> do
     pm <- use_ GetParsedModule file
     hsc  <- hscEnv <$> use_ GhcSessionDeps file
+    foi <- use_ IsFileOfInterest file
     -- We should only call the typecheck rule for files of interest.
     -- Keeping typechecked modules in memory for other files is
     -- very expensive.
+    when (foi == NotFOI) $
+      logWith recorder Logger.Warning $ LogTypecheckedFOI file
     typeCheckRuleDefinition hsc pm file
 
 knownFilesRule :: Recorder (WithPriority Log) -> Rules ()
