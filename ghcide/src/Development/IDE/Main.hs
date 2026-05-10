@@ -382,8 +382,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
         Check argFiles -> do
           let dir = argsProjectRoot
           dbLoc <- getHieDbLoc dir
-          ideMVar <- newEmptyMVar
-          runWithWorkerThreads (cmapWithPrio LogLanguageServer recorder) ideMVar dbLoc mempty $ \hiedb threadQueue -> do
+          runWithWorkerThreads (cmapWithPrio LogSession recorder) dbLoc mempty $ \hiedb threadQueue -> do
             -- GHC produces messages with UTF8 in them, so make sure the terminal doesn't error
             hSetEncoding stdout utf8
             hSetEncoding stderr utf8
@@ -412,7 +411,6 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
                         , optModifyDynFlags = optModifyDynFlags def_options <> pluginModifyDynflags plugins
                         }
             ide <- initialise (cmapWithPrio LogService recorder) argsDefaultHlsConfig argsHlsPlugins rules Nothing debouncer ideOptions hiedb threadQueue mempty dir
-            putMVar ideMVar ide
             shakeSessionInit (cmapWithPrio LogShake recorder) ide
             registerIdeConfiguration (shakeExtras ide) $ IdeConfiguration mempty (hashed Nothing)
 
@@ -442,8 +440,7 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
         Custom (IdeCommand c) -> do
           let root = argsProjectRoot
           dbLoc <- getHieDbLoc root
-          ideMVar <- newEmptyMVar
-          runWithWorkerThreads (cmapWithPrio LogLanguageServer recorder) ideMVar dbLoc mempty $ \hiedb threadQueue -> do
+          runWithWorkerThreads (cmapWithPrio LogSession recorder) dbLoc mempty $ \hiedb threadQueue -> do
             sessionLoader <- loadSessionWithOptions (cmapWithPrio LogSession recorder) argsSessionLoadingOptions "." (tLoaderQueue threadQueue)
             let def_options = argsIdeOptions argsDefaultHlsConfig sessionLoader
                 ideOptions = def_options
@@ -452,7 +449,6 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
                     , optModifyDynFlags = optModifyDynFlags def_options <> pluginModifyDynflags plugins
                     }
             ide <- initialise (cmapWithPrio LogService recorder) argsDefaultHlsConfig argsHlsPlugins rules Nothing debouncer ideOptions hiedb threadQueue mempty root
-            putMVar ideMVar ide
             shakeSessionInit (cmapWithPrio LogShake recorder) ide
             registerIdeConfiguration (shakeExtras ide) $ IdeConfiguration mempty (hashed Nothing)
             c ide

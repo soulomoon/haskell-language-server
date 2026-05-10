@@ -732,7 +732,7 @@ checkInCache sessionState ncfp = runMaybeT $ do
 
 -- | Modify the shake state.
 data SessionShake = SessionShake
-  { restartSession  :: VFSModified -> String -> IO [Key] -> IO ()
+  { restartSession  :: VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
   , invalidateCache :: IO Key
   , enqueueActions  :: DelayedAction () -> IO (IO ())
   }
@@ -796,7 +796,7 @@ sessionOpts recorder sessionShake sessionState knownTargetsVar (hieYaml, file) =
     clearErrorLoadingFiles sessionState
     clearCradleFiles sessionState
     cacheKey <- liftIO $ invalidateCache sessionShake
-    liftIO $ restartSession sessionShake VFSUnmodified "didSessionLoadingPreferenceConfigChange" (return [cacheKey])
+    liftIO $ restartSession sessionShake VFSUnmodified "didSessionLoadingPreferenceConfigChange" [] (return [cacheKey])
 
   v <- liftIO $ atomically $ STM.lookup hieYaml (fileToFlags sessionState)
   case v >>= HM.lookup (toNormalizedFilePath' file) of
@@ -897,7 +897,7 @@ session recorder sessionShake sessionState knownTargetsVar(hieYaml, cfp, opts, l
   -- Invalidate all the existing GhcSession build nodes by restarting the Shake session
   liftIO $ do
     checkProject <- optCheckProject ideOptions
-    restartSession sessionShake VFSUnmodified "new component" $ do
+    restartSession sessionShake VFSUnmodified "new component" [] $ do
         -- It is necessary to call 'handleBatchLoadSuccess' in restartSession
         -- to ensure the GhcSession rule does not return before a new session is started.
         -- Otherwise, invalid compilation results may propagate to downstream rules,

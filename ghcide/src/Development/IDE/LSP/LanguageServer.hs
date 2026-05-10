@@ -13,11 +13,9 @@ module Development.IDE.LSP.LanguageServer
     , runWithWorkerThreads
     , Setup (..)
     , ServerLifecycleContext (..)
-    , untilMVar'
     ) where
 
 import           Control.Concurrent.STM
-import           Control.Exception                     (throw)
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
 import           Control.Monad.Reader
@@ -47,7 +45,6 @@ import           Data.Foldable                         (traverse_)
 import           Development.IDE.Core.IdeConfiguration
 import           Development.IDE.Core.Service          (shutdown)
 import           Development.IDE.Core.Shake            hiding (Log)
-import qualified Development.IDE.Core.Shake            as Shake
 import           Development.IDE.Core.Tracing
 import           Development.IDE.Core.WorkerThread
 import qualified Development.IDE.Session               as Session
@@ -57,44 +54,36 @@ import           Ide.Logger
 import           Language.LSP.Server                   (LanguageContextEnv,
                                                         LspServerLog,
                                                         type (<~>))
-import           System.Time.Extra                     (Seconds)
 import           System.Timeout                        (timeout)
 
 data Log
   = LogRegisteringIdeConfig !IdeConfiguration
   | LogReactorThreadException !SomeException
   | LogReactorMessageActionException !SomeException
-  | LogReactorThreadStopped Int
+  | LogReactorThreadStopped
   | LogCancelledRequest !SomeLspId
   | LogSession Session.Log
-  | LogShake Shake.Log
   | LogLspServer LspServerLog
   | LogReactorShutdownRequested Bool
   | LogShutDownTimeout Int
   | LogServerExitWith (Either () Int)
   | LogReactorShutdownConfirmed !T.Text
-  | LogInitializeIdeStateTookTooLong Seconds
-  | LogText !T.Text
   deriving Show
 
 instance Pretty Log where
   pretty = \case
-    LogText msg       -> pretty msg
-    LogShake msg      -> pretty msg
-    LogInitializeIdeStateTookTooLong seconds ->
-        "Building the initial session took more than" <+> pretty seconds <+> "seconds"
     LogReactorShutdownRequested b ->
       "Requested reactor shutdown; stop signal posted: " <+> pretty b
     LogReactorShutdownConfirmed msg ->
-        "Reactor shutdown confirmed: " <+> pretty msg
+      "Reactor shutdown confirmed: " <+> pretty msg
     LogServerExitWith (Right 0) ->
       "Server exited successfully"
     LogServerExitWith (Right code) ->
       "Server exited with failure code" <+> pretty code
-    LogServerExitWith (Left error) ->
-      "Server forcefully exited due to exception in reactor thread" <+> pretty error
+    LogServerExitWith (Left ()) ->
+      "Server forcefully exited due to exception in reactor thread"
     LogShutDownTimeout seconds ->
-        "Shutdown timeout, the server will exit now after waiting for" <+> pretty seconds  <+> "seconds"
+      "Shutdown timeout, the server will exit now after waiting for" <+> pretty seconds  <+> "seconds"
     LogRegisteringIdeConfig ideConfig ->
       -- This log is also used to identify if HLS starts successfully in vscode-haskell,
       -- don't forget to update the corresponding test in vscode-haskell if the text in
@@ -108,14 +97,14 @@ instance Pretty Log where
       vcat
         [ "ReactorMessageActionException"
         , pretty $ displayException e ]
-    LogReactorThreadStopped i ->
-      "Reactor thread stopped" <+> pretty i
+    LogReactorThreadStopped ->
+      "Reactor thread stopped"
     LogCancelledRequest requestId ->
       "Cancelled request" <+> viaShow requestId
     LogSession msg -> pretty msg
     LogLspServer msg -> pretty msg
 
--- | Context for initializing the LSP language server.
+-- | Context of the LSP language server.
 -- This record encapsulates all the configuration and callback functions
 -- needed to set up and run the language server initialization process.
 data ServerLifecycleContext config = ServerLifecycleContext
@@ -195,7 +184,7 @@ runLanguageServer recorder options inH outH defaultConfig parseConfig onConfigCh
             outH
             serverDefinition
 
-    (untilMVar' clientMsgVar runServer `finally` sequence_ onExit)
+    untilMVar' clientMsgVar runServer `finally` sequence_ onExit
         >>= logWith recorder Info . LogServerExitWith
 
 setupLSP ::
@@ -224,10 +213,10 @@ setupLSP recorder defaultRoot getHieDbLoc userHandlers getIdeState clientMsgVar 
     requestReactorShutdown = do
       k <- tryPutMVar reactorStopSignal ()
       logWith recorder Info $ LogReactorShutdownRequested k
-      let timeOutSeconds = 10
+      let timeOutSeconds = 2
       timeout (timeOutSeconds * 1_000_000) (waitBarrier reactorConfirmBarrier) >>= \case
         Just () -> pure ()
-        -- If we don't get confirmation within 10 seconds, we log a warning and shutdown anyway.
+        -- If we don't get confirmation within 2 seconds, we log a warning and shutdown anyway.
         Nothing -> logWith recorder Warning $ LogShutDownTimeout timeOutSeconds
 
   -- Forcefully exit
@@ -308,11 +297,12 @@ handleInit lifecycleCtx env (TRequestMessage _ _ m params) = otTracedHandler "In
         -- shutdown shake
         case me of
           Left e -> do
-            lifetimeConfirm ("due to exception in reactor thread: " <> T.pack (displayException e))
+            lifetimeConfirm "due to exception in reactor thread"
             logWith recorder Error $ LogReactorThreadException e
-            -- ctxForceShutdown lifecycleCtx
-            throw e
-          _ -> return ()
+            ctxForceShutdown lifecycleCtx
+          _ -> do
+            lifetimeConfirm "due to shutdown message"
+            return ()
 
       exceptionInHandler e = do
         logWith recorder Error $ LogReactorMessageActionException e
@@ -342,7 +332,7 @@ handleInit lifecycleCtx env (TRequestMessage _ _ m params) = otTracedHandler "In
       -- down after the session loader and restarting threads, and before the
       -- hiedb connections are closed.
       let shutdownSession = tryReadMVar ideMVar >>= traverse_ shutdown
-      runWithWorkerThreads recorder ideMVar dbLoc shutdownSession $ \withHieDb' threadQueue' -> do
+      runWithWorkerThreads (cmapWithPrio LogSession recorder) dbLoc shutdownSession $ \withHieDb' threadQueue' -> do
         ide <- ctxGetIdeState lifecycleCtx env root withHieDb' threadQueue'
         putMVar ideMVar ide
         -- Keep this after putMVar ideMVar ide; otherwise shutdown during
@@ -354,34 +344,25 @@ handleInit lifecycleCtx env (TRequestMessage _ _ m params) = otTracedHandler "In
           case msg of
             ReactorNotification act  -> handle exceptionInHandler act
             ReactorRequest _id act k -> void $ async $ checkCancelled _id act k
-        -- Confirm as soon as the reactor loop observes the stop signal. Worker
-        -- and Shake cleanup continue while the surrounding ContT unwinds.
-        lifetimeConfirm "due to shutdown message"
-        logWith recorder Info $ LogReactorThreadStopped 0
+      logWith recorder Info LogReactorThreadStopped
 
     ide <- readMVar ideMVar
     registerIdeConfiguration (shakeExtras ide) initConfig
     pure $ Right (env,ide)
 
 
-runShakeThread :: Recorder (WithPriority Log) -> MVar IdeState -> ContT () IO DBQue
-runShakeThread recorder mide =
-  withWorkerQueue
-    (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder)
-    "ShakeShakeControlQueue"
-    (runRestartTask (cmapWithPrio LogShake recorder) mide)
 -- | runWithWorkerThreads
 -- create several threads to run the session, db and session loader
 -- see Note [Serializing runs in separate thread]
-runWithWorkerThreads :: Recorder (WithPriority Log) -> MVar IdeState -> FilePath -> IO () -> (WithHieDb -> ThreadQueue -> IO ()) -> IO ()
-runWithWorkerThreads recorder mide dbLoc shutdownSession f = evalContT $ do
-  (WithHieDbShield hiedb, threadQueue) <- runWithDb (cmapWithPrio LogSession recorder) dbLoc
+runWithWorkerThreads :: Recorder (WithPriority Session.Log) -> FilePath -> IO () -> (WithHieDb -> ThreadQueue -> IO ()) -> IO ()
+runWithWorkerThreads recorder dbLoc shutdownSession f = evalContT $ do
+  (WithHieDbShield hiedb, threadQueue) <- runWithDb recorder dbLoc
   -- The shake session needs to be shut down prior to the hiedb connections
   -- being cleaned up, otherwise shake could be referencing dead connections.
   -- This is passed in via the callsites.
   ContT $ \action -> action () `finally` shutdownSession
-  sessionRestartTQueue <- runShakeThread recorder mide
-  sessionLoaderTQueue <- withWorkerQueueSimple (cmapWithPrio (LogSession . Session.LogSessionWorkerThread) recorder) "SessionLoaderTQueue"
+  sessionRestartTQueue <- withWorkerQueueSimple (cmapWithPrio Session.LogSessionWorkerThread recorder) "RestartTQueue"
+  sessionLoaderTQueue <- withWorkerQueueSimple (cmapWithPrio Session.LogSessionWorkerThread recorder) "SessionLoaderTQueue"
   liftIO $ f hiedb (ThreadQueue threadQueue sessionRestartTQueue sessionLoaderTQueue)
 
 -- | Runs the action until it ends or until the given MVar is put.

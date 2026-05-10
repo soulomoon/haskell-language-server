@@ -53,7 +53,8 @@ import           UnliftIO                           (Async (asyncThreadId),
                                                      newEmptyTMVarIO, poll,
                                                      putTMVar, readTMVar,
                                                      readTVarIO, throwTo,
-                                                     waitCatch, withAsync)
+                                                     waitCatch,
+                                                     withAsyncWithUnmask)
 import           UnliftIO.Concurrent                (ThreadId, myThreadId)
 import qualified UnliftIO.Exception                 as UE
 
@@ -282,7 +283,7 @@ data Database = Database {
     -- if not in any of the transitive reverse deps of a dirty node, it is clean
     -- we can skip clean the threads.
     -- this is update right before we query the database for the key result.
-    databaseTransitiveRRuntimeDepCache :: SMap.Map KeySet ([Key], KeySet),
+    databaseTransitiveRRuntimeDepCache :: SMap.Map KeySet TransitiveDirtyKeys,
     -- ^ this is a cache for transitive reverse deps if we have computed it before
     -- and the databaseRRuntimeDep did not change since last time
     -- it is very useful for large projects where many files depend on a few common files
@@ -305,6 +306,13 @@ data Database = Database {
     databaseValues                     :: !(Map Key KeyDetails)
 
     }
+
+data TransitiveDirtyKeys = TransitiveDirtyKeys
+    { transitiveDirtyList :: ![Key]
+      -- ^ Dirty keys in children-before-parents order.
+    , transitiveDirtySet  :: !KeySet
+      -- ^ Same transitive closure as a set, used for membership/filtering.
+    } deriving Show
 
 
 ---------------------------------------------------------------------
@@ -371,15 +379,14 @@ isRootKey _              = False
 -- 4. Exception safety with rollback on registration failure
 -- @ inline
 {-# INLINE spawnAsyncWithDbRegistration #-}
-spawnAsyncWithDbRegistration :: Database -> DeliverStatus -> STM () -> IO a1 -> (Either SomeException a1 -> IO ()) -> (forall a. IO a -> IO a) -> IO ()
-spawnAsyncWithDbRegistration db@Database{..} deliver registerHook asyncBody handler restore = do
+spawnAsyncWithDbRegistration :: Database -> DeliverStatus -> IO a1 -> (Either SomeException a1 -> IO ()) -> (forall a. IO a -> IO a) -> IO ()
+spawnAsyncWithDbRegistration db@Database{..} deliver asyncBody handler restore = do
     startBarrier <- newEmptyTMVarIO
     -- 1. we need to make sure the thread is registered before we actually start
     -- 2. we should not start in between the restart
     -- 3. if it is killed before we start, we need to cancel the async
     let register a = do
                     dbNotLocked db
-                    registerHook
                     modifyTVar' databaseThreads ((deliver, a):)
                     -- make sure we only start after the restart
                     putTMVar startBarrier ()
@@ -393,7 +400,7 @@ spawnAsyncWithDbRegistration db@Database{..} deliver registerHook asyncBody hand
 {-# INLINE runInThreadStmInNewThreads #-}
 runInThreadStmInNewThreads :: Database -> DeliverStatus -> IO a -> (Either SomeException a -> IO ()) -> IO ()
 runInThreadStmInNewThreads db deliver act handler = uninterruptibleMask $ \restore ->
-        spawnAsyncWithDbRegistration db deliver (return ()) act handler restore
+        spawnAsyncWithDbRegistration db deliver act handler restore
 
 getDataBaseStepInt :: Database -> STM Int
 getDataBaseStepInt db = do
@@ -408,29 +415,19 @@ instance Exception AsyncParentKill where
   fromException = asyncExceptionFromException
 
 shutDatabase ::KeySet -> Database -> IO ()
-shutDatabase dirties db@Database{..} = uninterruptibleMask $ \unmask -> do
-    -- Dump scheduler state on shutdown for diagnostics
-    -- let dumpPath = "scheduler.dump"
-    -- dump <- dumpSchedulerState databaseScheduler
-    -- writeFile dumpPath dump
+shutDatabase dirties db@Database{..} = uninterruptibleMask $ \_unmask -> do
     -- wait for all threads to finish
     asyncs <- readTVarIO databaseThreads
     step <- readTVarIO databaseStep
     tid <- myThreadId
-    -- traceEventIO ("shutDatabase: cancelling " ++ show (length asyncs) ++ " asyncs, step " ++ show step)
-    -- traceEventIO ("shutDatabase: async entries: " ++ show (map (deliverName . fst) asyncs))
-    -- let remains = filter (\(_, s) -> s `S.member` preserve) asyncs
     let rootKey = newKey "root"
     let (toCancel, remains) = partition (\(k, _) -> deliverKey k `memberKeySet` dirties || deliverKey k == rootKey) asyncs
     atomically $ modifyTVar' databaseThreads (const remains)
     mapM_ (\(k, a) -> throwTo (asyncThreadId a) $ AsyncParentKill tid step [deliverKey k, newKey "shutDatabase"]) toCancel
-    -- atomically $ modifyTVar' databaseThreads (const remains)
-    -- traceEventIO ("shutDatabase: remains count: " ++ show (length remains) ++ ", names: " ++ show (map (deliverName . fst) remains))
-    -- traceEventIO ("shutDatabase: toCancel count: " ++ show (length toCancel) ++ ", names: " ++ show (map (deliverName . fst) toCancel))
     -- Wait until all the asyncs are done
     -- But if it takes more than 10 seconds, log to stderr
     unless (null asyncs) $ do
-        let warnIfTakingTooLong = unmask $ forever $ do
+        let warnIfTakingTooLong = forever $ do
                 sleep 5
                 as <- readTVarIO databaseThreads
                 -- poll each async: Nothing => still running
@@ -440,14 +437,12 @@ shutDatabase dirties db@Database{..} = uninterruptibleMask $ \unmask -> do
                 let still = [ (deliverName d, show (asyncThreadId a)) | (d,a,p) <- statuses, isNothing p ]
                 traceEventIO $ "cleanupAsync: waiting for asyncs to finish; total=" ++ show (length as) ++ ", stillRunning=" ++ show (length still)
                 traceEventIO $ "cleanupAsync: still running (deliverName, threadId) = " ++ show still
-        withAsync warnIfTakingTooLong $ \_ -> mapM_ (waitCatch . snd) toCancel
+        withAsyncWithUnmask (\restore -> restore warnIfTakingTooLong) $ \_ -> mapM_ (waitCatch . snd) toCancel
         forM_ toCancel $ \(d,_p) -> do
             let k = deliverKey d
             when (k /= newKey "root") $ atomically $ deleteDatabaseRuntimeDep k db
     pruneFinished db
 
--- fdsfsifjsflksfjslthat dmake musch more sense to me
--- peekAsyncsDelivers :: Database -> IO [DeliverStatus]
 peekAsyncsDelivers :: MonadIO m => Database -> m [DeliverStatus]
 peekAsyncsDelivers db = do
     asyncs <- readTVarIO (databaseThreads db)

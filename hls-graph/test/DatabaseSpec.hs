@@ -3,9 +3,7 @@
 module DatabaseSpec where
 
 import           ActionSpec                              (itInThread)
-import           Control.Exception                       (SomeException, throw)
-import           Development.IDE.Graph                   (ShakeOptions, newKey,
-                                                          shakeOptions)
+import           Development.IDE.Graph                   (newKey, shakeOptions)
 import           Development.IDE.Graph.Database          (shakeNewDatabase,
                                                           shakeRunDatabase)
 import           Development.IDE.Graph.Internal.Action   (apply1)
@@ -16,44 +14,29 @@ import           Example
 import           System.Time.Extra                       (timeout)
 import           Test.Hspec
 
-
-exractException :: [Either SomeException ()] -> Maybe StackException
-exractException [] = Nothing
-exractException (Left e : _) | Just ne@StackException{} <- fromGraphException e = return ne
-exractException (_: xs) = exractException xs
-
-shakeNewDatabaseWithLogger :: ShakeOptions -> Rules () -> IO ShakeDatabase
-shakeNewDatabaseWithLogger opts rules = do
-  aq <- newQueue
-  shakeNewDatabase (const $ return ()) aq opts rules
-
 spec :: Spec
 spec = do
     describe "Evaluation" $ do
         itInThread "detects cycles" $ do
-            db <- shakeNewDatabaseWithLogger shakeOptions $ do
+            db <- shakeNewDatabase shakeOptions $ do
                 ruleBool
                 addRule $ \Rule _old _mode -> do
                     True <- apply1 (Rule @Bool)
                     return $ RunResult ChangedRecomputeDiff "" () (return ())
-            res <- timeout 1 $ shakeRunDatabase db $ pure $ apply1 (Rule @())
-            let x = exractException =<< res
-            let throwStack x = case x
-                    of Just e  -> throw e
-                       Nothing -> error "Expected a StackException, got none"
-            throwStack x `shouldThrow` \StackException{} -> True
+            let res = shakeRunDatabase db $ pure $ apply1 (Rule @())
+            timeout 1 res `shouldThrow` \StackException{} -> True
 
     describe "compute" $ do
       itInThread "build step and changed step updated correctly" $ do
-        (ShakeDatabase _ _ theDb) <- shakeNewDatabaseWithLogger shakeOptions $ do
+        (ShakeDatabase _ _ theDb) <- shakeNewDatabase shakeOptions $ do
           ruleStep
         let k = newKey $ Rule @()
         -- ChangedRecomputeSame
         r1@Result{resultChanged=rc1, resultBuilt=rb1} <- compute theDb emptyStack k RunDependenciesChanged Nothing
-        incDatabase theDb Nothing
+        _ <- incDatabase theDb Nothing
         -- ChangedRecomputeSame
         r2@Result{resultChanged=rc2, resultBuilt=rb2} <- compute theDb emptyStack k RunDependenciesChanged (Just r1)
-        incDatabase theDb Nothing
+        _ <- incDatabase theDb Nothing
         -- changed Nothing
         Result{resultChanged=rc3, resultBuilt=rb3} <- compute theDb emptyStack k RunDependenciesSame (Just r2)
         rc1 `shouldBe` Step 0

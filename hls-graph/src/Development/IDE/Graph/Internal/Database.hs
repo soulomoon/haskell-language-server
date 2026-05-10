@@ -9,7 +9,7 @@
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TypeFamilies       #-}
 
-module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..), computeToPreserve, getRunTimeRDeps, spawnAsyncWithDbRegistration) where
+module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge, AsyncParentKill(..), RuntimeRestartKeys(..), computeToPreserve, getRunTimeRDeps, spawnAsyncWithDbRegistration) where
 
 import           Prelude                              hiding (unzip)
 
@@ -27,7 +27,6 @@ import           Data.IORef.Extra
 import           Data.Maybe
 import           Data.Traversable                     (for)
 import           Data.Tuple.Extra
-import           Debug.Trace                          (traceEvent)
 import           Development.IDE.Graph.Classes
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Rules
@@ -38,10 +37,9 @@ import qualified ListT
 import qualified StmContainers.Map                    as SMap
 import           System.Time.Extra                    (duration)
 import           UnliftIO                             (MVar, atomically,
-                                                       isAsyncException,
-                                                       newEmptyMVar, putMVar)
+                                                       newEmptyMVar, putMVar,
+                                                       readMVar)
 
-import qualified Data.List                            as List
 import qualified UnliftIO.Exception                   as UE
 
 #if MIN_VERSION_base(4,19,0)
@@ -51,7 +49,6 @@ import           Data.List.NonEmpty                   (unzip)
 #endif
 
 
--- fiff taht does make more sense
 newDatabase :: (String -> IO ()) -> ActionQueue -> Dynamic -> TheRules -> IO Database
 newDatabase dataBaseLogger databaseActionQueue databaseExtra databaseRules = do
     databaseStep <- newTVarIO $ Step 0
@@ -67,12 +64,11 @@ newDatabase dataBaseLogger databaseActionQueue databaseExtra databaseRules = do
 -- | Increment the step and mark dirty.
 --   Assumes that the database is not running a build
 -- only some keys are dirty
-incDatabase :: Database -> Maybe (([Key], [Key]), KeySet) -> IO KeySet
-incDatabase db (Just ((_oldKeys, newKeys), preserves)) = do
+incDatabase :: Database -> Maybe (RuntimeRestartKeys, KeySet) -> IO KeySet
+incDatabase db (Just (RuntimeRestartKeys{..}, preserves)) = do
     atomicallyNamed "incDatabase" $ modifyTVar' (databaseStep db) $ \(Step i) -> Step $ i + 1
-    forM_ newKeys $ \newKey -> atomically $ SMap.focus updateDirty newKey (databaseValues db)
-    -- only upsweep the keys that are not preserved
-    -- atomically $ writeUpsweepQueue (filter  (`notMemberKeySet` preserves) oldkeys ++ newKeys) db
+    forM_ restartDirtyKeys $ \newKey -> atomically $ SMap.focus updateDirty newKey (databaseValues db)
+    -- Only re-enqueue actions that were not preserved across the restart.
     return $ preserves
 
 -- all keys are dirty
@@ -84,17 +80,29 @@ incDatabase db Nothing = do
         SMap.focus updateDirty k (databaseValues db)
     return $ mempty
 
--- computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], ([Key], [Key]))
--- computeToPreserve :: Database -> KeySet -> STM ([(DeliverStatus, Async ())], ([Key], [Key]), Int)
--- computeToPreserve :: Database -> KeySet -> STM (KeySet, ([Key], [Key]), Int)
-computeToPreserve :: Database -> KeySet -> STM (KeySet, ([Key], [Key]), Int, [Key])
-computeToPreserve db dirtySet = do
-  -- All keys that depend (directly or transitively) on any dirty key
---   traceEvent ("markDirty base " ++ show dirtySet) $ return ()
-  (oldKeys, newKeys, affected) <- transitiveDirtyListBottomUpDiff db (toListKeySet dirtySet) []
---   traceEvent ("oldKeys " ++ show oldKeys) $ return ()
---   traceEvent ("newKeys " ++ show newKeys) $ return ()
-  pure (affected, (oldKeys, newKeys), length newKeys, [])
+data RuntimeRestartKeys = RuntimeRestartKeys
+  { restartKillKeys  :: !KeySet
+    -- ^ Keys used to select running runtime actions to stop before the next
+    -- session starts. This may include rule keys and delayed-action 'DirectKey's.
+  , restartDirtyKeys :: ![Key]
+    -- ^ Rule database keys to mark dirty before the next run. In the ghcide
+    -- restart path this is rule-key-only by construction; the raw hls-graph API
+    -- does not enforce that invariant by type.
+  } deriving Show
+
+-- Note [RuntimeRestartKeys]
+-- The restart plan intentionally keeps runtime cancellation separate from rule
+-- dirtiness. 'restartKillKeys' is consumed by shutdown and may include direct
+-- delayed-action keys. 'restartDirtyKeys' is consumed by the rule database and
+-- is expected to contain only rule keys that can be marked dirty.
+-- For the ghcide restart path, the initial dirty seeds come from rule keys
+-- ('toKey'/'toNoFileKey'), so 'restartDirtyKeys' can use the
+-- 'databaseRRuntimeDep' closure directly. Direct/root runtime edges are stored
+-- separately in 'databaseRRuntimeDepRoot' by 'insertdatabaseRuntimeDep' and are
+-- expanded only for 'restartKillKeys'. The raw hls-graph API does not enforce
+-- this seed invariant by type.
+computeToPreserve :: Database -> KeySet -> STM RuntimeRestartKeys
+computeToPreserve = transitiveDirtyKeysBottomUp
 
 updateDirty :: Monad m => Focus.Focus KeyDetails m ()
 updateDirty = Focus.adjust $ \(KeyDetails status rdeps) ->
@@ -112,7 +120,6 @@ build ::
   forall f key value.
   (Traversable f, RuleResult key ~ value, Typeable key, Show key, Hashable key, Eq key, Typeable value) =>
   Key -> Database -> Stack -> f key -> IO (f Key, f value)
--- build _ st k | traceShow ("build", st, k) False = undefined
 build pk db stack keys = do
   built <- builder pk db stack (fmap newKey keys)
   let (ids, vs) = unzip built
@@ -126,18 +133,21 @@ build pk db stack keys = do
 --  If none of the keys are dirty, we can return the results immediately.
 --  Otherwise, a blocking computation is returned *which must be evaluated asynchronously* to avoid deadlock.
 builder :: (Traversable f) => Key -> Database -> Stack -> f Key -> IO (f (Key, Result))
--- builder _ st kk | traceShow ("builder", st,kk) False = undefined
 builder pk db stack keys = do
     waits <- for keys (\k -> builderOne pk db stack k)
     for waits (interpreBuildContinue db pk)
 
 -- the first run should not block
-data BuildContinue = BCContinue | BCStop Key Result
+data BuildContinue
+    = BCContinue !(Maybe (MVar (Either SomeException (Key, Result))))
+    | BCStop Key Result
 
 -- interpreBuildContinue :: BuildContinue -> IO (Key, Result)
 interpreBuildContinue :: Database -> Key -> (Key, BuildContinue) -> IO (Key, Result)
 interpreBuildContinue _db _pk (_kid, BCStop k v) = return (k, v)
-interpreBuildContinue db _pk (kid, BCContinue) = builderOneFinal db emptyStack kid
+interpreBuildContinue db _pk (kid, BCContinue Nothing) = builderOneFinal db emptyStack kid
+interpreBuildContinue _db _pk (_kid, BCContinue (Just barrier)) =
+    readMVar barrier >>= either throwIO pure
 
 
 builderOne :: Key -> Database -> Stack -> Key -> IO (Key, BuildContinue)
@@ -147,7 +157,6 @@ builderOne parentKey db stack kid = do
 
 builderOneFinal :: Database -> Stack -> Key -> IO (Key, Result)
 builderOneFinal Database {..} stack key = do
-  traceEvent ("builderOne: " ++ show key) return ()
   -- join is used to register the async
   atomicallyNamed "builder" $ do
     status <- SMap.lookup key databaseValues
@@ -160,7 +169,6 @@ builderOneFinal Database {..} stack key = do
 
 builderOne' :: Key -> Database -> Stack -> Key -> IO BuildContinue
 builderOne' parentKey db@Database {..} stack key = UE.uninterruptibleMask $ \restore -> do
-  traceEvent ("builderOne: " ++ show key) return ()
   atomicallyNamed "builder" $ insertdatabaseRuntimeDep key parentKey db
   barrier <- newEmptyMVar
   -- join is used to register the async
@@ -172,7 +180,7 @@ builderOne' parentKey db@Database {..} stack key = UE.uninterruptibleMask $ \res
     case (viewToRun $ keyStatus <$> status) of
       (Dirty prev) -> do
         SMap.focus (updateStatus $ Running current prev) key databaseValues
-        let register = spawnRefresh db stack key barrier prev (return ()) refresh
+        let register = spawnRefresh db stack key barrier prev refresh
                         -- why it is important to use rollback here
 
                         {- Note [Rollback is required if killed before registration]
@@ -181,11 +189,11 @@ builderOne' parentKey db@Database {..} stack key = UE.uninterruptibleMask $ \res
                         -}
                         (\_ -> atomicallyNamed "builderOne rollback" $ SMap.focus updateDirty key databaseValues)
                         restore
-        return $ register >> return BCContinue
+        return $ register >> return (BCContinue (Just barrier))
       (Clean r) -> pure . pure $ BCStop key r
       (Running _step _s)
         | memberStack key stack -> throw $ StackException stack
-        | otherwise -> pure . pure $ BCContinue
+        | otherwise -> pure . pure $ BCContinue Nothing
 
 -- Original spawnRefresh implementation moved below to use the abstraction
 -- handleResult :: (Show a1, MonadIO m) => a1 -> MVar (Either a2 (a1, b)) -> Either a2 b -> m ()
@@ -225,8 +233,6 @@ refreshDeps visited db stack key result = \case
                 else refreshDeps newVisited db stack key result deps
 
 
--- refresh :: Database -> Stack -> Key -> Maybe Result -> IO Result
--- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
 refresh :: Database -> Stack -> Key -> Maybe Result -> IO Result
 refresh db stack key result = case (addStack key stack, result) of
     (Left e, _) -> throw e
@@ -234,7 +240,6 @@ refresh db stack key result = case (addStack key stack, result) of
     (Right stack, _) -> compute db stack key RunDependenciesChanged result
 -- | Compute a key.
 compute :: Database -> Stack -> Key -> RunMode -> Maybe Result -> IO Result
--- compute _ st k _ _ | traceShow ("compute", st, k) False = undefined
 compute db@Database{..} stack key mode result = do
     let act = runRule databaseRules key (fmap resultData result) mode
     deps <- liftIO $ newIORef UnknownDeps
@@ -272,7 +277,6 @@ compute db@Database{..} stack key mode result = do
                     deps
             _ -> pure ()
         runHook
-        -- todo
         -- it might be overridden by error if another kills this thread
         SMap.focus (updateStatus $ Clean res) key databaseValues
     pure res
@@ -292,9 +296,8 @@ getDirtySet db = do
         calcAgeStatus _         = Nothing
     return $ mapMaybe (secondM calcAgeStatus) dbContents
 
--- | Returns an approximation of the database keys,
--- | make a change on most of the thinkgs is good
---   annotated with how long ago (in # builds) they were visited
+-- | Returns an approximation of the database keys, annotated with how long ago
+-- they were visited in build steps.
 getKeysAndVisitAge :: Database -> IO [(Key, Int)]
 getKeysAndVisitAge db = do
     values <- getDatabaseValues db
@@ -338,32 +341,22 @@ getRunTimeRDeps db k = SMap.lookup k (databaseRRuntimeDep db)
 getDeps :: SMap.Map Key KeySet -> Key -> STM (Maybe KeySet)
 getDeps m k = SMap.lookup k m
 
--- Edges in the reverse-dependency graph go from a child to its parents.
--- We perform a DFS and, after exploring all outgoing edges, cons the node onto
--- the accumulator. This yields children-before-parents order directly.
-
--- the lefts are keys that are no longer affected, we can try to mark them clean
--- the rights are new affected keys, we need to mark them dirty
-transitiveDirtyListBottomUpDiff :: Database -> [Key] -> [Key] -> STM ([Key], [Key], KeySet)
-transitiveDirtyListBottomUpDiff database seeds allOldKeys = do
-  (newKeys, seen) <- cacheTransitiveDirtyListBottomUpDFSWithRootKey database $ fromListKeySet seeds
-  let oldKeys = filter (`notMemberKeySet` seen) allOldKeys
-  return (oldKeys, newKeys, seen)
-
-cacheTransitiveDirtyListBottomUpDFSWithRootKey :: Database -> KeySet -> STM ([Key], KeySet)
-cacheTransitiveDirtyListBottomUpDFSWithRootKey db@Database{..} seeds = do
-  (newKeys, seen) <- cacheTransitiveDirtyListBottomUpDFS db seeds
-  -- we should put pump root keys back to seen
-  -- for each new key, get its root keys and put them back to seen
-  -- newKeys is for upsweep, databaseRRuntimeDepRoot only add new root keys which is not needed for upsweep
-  -- but seen is for thread filtering, we need to make sure all root keys are in seen
-  (_newKeys, newSeen) <- transitiveDirtyListBottomUpDFS databaseRRuntimeDepRoot seen
+transitiveDirtyKeysBottomUp :: Database -> KeySet -> STM RuntimeRestartKeys
+transitiveDirtyKeysBottomUp db@Database{..} seeds = do
+  TransitiveDirtyKeys dirtyKeys seen <- cacheTransitiveDirtyListBottomUpDFS db seeds
+  -- restartDirtyKeys should contain only rule keys. restartKillKeys also needs
+  -- the root/direct delayed-action keys, so expand through the root dependency
+  -- map only for the kill set.
+  TransitiveDirtyKeys _newKeys newSeen <- transitiveDirtyListBottomUpDFS databaseRRuntimeDepRoot seen
   let rootKey = newKey "root"
-  return $ (List.delete rootKey newKeys, deleteKeySet rootKey newSeen)
+  pure RuntimeRestartKeys
+    { restartDirtyKeys = dirtyKeys
+    , restartKillKeys = deleteKeySet rootKey newSeen
+    }
 
 
 
-cacheTransitiveDirtyListBottomUpDFS :: Database -> KeySet -> STM ([Key], KeySet)
+cacheTransitiveDirtyListBottomUpDFS :: Database -> KeySet -> STM TransitiveDirtyKeys
 cacheTransitiveDirtyListBottomUpDFS Database{..} seeds = do
     SMap.lookup seeds databaseTransitiveRRuntimeDepCache >>= \case
         Just v  -> return v
@@ -372,22 +365,25 @@ cacheTransitiveDirtyListBottomUpDFS Database{..} seeds = do
             SMap.insert r seeds databaseTransitiveRRuntimeDepCache
             return r
 
-transitiveDirtyListBottomUpDFS :: SMap.Map Key KeySet -> KeySet -> STM ([Key], KeySet)
+-- Edges in the reverse-dependency graph go from a child to its parents.
+-- We perform a DFS and, after exploring all outgoing edges, cons the node onto
+-- the accumulator. This yields children-before-parents order directly.
+transitiveDirtyListBottomUpDFS :: SMap.Map Key KeySet -> KeySet -> STM TransitiveDirtyKeys
 transitiveDirtyListBottomUpDFS database seeds = do
-  let go1 :: Key -> ([Key], KeySet) -> STM ([Key], KeySet)
-      go1 x acc@(dirties, seen) = do
+  let go1 :: Key -> TransitiveDirtyKeys -> STM TransitiveDirtyKeys
+      go1 x acc@TransitiveDirtyKeys{transitiveDirtySet = seen} = do
         if x `memberKeySet` seen
           then pure acc
           else do
-            let newAcc = (dirties, insertKeySet x seen)
+            let newAcc = acc{transitiveDirtySet = insertKeySet x seen}
             mnext <- getDeps database x
-            (newDirties, newSeen) <- foldrM go1 newAcc (maybe mempty toListKeySet mnext)
-            return (x:newDirties, newSeen)
-                -- if it is root key, we do not add it to the dirty list
-                -- since root key is not up for upsweep
-                -- but it would be in the seen list, so we would kill dirty root key async
+            childClosure <- foldrM go1 newAcc (maybe mempty toListKeySet mnext)
+            return childClosure{transitiveDirtyList = x : transitiveDirtyList childClosure}
+                -- Root keys are filtered out by 'transitiveDirtyKeysBottomUp'
+                -- for the dirty list, but kept in the set long enough to find
+                -- runtime roots that need shutdown.
   -- traverse all seeds
-  foldrM go1 ([], mempty) (toListKeySet seeds)
+  foldrM go1 (TransitiveDirtyKeys [] mempty) (toListKeySet seeds)
 
 -- | Original spawnRefresh using the general pattern
 -- inline
@@ -398,21 +394,19 @@ spawnRefresh ::
   Key ->
   MVar (Either SomeException (Key, Result)) ->
   Maybe Result ->
-  STM () ->
   (Database -> t -> Key -> Maybe Result -> IO Result) ->
   (SomeException -> IO ()) ->
   (forall a. IO a -> IO a) ->
   IO ()
-spawnRefresh db@Database {..} stack key barrier prevResult registerHook  refresher rollBack restore = do
+spawnRefresh db@Database {..} stack key barrier prevResult refresher rollBack restore = do
   Step currentStep <- readTVarIO databaseStep
   spawnAsyncWithDbRegistration
     db
     (DeliverStatus currentStep ("async computation; " ++ show key) key)
-    registerHook
     (refresher db stack key prevResult)
     (\r -> do
         case r of
-            Left e  -> when (isAsyncException e) (rollBack e) --- IGNORE ---
+            Left e  -> rollBack e
             Right _ -> return ()
         handleResult key barrier r
     ) restore
