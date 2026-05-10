@@ -29,6 +29,7 @@ module Development.IDE.Import.DependencyInformation
   , lookupModuleFile
   , BootIdMap
   , insertBootId
+  , lookupFingerprint
   ) where
 
 import           Control.DeepSeq
@@ -49,6 +50,8 @@ import qualified Data.List.NonEmpty                 as NonEmpty
 import           Data.Maybe
 import           Data.Tuple.Extra                   hiding (first, second)
 import           Development.IDE.GHC.Compat
+import           Development.IDE.GHC.Compat.Util    (Fingerprint)
+import qualified Development.IDE.GHC.Compat.Util    as Util
 import           Development.IDE.GHC.Orphans        ()
 import           Development.IDE.Import.FindImports (ArtifactsLocation (..),
                                                      isBootLocation)
@@ -152,7 +155,19 @@ data DependencyInformation =
     , depModuleFiles       :: !(ShowableModuleEnv FilePathId)
     -- ^ Map from Module to the corresponding non-boot hs file
     , depModuleGraph       :: !ModuleGraph
+    , depTransDepsFingerprints :: !(FilePathIdMap Fingerprint)
+    -- ^ Map from Module to fingerprint of the transitive dependencies of the module.
+    , depTransReverseDepsFingerprints :: !(FilePathIdMap Fingerprint)
+    -- ^ Map from FilePathId to the fingerprint of the transitive reverse dependencies of the module.
+    , depImmediateReverseDepsFingerprints :: !(FilePathIdMap Fingerprint)
+    -- ^ Map from FilePathId to the fingerprint of the immediate reverse dependencies of the module.
     } deriving (Show, Generic)
+
+lookupFingerprint :: NormalizedFilePath -> DependencyInformation -> FilePathIdMap Fingerprint -> Maybe Fingerprint
+lookupFingerprint fileId DependencyInformation {..} depFingerprintMap =
+  do
+    FilePathId cur_id <- lookupPathToId depPathIdMap fileId
+    IntMap.lookup cur_id depFingerprintMap
 
 newtype ShowableModule =
   ShowableModule {showableModule :: Module}
@@ -229,8 +244,8 @@ instance Semigroup NodeResult where
    SuccessNode _ <> ErrorNode errs   = ErrorNode errs
    SuccessNode a <> SuccessNode _    = SuccessNode a
 
-processDependencyInformation :: RawDependencyInformation -> BootIdMap -> ModuleGraph -> DependencyInformation
-processDependencyInformation RawDependencyInformation{..} rawBootMap mg =
+processDependencyInformation :: RawDependencyInformation -> BootIdMap -> ModuleGraph -> FilePathIdMap Fingerprint -> DependencyInformation
+processDependencyInformation RawDependencyInformation{..} rawBootMap mg shallowFingerMap =
   DependencyInformation
     { depErrorNodes = IntMap.fromList errorNodes
     , depModuleDeps = moduleDeps
@@ -240,6 +255,9 @@ processDependencyInformation RawDependencyInformation{..} rawBootMap mg =
     , depBootMap = rawBootMap
     , depModuleFiles = ShowableModuleEnv reverseModuleMap
     , depModuleGraph = mg
+    , depTransDepsFingerprints = buildTransDepsFingerprintMap moduleDeps shallowFingerMap
+    , depTransReverseDepsFingerprints = buildTransDepsFingerprintMap reverseModuleDeps shallowFingerMap
+    , depImmediateReverseDepsFingerprints = buildImmediateDepsFingerprintMap reverseModuleDeps shallowFingerMap
     }
   where resultGraph = buildResultGraph rawImports
         (errorNodes, successNodes) = partitionNodeResults $ IntMap.toList resultGraph
@@ -417,3 +435,44 @@ instance NFData NamedModuleDep where
 
 instance Show NamedModuleDep where
   show NamedModuleDep{..} = show nmdFilePath
+
+
+buildImmediateDepsFingerprintMap :: FilePathIdMap FilePathIdSet -> FilePathIdMap Fingerprint -> FilePathIdMap Fingerprint
+buildImmediateDepsFingerprintMap modulesDeps shallowFingers =
+  IntMap.fromList
+    $ map
+      ( \k ->
+          ( k,
+            Util.fingerprintFingerprints $
+              map
+                (shallowFingers IntMap.!)
+                (k : IntSet.toList (IntMap.findWithDefault IntSet.empty k modulesDeps))
+          )
+      )
+    $ IntMap.keys shallowFingers
+
+-- | Build a map from file path to its full fingerprint.
+-- The fingerprint is depend on both the fingerprints of the file and all its dependencies.
+-- This is used to determine if a file has changed and needs to be reloaded.
+buildTransDepsFingerprintMap :: FilePathIdMap FilePathIdSet -> FilePathIdMap Fingerprint -> FilePathIdMap Fingerprint
+buildTransDepsFingerprintMap modulesDeps shallowFingers = go keys IntMap.empty
+  where
+    keys = IntMap.keys shallowFingers
+    go :: [IntSet.Key] -> FilePathIdMap Fingerprint -> FilePathIdMap Fingerprint
+    go keys acc =
+      case keys of
+        [] -> acc
+        k : ks ->
+          if IntMap.member k acc
+            -- already in the map, so we can skip
+            then go ks acc
+            -- not in the map, so we need to add it
+            else
+              let -- get the dependencies of the current key
+                  deps = IntSet.toList $ IntMap.findWithDefault IntSet.empty k modulesDeps
+                  -- add fingerprints of the dependencies to the accumulator
+                  depFingerprints = go deps acc
+                  -- combine the fingerprints of the dependencies with the current key
+                  combinedFingerprints = Util.fingerprintFingerprints $ shallowFingers IntMap.! k : map (depFingerprints IntMap.!) deps
+               in -- add the combined fingerprints to the accumulator
+                  go ks (IntMap.insert k combinedFingerprints depFingerprints)
