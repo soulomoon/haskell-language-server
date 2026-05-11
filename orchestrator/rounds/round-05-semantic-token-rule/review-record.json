@@ -1,0 +1,11 @@
+{
+  "roadmap_id": "2026-05-11-00-hls-benchmark-parity",
+  "roadmap_revision": "rev-003",
+  "roadmap_dir": "orchestrator/roadmaps/2026-05-11-00-hls-benchmark-parity/rev-003",
+  "milestone_id": "milestone-004-plugin-rule-behavior",
+  "direction_id": "direction-004-semantic-token-rule-parity",
+  "extracted_item_id": "semantic-token-rule-parity",
+  "roadmap_item_id": null,
+  "decision": "approved",
+  "evidence_summary": "Approved: the two scoped semantic-token files match origin/codex/hls-graph-runtime-engine in the working tree, current tracked production changes are limited to those files, git diff --check passed, the focused semantic-token library build passed, all 30 semantic-token plugin tests passed, and the full GHC 9.12.2 cabal build passed."
+}
