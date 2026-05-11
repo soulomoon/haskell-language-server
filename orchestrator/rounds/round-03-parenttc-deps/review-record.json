@@ -1,0 +1,11 @@
+{
+  "roadmap_id": "2026-05-11-00-hls-benchmark-parity",
+  "roadmap_revision": "rev-001",
+  "roadmap_dir": "orchestrator/roadmaps/2026-05-11-00-hls-benchmark-parity/rev-001",
+  "milestone_id": "milestone-002-parent-typecheck-deps",
+  "direction_id": "direction-002-restore-parenttc-fingerprint-rule",
+  "extracted_item_id": "parenttc-fingerprint-rule-parity",
+  "roadmap_item_id": "parenttc-fingerprint-rule-parity",
+  "decision": "approved",
+  "evidence_summary": "Approved: production diff is limited to FileStore.hs ParentTC separate fingerprint rule restoration, target-branch expression matches origin/codex/hls-graph-runtime-engine, git diff --check passed, and ghcup run --ghc 9.12.2 -- cabal build passed."
+}
