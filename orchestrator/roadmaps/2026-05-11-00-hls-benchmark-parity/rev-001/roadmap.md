@@ -28,6 +28,11 @@ GitHub benchmark feedback.
 - Chosen strategy: serial one-cause patches. Each round changes only the
   current suspected cause, validates enough to avoid obvious breakage, commits,
   pushes, and stops for operator review of the benchmark matrix.
+- Latest feedback: pushed commit
+  `7b8a0075c1f73aa1cc9d4d087d84810d15a6dda2` restored the session-loader
+  ordering and the Benchmark workflow succeeded, but the operator reports the
+  benchmark matrix is still different. Treat Milestone 1 as complete evidence,
+  not final parity.
 - Deferred alternatives: bulk-restoring every differing runtime file, adding
   temporary benchmark instrumentation before parity attempts, or reverting the
   larger branch wholesale.
@@ -70,7 +75,7 @@ GitHub benchmark feedback.
 
 ## Milestones
 
-### [pending] Milestone 1: Session-loader progress boundary parity
+### [done] Milestone 1: Session-loader progress boundary parity
 Milestone id: milestone-001-session-loader-boundary
 Depends on:
 Intent: Align the test/session-loader ordering that decides whether work is
@@ -82,20 +87,16 @@ Parallel lane: lane-serial-benchmark-parity
 Coordination notes: This is the first extraction because the linked job showed
 matching dirty-key counts for `edit` while `waitForProgressDone` returned early
 on HEAD and `WaitForShakeQueue` absorbed the real work.
+Completion notes: Round `round-02-session-loader-boundary` merged as
+`7b8a0075c1f73aa1cc9d4d087d84810d15a6dda2`, restoring the selected
+`getOptionsLoop` pending-barrier ordering. Benchmark workflow
+`25646814655` succeeded for that commit, including job `75278189663`, but
+operator feedback says the benchmark remains different; continue to Milestone 2.
 
 Candidate directions:
 - Direction id: direction-001-restore-pending-barrier-order
-  Summary: Restore `getOptionsLoop` pending-barrier ordering in
-    `ghcide/session-loader/Development/IDE/Session.hs` to target-branch
-    behavior.
-  Why it matters now: This is the only current diff with a direct explanation
-    for the `edit` attribution shift observed in job `75257907481`.
-  Preconditions: current branch is clean and still at the benchmarked lineage.
-  Parallel hints: Serial only.
-  Boundary notes: Do not include `HscEnvEq`, `GetModSummary`, ParentTC, or
-    plugin-rule changes in the same round.
-  Extraction notes: Commit and push after validation, then stop for benchmark
-    feedback.
+  Summary: Completed by round `round-02-session-loader-boundary`; detailed
+    evidence is recorded in roadmap history and the round artifacts.
 
 ### [pending] Milestone 2: Parent typecheck dependency parity
 Milestone id: milestone-002-parent-typecheck-deps
@@ -107,6 +108,9 @@ benchmark feedback shows whether rule counts or delayed work converge further.
 Parallel lane: lane-serial-benchmark-parity
 Coordination notes: Start this only if milestone 1 does not fully explain the
 remaining matrix difference.
+Readiness notes: Ready as the next serial candidate after benchmark workflow
+`25646814655` on commit `7b8a0075c1f73aa1cc9d4d087d84810d15a6dda2`
+succeeded but operator feedback says the benchmark matrix is still different.
 
 Candidate directions:
 - Direction id: direction-002-restore-parenttc-fingerprint-rule
@@ -115,7 +119,8 @@ Candidate directions:
     `GetModuleGraph`.
   Why it matters now: The current branch still uses a broader module-graph
     dependency than the target branch.
-  Preconditions: benchmark feedback from milestone 1 is available.
+  Preconditions: benchmark feedback from milestone 1 is available; satisfied by
+    workflow `25646814655` plus operator feedback that differences remain.
   Parallel hints: Serial only.
   Boundary notes: Do not combine with session-option fingerprint changes.
   Extraction notes: If compile fallout appears, keep repairs local to the
