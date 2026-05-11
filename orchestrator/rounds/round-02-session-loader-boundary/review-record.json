@@ -1,0 +1,11 @@
+{
+  "roadmap_id": "2026-05-11-00-hls-benchmark-parity",
+  "roadmap_revision": "rev-001",
+  "roadmap_dir": "orchestrator/roadmaps/2026-05-11-00-hls-benchmark-parity/rev-001",
+  "milestone_id": "milestone-001-session-loader-boundary",
+  "direction_id": "direction-001-restore-pending-barrier-order",
+  "extracted_item_id": "session-loader-boundary-parity",
+  "roadmap_item_id": "session-loader-boundary-parity",
+  "decision": "approved",
+  "evidence_summary": "Approved: production diff is limited to the Session.hs getOptionsLoop pending-barrier ordering hunk, the reviewed excerpt matches origin/codex/hls-graph-runtime-engine, git diff --check passed, and ghcup run --ghc 9.12.2 -- cabal build passed."
+}
