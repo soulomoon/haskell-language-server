@@ -21,7 +21,23 @@ should describe live and future work, not copy every completed item forward.
   but operator feedback says the benchmark matrix is still different, so the
   session-loader candidate is ruled out as a full explanation and Milestone 2
   remains the next serial candidate.
+- `round-03-parenttc-deps`: merged as
+  `8baa5fed64cc0aa8504c5e0c50014cff8b736d33` with title
+  `fix: restore ParentTC reverse dependency fingerprint rule`. The round
+  changed only `ghcide/src/Development/IDE/Core/FileStore.hs` to restore
+  `typecheckParentsAction` to use
+  `GetModuleGraphTransReverseDepsFingerprints` as a separate fingerprint rule
+  over `GetModuleGraph`, matching the selected target-branch behavior in
+  `origin/codex/hls-graph-runtime-engine`. Round evidence recorded
+  `git diff --check` and `ghcup run --ghc 9.12.2 -- cabal build` passing.
+  Benchmark workflow `25665471061` reached successful job `75340567668` for
+  commit `8baa5fed64cc0aa8504c5e0c50014cff8b736d33`, but operator feedback
+  says the benchmark is still different, so the ParentTC dependency candidate is
+  ruled out as a full explanation and Milestone 3 remains the next serial
+  candidate.
 
 ## Superseded Revisions
 
-- none yet
+- `rev-001`: superseded by `rev-002` after `round-03-parenttc-deps` completed
+  Milestone 2 and benchmark feedback kept the serial parity search moving to
+  Milestone 3.
