@@ -35,9 +35,28 @@ should describe live and future work, not copy every completed item forward.
   says the benchmark is still different, so the ParentTC dependency candidate is
   ruled out as a full explanation and Milestone 3 remains the next serial
   candidate.
+- `round-04-modsummary-fingerprint`: merged as
+  `7edc43b2511131e05c170a6937090902a42362f6` with title
+  `fix: restore GetModSummary fingerprint parity`. The round removed the
+  selected option-hash fingerprint plumbing from `GetModSummary`, `HscEnvEq`,
+  and session-loader component info paths, matching
+  `origin/codex/hls-graph-runtime-engine` for this suspected cause while leaving
+  unrelated branch adaptations intact. Round evidence recorded
+  `git diff --check`, the exact option-hash symbol scan, target-branch
+  comparison, and `ghcup run --ghc 9.12.2 -- cabal build` passing. Benchmark
+  workflow `25669605154`
+  (`https://github.com/soulomoon/haskell-language-server/actions/runs/25669605154`)
+  succeeded for relevant jobs: cabal 9.12 `75353293267`, cabal 9.14
+  `75353293332`, lsp-types 9.12 `75353293329`, and lsp-types 9.14
+  `75353293306`. Operator feedback says the benchmark matrix is still
+  different, so the `GetModSummary` candidate is ruled out as a full explanation
+  and Milestone 4 remains the next serial candidate.
 
 ## Superseded Revisions
 
 - `rev-001`: superseded by `rev-002` after `round-03-parenttc-deps` completed
   Milestone 2 and benchmark feedback kept the serial parity search moving to
   Milestone 3.
+- `rev-002`: superseded by `rev-003` after
+  `round-04-modsummary-fingerprint` completed Milestone 3 and benchmark feedback
+  kept the serial parity search moving to Milestone 4.
