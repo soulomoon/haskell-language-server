@@ -3,7 +3,6 @@ module Development.IDE.Types.HscEnvEq
 (   HscEnvEq,
     hscEnv, newHscEnvEq,
     updateHscEnvEq,
-    hscOptionHash,
     envPackageExports,
     envVisibleModuleNames,
 ) where
@@ -34,11 +33,6 @@ import           OpenTelemetry.Eventlog          (withSpan)
 data HscEnvEq = HscEnvEq
     { envUnique             :: !Unique
     , hscEnv                :: !HscEnv
-    , hscOptionHash         :: !String
-        -- ^ A hash of the options used to create this HscEnv.
-        -- Used to determine if recompilation is necessary.
-        -- Invariant, same envUnique => same hscOptionHash
-        -- but not vice versa.
     , envPackageExports     :: IO ExportsMap
     , envVisibleModuleNames :: IO (Maybe [ModuleName])
         -- ^ 'listVisibleModuleNames' is a pure function,
@@ -53,8 +47,8 @@ updateHscEnvEq oldHscEnvEq newHscEnv = do
   update <$> Unique.newUnique
 
 -- | Wrap an 'HscEnv' into an 'HscEnvEq'.
-newHscEnvEq :: HscEnv -> String -> IO HscEnvEq
-newHscEnvEq hscEnv' hscOptionHash = do
+newHscEnvEq :: HscEnv -> IO HscEnvEq
+newHscEnvEq hscEnv' = do
 
     mod_cache <- newIORef emptyInstalledModuleEnv
     -- This finder cache is for things which are outside of things which are tracked
@@ -134,7 +128,7 @@ instance Eq HscEnvEq where
   a == b = envUnique a == envUnique b
 
 instance NFData HscEnvEq where
-  rnf (HscEnvEq a b _ _ _) =
+  rnf (HscEnvEq a b _ _) =
       -- deliberately skip the package exports map and visible module names
       rnf (Unique.hashUnique a) `seq` rwhnf b
 

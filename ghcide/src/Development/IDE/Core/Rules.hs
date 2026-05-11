@@ -932,14 +932,13 @@ getModSummaryRule displayTHWarning recorder = do
         addIdeGlobal (DisplayTHWarning logItOnce)
 
     defineEarlyCutoff (cmapWithPrio LogShake recorder) $ Rule $ \GetModSummary f -> do
-        sessionEq <- use_ GhcSession f
-        let session' = hscEnv sessionEq
+        session' <- hscEnv <$> use_ GhcSession f
         modify_dflags <- getModifyDynFlags dynFlagsModifyGlobal
         let session = setNonHomeFCHook $ hscSetFlags (modify_dflags $ hsc_dflags session') session' -- TODO wz1000
         mFileContent <- getFileContents f
         let fp = fromNormalizedFilePath f
         modS <- liftIO $ runExceptT $
-                getModSummaryFromImports session (hscOptionHash sessionEq) fp (textToStringBuffer . Rope.toText <$> mFileContent)
+                getModSummaryFromImports session fp (textToStringBuffer . Rope.toText <$> mFileContent)
         case modS of
             Right res -> do
                 -- Check for Template Haskell

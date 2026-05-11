@@ -1175,11 +1175,10 @@ withBootSuffix _          = id
 --   Runs preprocessors as needed.
 getModSummaryFromImports
   :: HscEnv
-  -> String
   -> FilePath
   -> Maybe Util.StringBuffer
   -> ExceptT [FileDiagnostic] IO ModSummaryResult
-getModSummaryFromImports env hscOptionHash fp mContents = do
+getModSummaryFromImports env fp mContents = do
     (contents, opts, ppEnv, src_hash) <- preprocessor env fp mContents
 
     let dflags = hsc_dflags ppEnv
@@ -1304,9 +1303,6 @@ getModSummaryFromImports env hscOptionHash fp mContents = do
                     [ Util.fingerprintString fp
                     , fingerPrintImports
                     , modLocationFingerprint ms_location
-                    , Util.fingerprintString hscOptionHash
-                    -- this is necessary to account for the original hsc options, since now we
-                    -- do not include optionHash in the cache dir.
                     ] ++ map Util.fingerprintString opts
 
         modLocationFingerprint :: ModLocation -> Util.Fingerprint

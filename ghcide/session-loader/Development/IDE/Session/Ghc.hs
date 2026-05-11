@@ -117,7 +117,6 @@ data ComponentInfo = ComponentInfo
   -- | Processed DynFlags. Does not contain inplace packages such as local
   -- libraries. Can be used to actually load this Component.
   , componentDynFlags       :: DynFlags
-  , componentOptionHash     :: String
   -- | All targets of this components.
   , componentTargets        :: [GHC.Target]
   -- | Filepath which caused the creation of this component
@@ -205,7 +204,7 @@ newComponentCache recorder exts _cfp hsc_env old_cis new_cis = do
             -- above.
             -- We just need to set the current unit here
             pure $ hscSetActiveUnitId (homeUnitId_ df) hscEnv'
-      henv <- newHscEnvEq thisEnv $ componentOptionHash ci
+      henv <- newHscEnvEq thisEnv
       let targetEnv = (if isBad ci then multi_errs else [], Just henv)
           targetDepends = componentDependencyInfo ci
       logWith recorder Debug $ LogNewComponentCache (targetEnv, targetDepends)
@@ -333,7 +332,6 @@ addComponentInfo recorder getCacheDirs dep_info newDynFlags (hieYaml, cfp, opts)
       , componentFP = rawComponentFP
       , componentCOptions = rawComponentCOptions
       , componentDependencyInfo = rawComponentDependencyInfo
-      , componentOptionHash = getOptionHash (componentOptions opts)
       }
   -- Modify the map so the hieYaml now maps to the newly updated
   -- ComponentInfos
@@ -460,9 +458,6 @@ getCacheDirsDefault prefix mFirstHash opts = do
           Just h  -> H.updates H.init [h]
           Nothing -> H.init
         opts_hash = B.unpack $ B16.encode $ H.finalize $ H.updates basectx (map B.pack opts)
-
-getOptionHash :: [String] -> String
-getOptionHash opts = B.unpack $ B16.encode $ H.finalize $ H.updates H.init (map B.pack opts)
 
 setNameCache :: NameCache -> HscEnv -> HscEnv
 setNameCache nc hsc = hsc { hsc_NC = nc }

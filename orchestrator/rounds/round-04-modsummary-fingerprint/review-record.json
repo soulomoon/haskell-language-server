@@ -1,0 +1,11 @@
+{
+  "roadmap_id": "2026-05-11-00-hls-benchmark-parity",
+  "roadmap_revision": "rev-002",
+  "roadmap_dir": "orchestrator/roadmaps/2026-05-11-00-hls-benchmark-parity/rev-002",
+  "milestone_id": "milestone-003-modsummary-fingerprint",
+  "direction_id": "direction-003-restore-modsummary-fingerprint-shape",
+  "extracted_item_id": "modsummary-fingerprint-shape-parity",
+  "roadmap_item_id": null,
+  "decision": "approved",
+  "evidence_summary": "Approved: the four scoped files remove hscOptionHash/componentOptionHash/getOptionHash plumbing, GetModSummary now calls getModSummaryFromImports session fp, HscEnvEq matches origin/codex/hls-graph-runtime-engine, git diff --check passed, the exact hash-symbol rg check returned no matches, and ghcup run --ghc 9.12.2 -- cabal build passed."
+}
