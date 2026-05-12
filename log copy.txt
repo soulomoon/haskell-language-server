@@ -1,0 +1,139 @@
+Run #3
+ThreadId 6 ghcide
+  diagnostics
+| 2025-08-1    Cancellation
+      edit header
+        GetHieAst: 9T14:55:44.590216Z | Info | Test Project located in directory: /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736
+ThreadId 7 | 2025-08-19T14:55:44.591607Z | Info | Heap statistics are not enabled (RTS option -T is needed)
+ThreadId 7 | 2025-08-19T14:55:44.594438Z | Info | Starting LSP server...
+  If you are seeing this in a terminal, you probably should have run WITHOUT the --lsp option!
+  PluginIds: [ test
+             , block-command
+             , ghcide-completions
+             , core
+             , ghcide-type-lenses
+             , LSPRecorderCallback
+             , ghcide-hover-and-symbols
+             , ghcide-core ]
+ThreadId 16 | 2025-08-19T14:55:44.594799Z | Info | Starting server
+ThreadId 16 | 2025-08-19T14:55:44.595197Z | Debug | LSP: set new config: {
+  "cabalFormattingProvider": "cabal-gild",
+  "checkParents": "CheckOnSave",
+  "checkProject": true,
+  "formattingProvider": "ormolu",
+  "maxCompletions": 40,
+  "plugin": {  },
+  "sessionLoading": "singleComponent"
+}
+ThreadId 16 | 2025-08-19T14:55:44.595437Z | Info | Registering IDE configuration: IdeConfiguration {workspaceFolders = fromList [NormalizedUri (-2250868254854792059) "file:///private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736"], clientSettings = hashed (Just (Object (fromList [("haskell",Object (fromList [("cabalFormattingProvider",String "cabal-gild"),("checkParents",String "CheckOnSave"),("checkProject",Bool True),("formattingProvider",String "ormolu"),("maxCompletions",Number 40.0),("plugin",Object (fromList [])),("sessionLoading",String "singleComponent")]))])))}
+ThreadId 16 | 2025-08-19T14:55:44.603799Z | Info | Started LSP server in 0.01s
+ThreadId 16 | 2025-08-19T14:55:44.603902Z | Debug | shouldRunSubset: True
+ThreadId 24 | 2025-08-19T14:55:44.603975Z | Debug | Initializing exports map from hiedb
+ThreadId 24 | 2025-08-19T14:55:44.604080Z | Debug | Done initializing exports map from hiedb. Size: 0
+ThreadId 20 | 2025-08-19T14:55:44.604735Z | Debug | Shake session initialized
+ThreadId 16 | 2025-08-19T14:55:44.605403Z | Debug | VFS: opening file:///private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 16 | 2025-08-19T14:55:44.605775Z | Debug | LSP: set new config: {
+  "cabalFormattingProvider": "cabal-gild",
+  "checkParents": "CheckOnSave",
+  "checkProject": true,
+  "formattingProvider": "ormolu",
+  "maxCompletions": 40,
+  "plugin": {  },
+  "sessionLoading": "singleComponent"
+}
+ThreadId 26 | 2025-08-19T14:55:44.605883Z | Debug | Finished build session
+AsyncCancelled
+ThreadId 21 | 2025-08-19T14:55:44.605934Z | Debug | Configuration changed: Config {checkParents = CheckOnSave, checkProject = True, formattingProvider = "ormolu", cabalFormattingProvider = "cabal-gild", maxCompletions = 40, sessionLoading = PreferSingleComponentLoading, plugins = fromList []}
+ThreadId 21 | 2025-08-19T14:55:44.606008Z | Debug | Restarting build session due to config change
+Action Queue: []
+Keys: [GetClientSettings; ]
+Aborting previous build session took 0.00s
+ThreadId 30 | 2025-08-19T14:55:44.606131Z | Debug | Finished build session
+AsyncCancelled
+ThreadId 21 | 2025-08-19T14:55:44.606163Z | Debug | Set files of interst to
+    [ ( /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+    , Modified {firstOpen = True} ) ]
+ThreadId 21 | 2025-08-19T14:55:44.606229Z | Debug | Restarting build session due to /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs (modified)
+Action Queue: []
+Keys: [ GetClientSettings;
+      , GetModificationTime; /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+      , IsFileOfInterest; /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs ]
+Aborting previous build session took 0.00s
+ThreadId 20 | 2025-08-19T14:55:44.606351Z | Debug | Opened text document: file:///private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 39 | 2025-08-19T14:55:44.606579Z | Warning | Typechecking file start /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 42 | 2025-08-19T14:55:44.606750Z | Debug | Looking up session cache for /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 22 | 2025-08-19T14:55:44.606794Z | Debug | Loop: getOptions for /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 22 | 2025-08-19T14:55:44.606904Z | Info | Cradle path: Foo.hs
+ThreadId 22 | 2025-08-19T14:55:44.606952Z | Warning | No [cradle](https://github.com/mpickering/hie-bios#hie-bios) found for Foo.hs.
+Proceeding with [implicit cradle](https://hackage.haskell.org/package/implicit-hie).
+You should ignore this message, unless you see a 'Multi Cradle: No prefixes matched' error.
+ThreadId 46 | 2025-08-19T14:55:44.620269Z | Debug | Cradle: Cradle{ cradleRootDir = "/private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736", cradleOptsProg = CradleAction: Default}
+ThreadId 46 | 2025-08-19T14:55:44.620334Z | Info | invoking build tool to determine build flags (this may take some time depending on the cache)
+ThreadId 46 | 2025-08-19T14:55:44.683118Z | Debug | ghc --print-libdir
+ThreadId 46 | 2025-08-19T14:55:44.746399Z | Debug | ghc --numeric-version
+ThreadId 22 | 2025-08-19T14:55:44.746594Z | Debug | Session loading result: Right (ComponentOptions {componentOptions = [], componentRoot = "/private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736", componentDependencies = []},"/Users/ares/.ghcup/ghc/9.12.2/lib/ghc-9.12.2/lib","9.12.2")
+ThreadId 22 | 2025-08-19T14:55:44.751250Z | Info | Interface files cache directory: /var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/.cache/ghcide/main-da39a3ee5e6b4b0d3255bfef95601890afd80709-da39a3ee5e6b4b0d3255bfef95601890afd80709
+ThreadId 22 | 2025-08-19T14:55:44.761208Z | Info | Making new HscEnv. In-place unit ids: [ main-da39a3ee5e6b4b0d3255bfef95601890afd80709 ]
+ThreadId 22 | 2025-08-19T14:55:44.766821Z | Debug | New component cache HscEnvEq: (([],Just HscEnvEq 5),fromList [])
+ThreadId 22 | 2025-08-19T14:55:44.767014Z | Info | New loaded files: [ /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs ]
+ThreadId 42 | 2025-08-19T14:55:44.767161Z | Debug | Looking up session cache for /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 42 | 2025-08-19T14:55:44.767193Z | Info | Add dependency /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+[]
+ThreadId 71 | 2025-08-19T14:55:44.767277Z | Info | Modification time for "v1"
+ThreadId 71 | 2025-08-19T14:55:44.767314Z | Info | Modification time for "v1.1"
+ThreadId 33 | 2025-08-19T14:55:44.767455Z | Debug | Finished build session
+AsyncCancelled
+ThreadId 21 | 2025-08-19T14:55:44.767514Z | Debug | Known files updated:
+  fromList [(TargetFile NormalizedFilePath "/private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs",fromList ["/private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs"])]
+ThreadId 21 | 2025-08-19T14:55:44.769748Z | Debug | Restarting build session due to new component
+Action Queue: [ WaitForIdeRule TypeCheck Uri {getUri = "file:///private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs"} ]
+Keys: [ IsFileOfInterest; /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+      , GhcSessionIO;
+      , GetKnownTargets;  ]
+Aborting previous build session took 0.00s
+ThreadId 83 | 2025-08-19T14:55:44.769932Z | Debug | Finished: InitialLoad Took: 0.00s
+ThreadId 84 | 2025-08-19T14:55:44.769935Z | Warning | Typechecking file start /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 87 | 2025-08-19T14:55:44.770101Z | Debug | Looking up session cache for /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 87 | 2025-08-19T14:55:44.770141Z | Info | Add dependency /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+[]
+ThreadId 84 | 2025-08-19T14:55:44.779362Z | Warning | Typechecking file mid /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 84 | 2025-08-19T14:55:44.787260Z | Warning | Typechecking file end /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 81 | 2025-08-19T14:55:44.788775Z | Debug | Finished: WaitForIdeRule TypeCheck Uri {getUri = "file:///private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs"} Took: 0.02s
+ThreadId 16 | 2025-08-19T14:55:44.990428Z | Error | LSP: no handler for: "non-existent-method"
+ThreadId 78 | 2025-08-19T14:55:44.992303Z | Debug | Finished build session
+AsyncCancelled
+ThreadId 21 | 2025-08-19T14:55:44.992398Z | Debug | Set files of interst to
+    [ ( /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+    , Modified {firstOpen = False} ) ]
+ThreadId 21 | 2025-08-19T14:55:44.992559Z | Debug | Restarting build session due to /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs (modified)
+Action Queue: []
+Keys: [ GetModificationTime; /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+      , IsFileOfInterest; /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs ]
+Aborting previous build session took 0.00s
+ThreadId 20 | 2025-08-19T14:55:44.992780Z | Debug | Modified text document: file:///private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 132 | 2025-08-19T14:55:44.993293Z | Info | Modification time for "v1"
+ThreadId 132 | 2025-08-19T14:55:44.993379Z | Info | Modification time for "v1.1"
+ThreadId 128 | 2025-08-19T14:55:44.994761Z | Warning | Typechecking file start /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 126 | 2025-08-19T14:55:44.995047Z | Debug | Finished: WaitForIdeRule GetHieAst Uri {getUri = "file:///private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs"} Took: 0.00s
+ThreadId 121 | 2025-08-19T14:55:44.996016Z | Debug | Finished build session
+AsyncCancelled
+ThreadId 21 | 2025-08-19T14:55:44.996055Z | Debug | Restarting build session due to /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs (modified)
+Action Queue: []
+Keys: [ GetModificationTime; /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs ]
+Aborting previous build session took 0.00s
+ThreadId 20 | 2025-08-19T14:55:44.996292Z | Debug | Modified text document: file:///private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 153 | 2025-08-19T14:55:45.005864Z | Info | Modification time for "v1"
+ThreadId 153 | 2025-08-19T14:55:45.005981Z | Info | Modification time for "v1.1"
+ThreadId 149 | 2025-08-19T14:55:45.007173Z | Warning | Typechecking file start /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 149 | 2025-08-19T14:55:45.007522Z | Warning | Typechecking file mid /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 149 | 2025-08-19T14:55:45.008236Z | Warning | Typechecking file end /private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs
+ThreadId 148 | 2025-08-19T14:55:45.008442Z | Debug | Finished: WaitForIdeRule TypeCheck Uri {getUri = "file:///private/var/folders/36/_743psv11gv2wrj9dclrpd500000gn/T/hls-test-root/extra-dir-26398544736/Foo.hs"} Took: 0.01s
+ThreadId 16 | 2025-08-19T14:55:45.211497Z | Error | LSP: no handler for: "non-existent-method"
+ThreadId 16 | 2025-08-19T14:55:45.717804Z | Info | LSP: received shutdown
+ThreadId 16 | 2025-08-19T14:55:45.717897Z | Debug | Received shutdown message
+ThreadId 143 | 2025-08-19T14:55:45.717964Z | Debug | Finished build session
+AsyncCancelled
+ThreadId 6 | 2025-08-19T14:55:45.718622Z | Debug | Cleaned up temporary directory
+        GetHieAst: OK (1.13s)
+
+All 1 tests passed (1.13s)

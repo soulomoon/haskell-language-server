@@ -75,7 +75,6 @@ import           Development.IDE.Core.Preprocessor
 import           Development.IDE.Core.ProgressReporting       (progressUpdate)
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Core.Shake
-import           Development.IDE.Core.WorkerThread            (writeTaskQueue)
 import           Development.IDE.Core.Tracing                 (withTrace)
 import qualified Development.IDE.GHC.Compat                   as Compat
 import qualified Development.IDE.GHC.Compat                   as GHC
@@ -115,10 +114,14 @@ import qualified GHC.Runtime.Loader                           as Loader
 import           GHC.Tc.Gen.Splice
 import           GHC.Types.Error
 import           GHC.Types.ForeignStubs
-import           GHC.Types.HpcInfo
 import           GHC.Types.TypeEnv
+import           Development.IDE.Core.WorkerThread        (writeTaskQueue)
 
 -- See Note [Guidelines For Using CPP In GHCIDE Import Statements]
+
+#if !MIN_VERSION_ghc(9,11,0)
+import           GHC.Types.HpcInfo
+#endif
 
 #if MIN_VERSION_ghc(9,7,0)
 import           Data.Foldable                                (toList)
@@ -853,7 +856,8 @@ atomicFileWrite se targetPath write = do
   let dir = takeDirectory targetPath
   createDirectoryIfMissing True dir
   (tempFilePath, cleanUp) <- newTempFileWithin dir
-  (write tempFilePath >>= \x -> renameFile tempFilePath targetPath >> atomically (resetInterfaceStore se (toNormalizedFilePath' targetPath)) >> pure x)
+  (write tempFilePath >>= \x -> renameFile tempFilePath targetPath >>
+    atomically (resetInterfaceStore se (toNormalizedFilePath' targetPath)) >> pure x)
     `onException` cleanUp
 
 generateHieAsts :: HscEnv -> TcModuleResult

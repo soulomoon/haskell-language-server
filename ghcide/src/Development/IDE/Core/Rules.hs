@@ -181,6 +181,7 @@ import           System.Info.Extra                            (isWindows)
 
 import qualified Data.IntMap                                  as IM
 import           GHC.Fingerprint
+import Debug.Trace (traceEventIO)
 
 data Log
   = LogShake Shake.Log
@@ -725,12 +726,13 @@ loadGhcSession recorder ghcSessionDepsConfig = do
     -- to the version of the collection of HscEnv's.
     defineEarlyCutOffNoFile (cmapWithPrio LogShake recorder) $ \GhcSessionIO -> do
         alwaysRerun
-        opts <- getIdeOptions
         config <- getClientConfigAction
+        opts <- getIdeOptions
         res <- optGhcSession opts
 
+        version <- liftIO $ atomically $ sessionVersion res
         let fingerprint = LBS.toStrict $ LBS.concat
-                [ B.encode (hash (sessionVersion res))
+                [ B.encode (hash version)
                 -- When the session version changes, reload all session
                 -- hsc env sessions
                 , B.encode (show (sessionLoading config))
@@ -754,6 +756,7 @@ loadGhcSession recorder ghcSessionDepsConfig = do
                 itExists <- getFileExists nfp
                 when itExists $ void $ do
                   use_ GetPhysicalModificationTime nfp
+        -- logWith recorder Logger.Debug $ LogDependencies file deps
 
         mapM_ addDependency deps
 
@@ -883,6 +886,9 @@ getModIfaceFromDiskAndIndexRule recorder =
   se@ShakeExtras{withHieDb} <- getShakeExtras
 
   -- GetModIfaceFromDisk should have written a `.hie` file, must check if it matches version in db
+
+  -- this might not happens if the changes to cache dir does not actually inroduce a change to GetModIfaceFromDisk
+
   let ms = hirModSummary x
       hie_loc = Compat.ml_hie_file $ ms_location ms
   fileHash <- liftIO $ Util.getFileHash hie_loc
@@ -1314,7 +1320,6 @@ mainRule recorder RulesConfig{..} = do
         di <- useNoFile_ GetModuleGraph
         let finger = lookupFingerprint file di (depImmediateReverseDepsFingerprints di)
         return (fingerprintToBS <$> finger, ([], finger))
-
 
 -- | Get HieFile for haskell file on NormalizedFilePath
 getHieFile :: NormalizedFilePath -> Action (Maybe HieFile)

@@ -38,6 +38,7 @@ import           GHC.Iface.Ext.Types                          (HieASTs,
                                                                TypeIndex)
 import           GHC.Iface.Ext.Utils                          (RefMap)
 
+import           Control.Concurrent.STM                       (STM)
 import           Data.ByteString                              (ByteString)
 import           Data.Text.Utf16.Rope.Mixed                   (Rope)
 import           Development.IDE.Import.FindImports           (ArtifactsLocation)
@@ -518,6 +519,14 @@ data IsFileOfInterest = IsFileOfInterest
 instance Hashable IsFileOfInterest
 instance NFData   IsFileOfInterest
 
+-- | A no-file rule that triggers the IDE "kick" action
+data Kick = Kick
+    deriving (Eq, Show, Generic)
+instance Hashable Kick
+instance NFData   Kick
+
+type instance RuleResult Kick = ()
+
 data GetModSummaryWithoutTimestamps = GetModSummaryWithoutTimestamps
     deriving (Eq, Show, Generic)
 instance Hashable GetModSummaryWithoutTimestamps
@@ -548,10 +557,11 @@ instance NFData   AddWatchedFile
 type instance RuleResult GhcSessionIO = IdeGhcSession
 
 data IdeGhcSession = IdeGhcSession
-  { loadSessionFun :: FilePath -> IO (IdeResult HscEnvEq, [FilePath])
+  { loadSessionFun    :: FilePath -> IO (IdeResult HscEnvEq, [FilePath])
   -- ^ Returns the Ghc session and the cradle dependencies
-  , sessionVersion :: !Int
+  , sessionVersion    :: !(STM Int)
   -- ^ Used as Shake key, versions must be unique and not reused
+  , pendingFilesCount :: !(STM Int)
   }
 
 instance Show IdeGhcSession where show _ = "IdeGhcSession"

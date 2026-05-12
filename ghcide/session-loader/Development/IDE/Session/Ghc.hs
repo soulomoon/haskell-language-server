@@ -43,7 +43,7 @@ import           System.Info
 
 
 import           Control.DeepSeq
-import           Control.Exception                  (evaluate)
+import           Control.Exception                  (evaluate, mask_)
 import           Control.Monad.IO.Unlift            (MonadUnliftIO)
 import qualified Data.Set                           as OS
 import qualified Development.IDE.GHC.Compat.Util    as Compat
@@ -163,7 +163,6 @@ newComponentCache recorder exts _cfp hsc_env old_cis new_cis = do
     logWith recorder Info $ LogMakingNewHscEnv uids
     hscEnv' <- -- Set up a multi component session with the other units on GHC 9.4
               Compat.initUnits dfs hsc_env
-
 #if MIN_VERSION_ghc(9,13,0)
     let closure_errs_raw = checkHomeUnitsClosed' (hsc_unit_env hscEnv') (hsc_all_home_unit_ids hscEnv')
         closure_errs = concatMap (Compat.bagToList . Compat.getMessages) closure_errs_raw
@@ -471,7 +470,7 @@ emptyHscEnv :: NameCache -> FilePath -> IO HscEnv
 emptyHscEnv nc libDir = do
     -- We call setSessionDynFlags so that the loader is initialised
     -- We need to do this before we call initUnits.
-    env <- liftIO $ runGhc (Just libDir) $
+    env <- mask_ $ liftIO $ runGhc (Just libDir) $
       getSessionDynFlags >>= setSessionDynFlags >> getSession
     pure $ setNameCache nc (hscSetFlags ((hsc_dflags env){useUnicode = True }) env)
 

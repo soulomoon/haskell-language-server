@@ -41,14 +41,15 @@ import           Development.IDE.Graph.Database       (ShakeDatabase,
                                                        shakeGetBuildStep,
                                                        shakeGetCleanKeys)
 import           Development.IDE.Graph.Internal.Types (Result (resultBuilt, resultChanged, resultVisited),
-                                                       Step (Step))
+                                                       Step (..))
 import qualified Development.IDE.Graph.Internal.Types as Graph
 import           Development.IDE.Session              (clearSessionLoaderPendingBarrier,
                                                        setSessionLoaderPendingBarrier)
-import           Development.IDE.Types.Action
+import           Development.IDE.Types.Action         (countQueue)
 import           Development.IDE.Types.HscEnvEq       (HscEnvEq (hscEnv))
 import           Development.IDE.Types.Location       (fromUri)
 import           GHC.Generics                         (Generic)
+import           Ide.Plugin.Config                    (CheckParents)
 import           Ide.Plugin.Error
 import           Ide.Types
 import           Language.LSP.Protocol.Message
@@ -58,6 +59,7 @@ import qualified StmContainers.Map                    as STM
 import           System.Time.Extra
 
 type Age = Int
+
 data TestRequest
     = BlockSeconds Seconds           -- ^ :: Null
     | GetInterfaceFilesDir Uri       -- ^ :: String

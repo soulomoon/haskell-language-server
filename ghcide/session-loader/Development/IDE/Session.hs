@@ -105,7 +105,7 @@ import qualified System.Random                       as Random
 import           System.Random                       (RandomGen)
 import           Text.ParserCombinators.ReadP        (readP_to_S)
 
-import           Control.Concurrent.STM              (STM, TVar)
+import           Control.Concurrent.STM              (STM, TVar, newTVarIO)
 import qualified Control.Monad.STM                   as STM
 import           Control.Monad.Trans.Reader
 import qualified Development.IDE.Session.Ghc         as Ghc
@@ -446,7 +446,7 @@ data SessionState = SessionState
   -- ^ Map @hie.yaml@ to all modules that have this @hie.yaml@ as the root location.
   , filesMap     :: !FilesMap
   -- ^ Maps a 'NormalizedFilePath' to its @hie.yaml@, the reverse of 'fileToFlags'.
-  , version      :: !(Var Int)
+  , version      :: !(TVar Int)
     -- ^ Session loading version, incremented whenever the shake cache needs to be invalidated.
   , sessionLoadingPreferenceConfig :: !(Var (Maybe SessionLoadingPreferenceConfig))
     -- ^ How do we load files? The user can choose to load multiple components at once
@@ -547,7 +547,9 @@ insertAllFileMappings state mappings =
 
 -- | Increment the version counter
 incrementVersion :: SessionState -> IO Int
-incrementVersion state = modifyVar' (version state) succ
+incrementVersion state = atomically $ do
+  modifyTVar' (version state) succ
+  readTVar (version state)
 
 -- | Get files from the pending file set
 getPendingFiles :: SessionState -> IO (HashSet FilePath)
@@ -615,7 +617,7 @@ newSessionState = do
     <*> newVar Map.empty            -- hscEnvs
     <*> STM.newIO                   -- fileToFlags
     <*> STM.newIO                   -- filesMap
-    <*> newVar 0                    -- version
+    <*> newTVarIO 0                    -- version
     <*> newVar Nothing              -- sessionLoadingPreferenceConfig
   return sessionState
 
@@ -638,7 +640,8 @@ loadSessionWithOptions recorder SessionLoadingOptions{..} rootDir que = do
   let toAbsolutePath = toAbsolute rootDir -- see Note [Root Directory]
 
   sessionState <- newSessionState
-  let returnWithVersion fun = IdeGhcSession fun <$> liftIO (readVar (version sessionState))
+  let returnWithVersion fun =
+        return $ IdeGhcSession fun (readTVar $ version sessionState) (S.size $ pendingFiles sessionState)
 
   -- This caches the mapping from Mod.hs -> hie.yaml
   cradleLoc <- liftIO $ memoIO $ \v -> do
@@ -729,9 +732,9 @@ checkInCache sessionState ncfp = runMaybeT $ do
 
 -- | Modify the shake state.
 data SessionShake = SessionShake
-  { restartSession :: VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
+  { restartSession  :: VFSModified -> String -> [DelayedAction ()] -> IO [Key] -> IO ()
   , invalidateCache :: IO Key
-  , enqueueActions :: DelayedAction () -> IO (IO ())
+  , enqueueActions  :: DelayedAction () -> IO (IO ())
   }
 
 -- | Read-only data that the initialisation logic needs access to.
@@ -905,14 +908,14 @@ session recorder sessionShake sessionState knownTargetsVar(hieYaml, cfp, opts, l
         -- Typecheck all files in the project on startup
         unless (null new_components_info || not checkProject) $ do
             cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) (concatMap targetLocations all_targets)
-            void $ enqueueActions sessionShake $ mkDelayedAction "InitialLoad" Debug $ void $ do
+            void $ enqueueActions sessionShake =<< mkDelayedAction "InitialLoad" Debug (void $ do
                 mmt <- uses GetModificationTime cfps'
                 let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
                 modIfaces <- uses GetModIface cs_exist
                 -- update exports map
                 shakeExtras <- getShakeExtras
                 let !exportsMap' = createExportsMap $ mapMaybe (fmap hirModIface) modIfaces
-                liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>)
+                liftIO $ atomically $ modifyTVar' (exportsMap shakeExtras) (exportsMap' <>))
         return [keys1, keys2]
 
 -- | Create a new HscEnv from a hieYaml root and a set of options
@@ -923,7 +926,7 @@ packageSetup recorder sessionState newEmptyHscEnv (hieYaml, cfp, opts) = do
   rootDir <- asks sessionRootDir
   -- Parse DynFlags for the newly discovered component
   hscEnv <- newEmptyHscEnv
-  newTargetDfs <- liftIO $ evalGhcEnv hscEnv $ setOptions haddockparse cfp opts (hsc_dflags hscEnv) rootDir
+  newTargetDfs <- liftIO $ mask_ $ evalGhcEnv hscEnv $ setOptions haddockparse cfp opts (hsc_dflags hscEnv) rootDir
   let deps = componentDependencies opts ++ maybeToList hieYaml
   dep_info <- liftIO $ getDependencyInfo (fmap (toAbsolute rootDir) deps)
   -- Now lookup to see whether we are combining with an existing HscEnv

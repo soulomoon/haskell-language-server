@@ -2,6 +2,7 @@ dist-newstyle
 .stack-work
 /hie.yaml
 cabal.project.local
+hlint.eventlog
 *~
 *.lock
 
@@ -47,3 +48,4 @@ store/
 gh-release-artifacts/
 
 .hls/
+hlint.eventlog

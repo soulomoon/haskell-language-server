@@ -140,21 +140,21 @@ data RawDependencyInformation = RawDependencyInformation
 
 data DependencyInformation =
   DependencyInformation
-    { depErrorNodes         :: !(FilePathIdMap (NonEmpty NodeError))
+    { depErrorNodes        :: !(FilePathIdMap (NonEmpty NodeError))
     -- ^ Nodes that cannot be processed correctly.
-    , depModules            :: !(FilePathIdMap ShowableModule)
-    , depModuleDeps         :: !(FilePathIdMap FilePathIdSet)
+    , depModules           :: !(FilePathIdMap ShowableModule)
+    , depModuleDeps        :: !(FilePathIdMap FilePathIdSet)
     -- ^ For a non-error node, this contains the set of module immediate dependencies
     -- in the same package.
-    , depReverseModuleDeps  :: !(IntMap IntSet)
+    , depReverseModuleDeps :: !(IntMap IntSet)
     -- ^ Contains a reverse mapping from a module to all those that immediately depend on it.
-    , depPathIdMap          :: !PathIdMap
+    , depPathIdMap         :: !PathIdMap
     -- ^ Map from FilePath to FilePathId
-    , depBootMap            :: !BootIdMap
+    , depBootMap           :: !BootIdMap
     -- ^ Map from hs-boot file to the corresponding hs file
-    , depModuleFiles        :: !(ShowableModuleEnv FilePathId)
+    , depModuleFiles       :: !(ShowableModuleEnv FilePathId)
     -- ^ Map from Module to the corresponding non-boot hs file
-    , depModuleGraph        :: !ModuleGraph
+    , depModuleGraph       :: !ModuleGraph
     , depTransDepsFingerprints :: !(FilePathIdMap Fingerprint)
     -- ^ Map from Module to fingerprint of the transitive dependencies of the module.
     , depTransReverseDepsFingerprints :: !(FilePathIdMap Fingerprint)
