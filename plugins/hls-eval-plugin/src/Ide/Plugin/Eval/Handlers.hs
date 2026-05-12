@@ -41,14 +41,10 @@ import           Data.String                                  (IsString)
 import           Data.Text                                    (Text)
 import qualified Data.Text                                    as T
 import qualified Data.Text.Utf16.Rope.Mixed                   as Rope
-import           Development.IDE.Core.FileStore               (getUriContents,
-                                                               setSomethingModified)
+import           Development.IDE.Core.FileStore               (getUriContents, setSomethingModified)
 import           Development.IDE.Core.Rules                   (IdeState,
                                                                runAction)
-import           Development.IDE.Core.Shake                   (VFSModified (VFSUnmodified),
-                                                               use_,
-                                                               useWithSeparateFingerprintRule_,
-                                                               uses_)
+import           Development.IDE.Core.Shake                   (use_, uses_, VFSModified (VFSUnmodified), useWithSeparateFingerprintRule_)
 import           Development.IDE.GHC.Compat                   hiding (typeKind,
                                                                unitState)
 import           Development.IDE.GHC.Compat.Util              (OverridingBool (..))
@@ -76,13 +72,12 @@ import           GHC                                          (ClsInst,
 
 import           Development.IDE.Core.RuleTypes               (GetLinkable (GetLinkable),
                                                                GetModSummary (GetModSummary),
-                                                               GetModuleGraph (..),
-                                                               GetModuleGraphTransDepsFingerprints (..),
+                                                               GetModuleGraphTransDepsFingerprints (GetModuleGraphTransDepsFingerprints),
                                                                GhcSessionDeps (GhcSessionDeps),
+                                                               ModSummaryResult (msrModSummary),
                                                                LinkableResult (linkableHomeMod),
                                                                TypeCheck (..),
-                                                               ModSummaryResult (msrModSummary),
-                                                               tmrTypechecked)
+                                                               tmrTypechecked, GetModuleGraphTransDepsFingerprints(..), GetModuleGraph(..))
 import qualified Development.IDE.GHC.Compat.Core              as Compat (InteractiveImport (IIModule))
 import qualified Development.IDE.GHC.Compat.Core              as SrcLoc (unLoc)
 import           Development.IDE.Types.HscEnvEq               (HscEnvEq (hscEnv))

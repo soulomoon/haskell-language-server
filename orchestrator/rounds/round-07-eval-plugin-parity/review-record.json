@@ -1,0 +1,11 @@
+{
+  "roadmap_id": "2026-05-11-00-hls-benchmark-parity",
+  "roadmap_revision": "rev-005",
+  "roadmap_dir": "orchestrator/roadmaps/2026-05-11-00-hls-benchmark-parity/rev-005",
+  "milestone_id": "milestone-004-plugin-rule-behavior",
+  "direction_id": "direction-006-eval-plugin-command-parity",
+  "extracted_item_id": "eval-plugin-command-handler-parity",
+  "roadmap_item_id": null,
+  "decision": "approved",
+  "evidence_summary": "Scoped eval handler diff now matches origin/codex/hls-graph-runtime-engine; committed production scope is limited to plugins/hls-eval-plugin/src/Ide/Plugin/Eval/Handlers.hs. git diff --check, focused hls-eval-plugin build, and full GHC 9.12.2 cabal build pass. hls-eval-plugin-tests fails 2/68 only in existing property-checking fixtures with the QuickCheck dependency diagnostic, assessed non-blocking for this import-shape parity round."
+}
