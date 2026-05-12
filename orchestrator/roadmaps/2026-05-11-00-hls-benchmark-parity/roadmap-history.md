@@ -51,6 +51,25 @@ should describe live and future work, not copy every completed item forward.
   `75353293306`. Operator feedback says the benchmark matrix is still
   different, so the `GetModSummary` candidate is ruled out as a full explanation
   and Milestone 4 remains the next serial candidate.
+- `round-05-semantic-token-rule`: merged as
+  `e74533dfc2058ec435e3cc8f2f8bc5fe82fd8c75` with title
+  `fix: restore semantic token rule parity`. The round restored the
+  semantic-token rule and logging surface in
+  `plugins/hls-semantic-tokens-plugin/src/Ide/Plugin/SemanticTokens/Internal.hs`
+  and
+  `plugins/hls-semantic-tokens-plugin/src/Ide/Plugin/SemanticTokens/Types.hs`
+  to match `origin/codex/hls-graph-runtime-engine` for the selected
+  plugin-rule suspect. Round evidence recorded `git diff --check`, exact
+  target-branch comparison for the two scoped files, the focused semantic-token
+  library build, all 30 semantic-token plugin tests passing, and
+  `ghcup run --ghc 9.12.2 -- cabal build` passing. Benchmark workflow
+  `25678825121`
+  (`https://github.com/soulomoon/haskell-language-server/actions/runs/25678825121`)
+  completed successfully for relevant jobs: cabal 9.12 `75387089613`, cabal
+  9.14 `75387089620`, lsp-types 9.12 `75387089770`, and lsp-types 9.14
+  `75387089576`. Operator feedback says the benchmark matrix is still
+  different, so semantic-token rule parity is complete evidence but not final
+  parity, and Milestone 4 remains open for the next plugin-rule candidate.
 
 ## Superseded Revisions
 
@@ -60,3 +79,6 @@ should describe live and future work, not copy every completed item forward.
 - `rev-002`: superseded by `rev-003` after
   `round-04-modsummary-fingerprint` completed Milestone 3 and benchmark feedback
   kept the serial parity search moving to Milestone 4.
+- `rev-003`: superseded by `rev-004` after
+  `round-05-semantic-token-rule` completed direction 004 as evidence and
+  benchmark feedback kept Milestone 4 open for direction 005.
