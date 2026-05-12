@@ -179,16 +179,39 @@ spec = do
       countRes <- buildWithRoot theDb emptyStack [SubBranchRule]
       snd countRes `shouldBe` [1 :: Int]
 
-  describe "applyWithoutDependency" $ itInThread "does not track dependencies" $ do
-    db@(ShakeDatabase _ _ theDb) <- shakeNewDatabase shakeOptions $ do
-      ruleUnit
-      addRule $ \Rule _old _mode -> do
-          [()] <- applyWithoutDependency [Rule]
-          return $ RunResult ChangedRecomputeDiff "" True $ return ()
+  describe "applyWithoutDependency" $ do
+    itInThread "does not track dependencies" $ do
+      db@(ShakeDatabase _ _ theDb) <- shakeNewDatabase shakeOptions $ do
+        ruleUnit
+        addRule $ \Rule _old _mode -> do
+            [()] <- applyWithoutDependency [Rule]
+            return $ RunResult ChangedRecomputeDiff "" True $ return ()
 
-    let theKey = Rule @Bool
-    res <- shakeRunDatabaseFromRight db $
-      pure $ applyWithoutDependency [theKey]
-    res `shouldBe` [[True]]
-    Just (Clean res) <- lookup (newKey theKey) <$> getDatabaseValues theDb
-    resultDeps res `shouldBe` UnknownDeps
+      let theKey = Rule @Bool
+      res <- shakeRunDatabaseFromRight db $
+        pure $ applyWithoutDependency [theKey]
+      res `shouldBe` [[True]]
+      Just (Clean res) <- lookup (newKey theKey) <$> getDatabaseValues theDb
+      resultDeps res `shouldBe` UnknownDeps
+      runtimeRestartKeys <- shakeComputeToPreserve db (singletonKeySet $ newKey (Rule @()))
+      restartDirtyKeys runtimeRestartKeys `shouldSatisfy` not . elem (newKey theKey)
+    itInThread "keeps wait-only delayed actions killable without dirtying them" $ do
+      started <- C.newEmptyMVar
+      release <- C.newEmptyMVar
+      sdb@(ShakeDatabase _ _ theDb) <- shakeNewDatabase shakeOptions $
+        addRule $ \(Rule :: Rule Int) _old _mode -> do
+          liftIO $ void $ C.tryPutMVar started ()
+          _ <- liftIO $ readMVar release
+          return $ RunResult ChangedRecomputeDiff "" (1 :: Int) $ return ()
+      waiter <- mkDelayedAction "wait-only" Debug $
+        void $ applyWithoutDependency [Rule @Int]
+
+      _ <- shakeRunDatabaseForKeys Nothing sdb [pumpActionThreadReRun sdb waiter]
+      timeout 1000000 (readMVar started) >>= (`shouldBe` Just ())
+      let dirtyKey = newKey (Rule @Int)
+      waitForRuntimeRootDep theDb dirtyKey (uniqueID waiter)
+
+      runtimeRestartKeys <- shakeComputeToPreserve sdb (singletonKeySet dirtyKey)
+      uniqueID waiter `memberKeySet` restartKillKeys runtimeRestartKeys `shouldBe` True
+      restartDirtyKeys runtimeRestartKeys `shouldSatisfy` not . elem (uniqueID waiter)
+      shakeShutDatabase (restartKillKeys runtimeRestartKeys) sdb

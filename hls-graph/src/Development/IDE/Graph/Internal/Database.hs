@@ -67,7 +67,9 @@ newDatabase dataBaseLogger databaseActionQueue databaseExtra databaseRules = do
 incDatabase :: Database -> Maybe (RuntimeRestartKeys, KeySet) -> IO KeySet
 incDatabase db (Just (RuntimeRestartKeys{..}, preserves)) = do
     atomicallyNamed "incDatabase" $ modifyTVar' (databaseStep db) $ \(Step i) -> Step $ i + 1
-    forM_ restartDirtyKeys $ \newKey -> atomically $ SMap.focus updateDirty newKey (databaseValues db)
+    transitiveRuleDirtyKeys <- transitiveRuleDirtySet db restartDirtyKeys
+    forM_ (toListKeySet transitiveRuleDirtyKeys) $ \newKey ->
+        atomicallyNamed "incDatabase" $ SMap.focus updateDirty newKey (databaseValues db)
     -- Only re-enqueue actions that were not preserved across the restart.
     return $ preserves
 
@@ -85,22 +87,24 @@ data RuntimeRestartKeys = RuntimeRestartKeys
     -- ^ Keys used to select running runtime actions to stop before the next
     -- session starts. This may include rule keys and delayed-action 'DirectKey's.
   , restartDirtyKeys :: ![Key]
-    -- ^ Rule database keys to mark dirty before the next run. In the ghcide
-    -- restart path this is rule-key-only by construction; the raw hls-graph API
-    -- does not enforce that invariant by type.
+    -- ^ Rule database keys that changed before the next run. 'incDatabase'
+    -- expands these through durable rule reverse dependencies before marking
+    -- keys dirty. In the ghcide restart path this is rule-key-only by
+    -- construction; the raw hls-graph API does not enforce that invariant by
+    -- type.
   } deriving Show
 
 -- Note [RuntimeRestartKeys]
 -- The restart plan intentionally keeps runtime cancellation separate from rule
 -- dirtiness. 'restartKillKeys' is consumed by shutdown and may include direct
--- delayed-action keys. 'restartDirtyKeys' is consumed by the rule database and
--- is expected to contain only rule keys that can be marked dirty.
+-- delayed-action keys. 'restartDirtyKeys' is consumed by the rule database as
+-- the changed-key seeds; 'incDatabase' expands those seeds through durable rule
+-- reverse dependencies before marking keys dirty.
 -- For the ghcide restart path, the initial dirty seeds come from rule keys
--- ('toKey'/'toNoFileKey'), so 'restartDirtyKeys' can use the
--- 'databaseRRuntimeDep' closure directly. Direct/root runtime edges are stored
--- separately in 'databaseRRuntimeDepRoot' by 'insertdatabaseRuntimeDep' and are
--- expanded only for 'restartKillKeys'. The raw hls-graph API does not enforce
--- this seed invariant by type.
+-- ('toKey'/'toNoFileKey'), so 'restartDirtyKeys' carries those seeds directly.
+-- Direct/root runtime edges are stored separately in 'databaseRRuntimeDepRoot'
+-- by 'insertdatabaseRuntimeDep' and are expanded only for 'restartKillKeys'.
+-- The raw hls-graph API does not enforce this seed invariant by type.
 computeToPreserve :: Database -> KeySet -> STM RuntimeRestartKeys
 computeToPreserve = transitiveDirtyKeysBottomUp
 
@@ -330,6 +334,19 @@ updateReverseDeps myId db prev new = do
         doOne f id = SMap.focus (alterRDeps f) id (databaseValues db)
 
 -- compute the transitive reverse dependencies of a set of keys
+getReverseDependencies :: Database -> Key -> STM (Maybe KeySet)
+getReverseDependencies db = (fmap.fmap) keyReverseDeps . flip SMap.lookup (databaseValues db)
+
+transitiveRuleDirtySet :: Foldable t => Database -> t Key -> IO KeySet
+transitiveRuleDirtySet database =
+    foldM loop mempty
+  where
+    loop seen x
+        | x `memberKeySet` seen = pure seen
+        | otherwise = do
+            let seen' = insertKeySet x seen
+            next <- atomically $ getReverseDependencies database x
+            foldM loop seen' (maybe mempty toListKeySet next)
 
 -- non-root
 -- inline
@@ -343,14 +360,14 @@ getDeps m k = SMap.lookup k m
 
 transitiveDirtyKeysBottomUp :: Database -> KeySet -> STM RuntimeRestartKeys
 transitiveDirtyKeysBottomUp db@Database{..} seeds = do
-  TransitiveDirtyKeys dirtyKeys seen <- cacheTransitiveDirtyListBottomUpDFS db seeds
-  -- restartDirtyKeys should contain only rule keys. restartKillKeys also needs
-  -- the root/direct delayed-action keys, so expand through the root dependency
-  -- map only for the kill set.
+  TransitiveDirtyKeys _dirtyKeys seen <- cacheTransitiveDirtyListBottomUpDFS db seeds
+  -- restartDirtyKeys carries the original changed-key seeds. restartKillKeys
+  -- also needs the root/direct delayed-action keys, so expand through the root
+  -- dependency map only for the kill set.
   TransitiveDirtyKeys _newKeys newSeen <- transitiveDirtyListBottomUpDFS databaseRRuntimeDepRoot seen
   let rootKey = newKey "root"
   pure RuntimeRestartKeys
-    { restartDirtyKeys = dirtyKeys
+    { restartDirtyKeys = toListKeySet seeds
     , restartKillKeys = deleteKeySet rootKey newSeen
     }
 
