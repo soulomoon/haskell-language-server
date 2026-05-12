@@ -70,6 +70,27 @@ should describe live and future work, not copy every completed item forward.
   `75387089576`. Operator feedback says the benchmark matrix is still
   different, so semantic-token rule parity is complete evidence but not final
   parity, and Milestone 4 remains open for the next plugin-rule candidate.
+- `round-06-hlint-plugin-parity`: merged as
+  `0891e18eb7171d1c5de26cf86e02d198e339c360` with title
+  `fix: restore HLint settings mask parity`. The round restored
+  `plugins/hls-hlint-plugin/src/Ide/Plugin/Hlint.hs` to target-branch parity
+  for `GetHlintSettings` by calling `argsSettings flags` directly instead of
+  under `uninterruptibleMask_`. Round evidence recorded `git diff --check`,
+  exact target-branch comparison for the scoped HLint file, focused
+  `hls-hlint-plugin` build under GHC 9.12.2, and full
+  `ghcup run --ghc 9.12.2 -- cabal build` passing. Benchmark workflow
+  `25732089803`
+  (`https://github.com/soulomoon/haskell-language-server/actions/runs/25732089803`)
+  completed successfully for all benchmark jobs, but operator feedback and
+  downloaded artifacts say the benchmark matrix is still different. Current
+  evidence includes cabal 9.12 completions/code-actions/hover rule-count
+  shifts, cabal 9.14 documentSymbols and eval code-lens shifts, lsp-types 9.12
+  hover/getDefinition/code-actions shifts, and lsp-types 9.14 eval execute
+  single-line code lens failing on HEAD after `kick/done`. The previous run
+  `25678825121` had that eval scenario passing on HEAD, so record it as current
+  benchmark evidence rather than deterministic proof. HLint settings-mask
+  parity is complete evidence but not final parity, and Milestone 4 remains
+  open for eval-plugin parity next.
 
 ## Superseded Revisions
 
@@ -82,3 +103,7 @@ should describe live and future work, not copy every completed item forward.
 - `rev-003`: superseded by `rev-004` after
   `round-05-semantic-token-rule` completed direction 004 as evidence and
   benchmark feedback kept Milestone 4 open for direction 005.
+- `rev-004`: superseded by `rev-005` after
+  `round-06-hlint-plugin-parity` completed the HLint settings-mask portion of
+  direction 005 as evidence and benchmark feedback kept Milestone 4 open for
+  the next lower-priority plugin candidate.
