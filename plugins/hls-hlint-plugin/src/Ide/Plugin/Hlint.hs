@@ -205,7 +205,7 @@ rules recorder plugin = do
 
   defineNoFile (cmapWithPrio LogShake recorder) $ \GetHlintSettings -> do
     (Config flags) <- getHlintConfig plugin
-    liftIO $ uninterruptibleMask_ $ argsSettings flags
+    liftIO $ argsSettings flags
 
   action $ do
     files <- Map.keys <$> getFilesOfInterestUntracked

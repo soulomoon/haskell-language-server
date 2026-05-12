@@ -1,0 +1,11 @@
+{
+  "roadmap_id": "2026-05-11-00-hls-benchmark-parity",
+  "roadmap_revision": "rev-004",
+  "roadmap_dir": "orchestrator/roadmaps/2026-05-11-00-hls-benchmark-parity/rev-004",
+  "milestone_id": "milestone-004-plugin-rule-behavior",
+  "direction_id": "direction-005-hlint-and-lower-priority-plugin-parity",
+  "extracted_item_id": "hlint-settings-mask-parity",
+  "roadmap_item_id": null,
+  "decision": "approved",
+  "evidence_summary": "Approved: only the selected HLint GetHlintSettings argsSettings masking behavior changed, the HLint file matches origin/codex/hls-graph-runtime-engine, git diff --check passed, focused hls-hlint-plugin build passed under GHC 9.12.2, and full cabal build passed under GHC 9.12.2."
+}
