@@ -72,7 +72,7 @@ jobs:
         # not it is a merge commit, so this is how we do that.
         ref: "${{ github.event.pull_request.head.sha }}"
 
-    - run: git fetch origin master # check the master branch for benchmarking
+    - run: git fetch origin codex/hls-graph-runtime-engine:refs/remotes/origin/codex/hls-graph-runtime-engine # check the baseline branch for benchmarking
 
     - uses: ./.github/actions/setup-build
       with:

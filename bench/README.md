@@ -5,7 +5,7 @@ This folder contains a Shake script to simplify the performance analysis of HLS.
 It drives the `ghcide-bench` benchmark suite over a set of commits and experiments.
 To run it, use `cabal bench`.
 To configure it, edit `bench/config.yaml`.
-By default it compares HEAD with "origin/master"
+By default it compares HEAD with "origin/codex/hls-graph-runtime-engine"
 
 # Examples and experiments
 
