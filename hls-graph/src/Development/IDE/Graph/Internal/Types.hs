@@ -371,6 +371,7 @@ isRootKey _              = False
 
 ---------------------------------------------------------------------
 
+
 -- | Abstract pattern for spawning async computations with database registration.
 -- This pattern is used by spawnRefresh and can be used by other functions that need:
 -- 1. Protected async creation with uninterruptibleMask
@@ -390,7 +391,9 @@ spawnAsyncWithDbRegistration db@Database{..} deliver asyncBody handler restore =
                     modifyTVar' databaseThreads ((deliver, a):)
                     -- make sure we only start after the restart
                     putTMVar startBarrier ()
-    a <- asyncWithUnmask $ \restore -> (handler =<< ((restore $ atomically (readTMVar startBarrier) >> (Right <$> asyncBody)) `catch` \e@(SomeException _) -> return (Left e)))
+    a <- asyncWithUnmask $ \restore -> (handler =<<
+        ((restore $ atomically (readTMVar startBarrier) >> (Right <$> asyncBody))
+        `catch` \e@(SomeException _) -> return (Left e)))
     (restore $ atomically $ register a)
         `catch` \e@(SomeException _) -> do
                 cancelWith a e

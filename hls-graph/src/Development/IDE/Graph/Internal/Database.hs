@@ -14,9 +14,11 @@ module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabas
 import           Prelude                              hiding (unzip)
 
 import           Control.Concurrent.STM.Stats         (STM, atomicallyNamed,
-                                                       modifyTVar', newTVarIO,
-                                                       readTVar, readTVarIO,
-                                                       retry)
+                                                       modifyTVar',
+                                                       newEmptyTMVarIO,
+                                                       newTVarIO, putTMVar,
+                                                       readTMVar, readTVar,
+                                                       readTVarIO, retry)
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class               (MonadIO (liftIO))
@@ -36,9 +38,9 @@ import qualified Focus
 import qualified ListT
 import qualified StmContainers.Map                    as SMap
 import           System.Time.Extra                    (duration)
-import           UnliftIO                             (MVar, atomically,
-                                                       newEmptyMVar, putMVar,
-                                                       readMVar)
+import           UnliftIO                             (Async, MVar, async,
+                                                       atomically, newEmptyMVar,
+                                                       putMVar, readMVar, wait)
 
 import qualified UnliftIO.Exception                   as UE
 
@@ -134,76 +136,34 @@ build pk db stack keys = do
 --  Otherwise, a blocking computation is returned *which must be evaluated asynchronously* to avoid deadlock.
 builder :: (Traversable f) => Key -> Database -> Stack -> f Key -> IO (f (Key, Result))
 builder pk db stack keys = do
-    waits <- for keys (\k -> builderOne pk db stack k)
-    for waits (interpreBuildContinue db pk)
+    waits <- for keys (\k -> builderOneSpawn pk db stack k)
+    for waits wait
 
--- the first run should not block
-data BuildContinue
-    = BCContinue !(Maybe (MVar (Either SomeException (Key, Result))))
-    | BCStop Key Result
-
--- interpreBuildContinue :: BuildContinue -> IO (Key, Result)
-interpreBuildContinue :: Database -> Key -> (Key, BuildContinue) -> IO (Key, Result)
-interpreBuildContinue _db _pk (_kid, BCStop k v) = return (k, v)
-interpreBuildContinue db _pk (kid, BCContinue Nothing) = builderOneFinal db emptyStack kid
-interpreBuildContinue _db _pk (_kid, BCContinue (Just barrier)) =
-    readMVar barrier >>= either throwIO pure
-
-
-builderOne :: Key -> Database -> Stack -> Key -> IO (Key, BuildContinue)
-builderOne parentKey db stack kid = do
-    r <- builderOne' parentKey db stack kid
-    return (kid, r)
-
-builderOneFinal :: Database -> Stack -> Key -> IO (Key, Result)
-builderOneFinal Database {..} stack key = do
-  -- join is used to register the async
-  atomicallyNamed "builder" $ do
-    status <- SMap.lookup key databaseValues
-    case (viewToRun $ keyStatus <$> status) of
-      (Dirty _prev) -> retry
-      (Clean r) -> return (key, r)
-      (Running _step _s)
-        | memberStack key stack -> throw $ StackException stack
-        | otherwise -> retry
-
-builderOne' :: Key -> Database -> Stack -> Key -> IO BuildContinue
-builderOne' parentKey db@Database {..} stack key = UE.uninterruptibleMask $ \restore -> do
-  atomicallyNamed "builder" $ insertdatabaseRuntimeDep key parentKey db
-  barrier <- newEmptyMVar
-  -- join is used to register the async
-  join $ restore $ mask_ $ atomicallyNamed "builder" $ do
-    dbNotLocked db
-    status <- SMap.lookup key databaseValues
-    current <- readTVar databaseStep
-
-    case (viewToRun $ keyStatus <$> status) of
-      (Dirty prev) -> do
-        SMap.focus (updateStatus $ Running current prev) key databaseValues
-        let register = spawnRefresh db stack key barrier prev refresh
-                        -- why it is important to use rollback here
-
-                        {- Note [Rollback is required if killed before registration]
-                        It is important to use rollback here because a key might be killed before it is registered, even though it is not one of the dirty keys.
-                        In this case, it would skip being marked as dirty. Therefore, we have to roll back here if it is killed, to ensure consistency.
-                        -}
-                        (\_ -> atomicallyNamed "builderOne rollback" $ SMap.focus updateDirty key databaseValues)
-                        restore
-        return $ register >> return (BCContinue (Just barrier))
-      (Clean r) -> pure . pure $ BCStop key r
-      (Running _step _s)
-        | memberStack key stack -> throw $ StackException stack
-        | otherwise -> pure . pure $ BCContinue Nothing
-
--- Original spawnRefresh implementation moved below to use the abstraction
--- handleResult :: (Show a1, MonadIO m) => a1 -> MVar (Either a2 (a1, b)) -> Either a2 b -> m ()
-handleResult :: MonadIO m => Key -> MVar (Either SomeException (Key, b)) -> Either SomeException b -> m ()
-handleResult k barrier eResult = do
-    case eResult of
-        Right r -> putMVar barrier (Right (k, r))
-        -- accumulate the async kill info for debugging
-        Left e | Just (AsyncParentKill tid s ks) <- fromException e  -> putMVar barrier (Left (toException $ AsyncParentKill tid s (k:ks)))
-        Left e  -> putMVar barrier (Left e)
+-- builderOne' :: Key -> Database -> Stack -> Key -> IO BuildContinue
+builderOneSpawn :: Key -> Database -> Stack -> Key -> IO (Async (Key, Result))
+builderOneSpawn parentKey db@Database {..} stack key = do
+  startBarrier <- newEmptyTMVarIO
+  t <- async $
+      mask_ $ join $ atomicallyNamed "builder" $ do
+        a <- readTMVar startBarrier
+        dbNotLocked db
+        insertdatabaseRuntimeDep key parentKey db
+        Step currentStep <- readTVar databaseStep
+        let ds = (DeliverStatus currentStep ("async computation; " ++ show key) key)
+        -- if we register it then we must run the refresh, otherwise we will never run it
+        modifyTVar' databaseThreads ((ds, a):)
+        status <- SMap.lookup key databaseValues
+        current <- readTVar databaseStep
+        case (viewToRun $ keyStatus <$> status) of
+          (Dirty prev) -> do
+            SMap.focus (updateStatus $ Running current prev) key databaseValues
+            return $ (refresh db stack key prev) `UE.onException` (atomicallyNamed "builderOne rollback" $ SMap.focus updateDirty key databaseValues)
+          (Clean r) -> return $ return r
+          (Running _step _s)
+            | memberStack key stack -> throw $ StackException stack
+            | otherwise -> retry
+  atomically $ putTMVar startBarrier $ void $ t
+  return $ (key,) <$> t
 
 
 -- | isDirty
@@ -384,32 +344,6 @@ transitiveDirtyListBottomUpDFS database seeds = do
                 -- runtime roots that need shutdown.
   -- traverse all seeds
   foldrM go1 (TransitiveDirtyKeys [] mempty) (toListKeySet seeds)
-
--- | Original spawnRefresh using the general pattern
--- inline
-{-# INLINE spawnRefresh #-}
-spawnRefresh ::
-  Database ->
-  t ->
-  Key ->
-  MVar (Either SomeException (Key, Result)) ->
-  Maybe Result ->
-  (Database -> t -> Key -> Maybe Result -> IO Result) ->
-  (SomeException -> IO ()) ->
-  (forall a. IO a -> IO a) ->
-  IO ()
-spawnRefresh db@Database {..} stack key barrier prevResult refresher rollBack restore = do
-  Step currentStep <- readTVarIO databaseStep
-  spawnAsyncWithDbRegistration
-    db
-    (DeliverStatus currentStep ("async computation; " ++ show key) key)
-    (refresher db stack key prevResult)
-    (\r -> do
-        case r of
-            Left e  -> rollBack e
-            Right _ -> return ()
-        handleResult key barrier r
-    ) restore
 
 -- Attempt to clear a Dirty parent that ended up with unchanged children during this event.
 -- If the parent is Dirty, and every direct child is either Clean/Exception/Running for a step < eventStep,
