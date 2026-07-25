@@ -317,7 +317,6 @@ codeActionTests = testGroup "code actions"
   , addFunctionConstraintTests
   , removeRedundantConstraintsTests
   , addTypeAnnotationsToLiteralsTest
-  , exportUnusedTests
   , addImplicitParamsConstraintTests
   , removeExportTests
   , Test.AddArgument.tests
@@ -2508,6 +2507,7 @@ deleteUnusedDefinitionTests = testGroup "delete unused definition action"
       , "some = ()"
       ]
       (4, 0)
+      1
       "Delete ‘f’"
       [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
       , "module A (some) where"
@@ -2525,6 +2525,7 @@ deleteUnusedDefinitionTests = testGroup "delete unused definition action"
       , "some = ()"
       ]
       (4, 2)
+      1
       "Delete ‘myPlus’"
       [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
       , "module A (some) where"
@@ -2547,6 +2548,7 @@ deleteUnusedDefinitionTests = testGroup "delete unused definition action"
       , ""
       ]
       (10, 4)
+      1
       "Delete ‘h’"
       [ "{-# OPTIONS_GHC -Wunused-binds #-}"
       , "module A (h, g) where"
@@ -2570,6 +2572,7 @@ deleteUnusedDefinitionTests = testGroup "delete unused definition action"
       , "c = 5"
       ]
       (4, 0)
+      1
       "Delete ‘a’"
       [ "{-# OPTIONS_GHC -Wunused-binds #-}"
       , "module A (b, c) where"
@@ -2589,6 +2592,7 @@ deleteUnusedDefinitionTests = testGroup "delete unused definition action"
       , "c = 5"
       ]
       (5, 0)
+      1
       "Delete ‘b’"
       [ "{-# OPTIONS_GHC -Wunused-binds #-}"
       , "module A (a, c) where"
@@ -2608,6 +2612,7 @@ deleteUnusedDefinitionTests = testGroup "delete unused definition action"
       , "c = 5"
       ]
       (6, 0)
+      1
       "Delete ‘c’"
       [ "{-# OPTIONS_GHC -Wunused-binds #-}"
       , "module A (a, b) where"
@@ -2615,12 +2620,65 @@ deleteUnusedDefinitionTests = testGroup "delete unused definition action"
       , "a, b :: Int"
       , "a = 3"
       , "b = 4"
+      ],
+  testSession "delete all unused level bindings" $
+    testFor
+      [ "{-# OPTIONS_GHC -Wunused-binds #-}"
+      , "module A (some) where"
+      , ""
+      , "f :: Int -> Int"
+      , "f 1 = let a = 1"
+      , "      in a"
+      , "f 2 = 2"
+      , ""
+      , "some = ()"
+      , "  where"
+      , "    a = 2"
+      , ""
+      , "unusedSome :: ()"
+      , "unusedSome = ()"
+      ]
+      (4, 0)
+      3
+      "Delete all unused bindings"
+      [ "{-# OPTIONS_GHC -Wunused-binds #-}"
+      , "module A (some) where"
+      , ""
+      , "some = ()"
+      , "  where"
+      ],
+  testSession "delete unused local let expr bindings" $
+    testFor
+      [ "{-# OPTIONS_GHC -Wunused-binds #-}"
+      , "module A (a, b, c) where"
+      , ""
+      , "a = let b = 1 in 2"
+      , ""
+      , "b = let c = 1"
+      , "        d = 1"
+      , "    in let e = 2 in d"
+      , ""
+      , "c = if (let a = 2 in True) then 1 else 1"
+      ]
+      (3, 8)
+      4
+      "Delete all unused bindings"
+      [ "{-# OPTIONS_GHC -Wunused-binds #-}"
+      , "module A (a, b, c) where"
+      , ""
+      , "a = let in 2"
+      , ""
+      , "b = let"
+      , "        d = 1"
+      , "    in let in d"
+      , ""
+      , "c = if (let in True) then 1 else 1"
       ]
   ]
   where
-    testFor sourceLines pos@(l,c) expectedTitle expectedLines = do
+    testFor sourceLines pos@(l,c) expectedNbrWarnings expectedTitle expectedLines = do
       docId <- createDoc "A.hs" "haskell" $ T.unlines sourceLines
-      expectDiagnostics [ ("A.hs", [(DiagnosticSeverity_Warning, pos, "not used", Nothing)]) ]
+      expectDiagnostics [ ("A.hs", replicate expectedNbrWarnings (DiagnosticSeverity_Warning, pos, "not used", Nothing)) ]
       action <- pickActionWithTitle expectedTitle =<< getCodeActions docId  (R l c l c)
       executeCodeAction action
       contentAfterAction <- documentContents docId
@@ -3405,355 +3463,6 @@ addSigActionTests = let
     , "pattern MkT1' b <- MkT1 42 b" >:: "pattern MkT1' :: (Eq a, Num a) => Show b => b -> T1 a"
     , "pattern MkT1' b <- MkT1 42 b\n  where MkT1' b = MkT1 42 b" >:: "pattern MkT1' :: (Eq a, Num a) => Show b => b -> T1 a"
     ]
-
-exportUnusedTests :: TestTree
-exportUnusedTests = testGroup "export unused actions"
-  [ testGroup "don't want suggestion" -- in this test group we check that no code actions are created
-    [ testSession "implicit exports" $ templateNoAction
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# OPTIONS_GHC -Wmissing-signatures #-}"
-      , "module A where"
-      , "foo = id"
-      ]
-      (R 3 0 3 3)
-      "Export ‘foo’"
-    , testSession "not top-level" $ templateNoAction
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# OPTIONS_GHC -Wunused-binds #-}"
-      , "module A (foo,bar) where"
-      , "foo = ()"
-      , "  where bar = ()"
-      , "bar = ()"
-      ]
-      (R 2 0 2 11)
-      "Export ‘bar’"
-    , testSession "type is exported but not the constructor of same name" $ templateNoAction
-        [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-        , "module A (Foo) where"
-        , "data Foo = Foo"
-        ]
-        (R 2 0 2 8)
-        "Export ‘Foo’"
-    , testSession "unused data field" $ templateNoAction
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A (Foo(Foo)) where"
-      , "data Foo = Foo {foo :: ()}"
-      ]
-      (R 2 0 2 20)
-      "Export ‘foo’"
-    ]
-  , testGroup "want suggestion"
-    [ testSession "empty exports" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A ("
-      , ") where"
-      , "foo = id"
-      ]
-      (R 3 0 3 3)
-      "Export ‘foo’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A ("
-      , "foo) where"
-      , "foo = id"
-      ]
-    , testSession "single line explicit exports" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A (foo) where"
-      , "foo = id"
-      , "bar = foo"
-      ]
-      (R 3 0 3 3)
-      "Export ‘bar’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A (foo, bar) where"
-      , "foo = id"
-      , "bar = foo"
-      ]
-    , testSession "multi line explicit exports" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A"
-      , "  ("
-      , "    foo) where"
-      , "foo = id"
-      , "bar = foo"
-      ]
-      (R 5 0 5 3)
-      "Export ‘bar’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A"
-      , "  ("
-      , "    foo, bar) where"
-      , "foo = id"
-      , "bar = foo"
-      ]
-    , testSession "export list ends in comma" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A"
-      , "  (foo,"
-      , "  ) where"
-      , "foo = id"
-      , "bar = foo"
-      ]
-      (R 5 0 5 3)
-      "Export ‘bar’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A"
-      , "  (foo,"
-      , "  bar) where"
-      , "foo = id"
-      , "bar = foo"
-      ]
-    , testSession "style of multiple exports is preserved 1" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A"
-      , "  ( foo"
-      , "  , bar"
-      , "  ) where"
-      , "foo = id"
-      , "bar = foo"
-      , "baz = bar"
-      ]
-      (R 7 0 7 3)
-      "Export ‘baz’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A"
-      , "  ( foo"
-      , "  , bar"
-      , "  , baz"
-      , "  ) where"
-      , "foo = id"
-      , "bar = foo"
-      , "baz = bar"
-      ]
-    , testSession "style of multiple exports is preserved 2" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A"
-      , "  ( foo,"
-      , "    bar"
-      , "  ) where"
-      , "foo = id"
-      , "bar = foo"
-      , "baz = bar"
-      ]
-      (R 7 0 7 3)
-      "Export ‘baz’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A"
-      , "  ( foo,"
-      , "    bar,"
-      , "    baz"
-      , "  ) where"
-      , "foo = id"
-      , "bar = foo"
-      , "baz = bar"
-      ]
-    , testSession "style of multiple exports is preserved and selects smallest export separator" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A"
-      , "  ( foo"
-      , "  , bar"
-      , "  -- * For testing"
-      , "  , baz"
-      , "  ) where"
-      , "foo = id"
-      , "bar = foo"
-      , "baz = bar"
-      , "quux = bar"
-      ]
-      (R 10 0 10 4)
-      "Export ‘quux’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A"
-      , "  ( foo"
-      , "  , bar"
-      , "  -- * For testing"
-      , "  , baz"
-      , "  , quux"
-      , "  ) where"
-      , "foo = id"
-      , "bar = foo"
-      , "baz = bar"
-      , "quux = bar"
-      ]
-    , testSession "unused pattern synonym" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE PatternSynonyms #-}"
-      , "module A () where"
-      , "pattern Foo a <- (a, _)"
-      ]
-      (R 3 0 3 10)
-      "Export ‘Foo’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE PatternSynonyms #-}"
-      , "module A (pattern Foo) where"
-      , "pattern Foo a <- (a, _)"
-      ]
-    , testSession "unused pattern synonym operator" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE PatternSynonyms #-}"
-      , "module A () where"
-      , "pattern x :+ y = (x, y)"
-      ]
-      (R 3 0 3 12)
-      "Export ‘:+’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE PatternSynonyms #-}"
-      , "module A (pattern (:+)) where"
-      , "pattern x :+ y = (x, y)"
-      ]
-    , testSession "unused data type" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A () where"
-      , "data Foo = Foo"
-      ]
-      (R 2 0 2 7)
-      "Export ‘Foo’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A (Foo(..)) where"
-      , "data Foo = Foo"
-      ]
-    , testSession "unused newtype" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A () where"
-      , "newtype Foo = Foo ()"
-      ]
-      (R 2 0 2 10)
-      "Export ‘Foo’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A (Foo(..)) where"
-      , "newtype Foo = Foo ()"
-      ]
-    , testSession "unused type synonym" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A () where"
-      , "type Foo = ()"
-      ]
-      (R 2 0 2 7)
-      "Export ‘Foo’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A (Foo) where"
-      , "type Foo = ()"
-      ]
-    , testSession "unused type family" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE TypeFamilies #-}"
-      , "module A () where"
-      , "type family Foo p"
-      ]
-      (R 3 0 3 15)
-      "Export ‘Foo’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE TypeFamilies #-}"
-      , "module A (Foo) where"
-      , "type family Foo p"
-      ]
-    , testSession "unused typeclass" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A () where"
-      , "class Foo a"
-      ]
-      (R 2 0 2 8)
-      "Export ‘Foo’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A (Foo(..)) where"
-      , "class Foo a"
-      ]
-    , testSession "infix" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A () where"
-      , "a `f` b = ()"
-      ]
-      (R 2 0 2 11)
-      "Export ‘f’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A (f) where"
-      , "a `f` b = ()"
-      ]
-    , testSession "function operator" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A () where"
-      , "(<|) = ($)"
-      ]
-      (R 2 0 2 9)
-      "Export ‘<|’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "module A ((<|)) where"
-      , "(<|) = ($)"
-      ]
-    , testSession "type synonym operator" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE TypeOperators #-}"
-      , "module A () where"
-      , "type (:<) = ()"
-      ]
-      (R 3 0 3 13)
-      "Export ‘:<’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE TypeOperators #-}"
-      , "module A ((:<)) where"
-      , "type (:<) = ()"
-      ]
-    , testSession "type family operator" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE TypeFamilies #-}"
-      , "{-# LANGUAGE TypeOperators #-}"
-      , "module A () where"
-      , "type family (:<)"
-      ]
-      (R 4 0 4 15)
-      "Export ‘:<’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE TypeFamilies #-}"
-      , "{-# LANGUAGE TypeOperators #-}"
-      , "module A (type (:<)) where"
-      , "type family (:<)"
-      ]
-    , testSession "typeclass operator" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE TypeOperators #-}"
-      , "module A () where"
-      , "class (:<) a"
-      ]
-      (R 3 0 3 11)
-      "Export ‘:<’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE TypeOperators #-}"
-      , "module A (type (:<)(..)) where"
-      , "class (:<) a"
-      ]
-    , testSession "newtype operator" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE TypeOperators #-}"
-      , "module A () where"
-      , "newtype (:<) = Foo ()"
-      ]
-      (R 3 0 3 20)
-      "Export ‘:<’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE TypeOperators #-}"
-      , "module A (type (:<)(..)) where"
-      , "newtype (:<) = Foo ()"
-      ]
-    , testSession "data type operator" $ template
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE TypeOperators #-}"
-      , "module A () where"
-      , "data (:<) = Foo ()"
-      ]
-      (R 3 0 3 17)
-      "Export ‘:<’"
-      [ "{-# OPTIONS_GHC -Wunused-top-binds #-}"
-      , "{-# LANGUAGE TypeOperators #-}"
-      , "module A (type (:<)(..)) where"
-      , "data (:<) = Foo ()"
-      ]
-    ]
-  ]
-  where
-    template origLines range actionTitle expectedLines =
-      exportTemplate (Just range) origLines actionTitle (Just expectedLines)
-    templateNoAction origLines range actionTitle =
-      exportTemplate (Just range) origLines actionTitle Nothing
 
 exportTemplate :: Maybe Range -> [T.Text] -> T.Text -> Maybe [T.Text] -> Session ()
 exportTemplate mRange initialLines expectedAction expectedLines = do

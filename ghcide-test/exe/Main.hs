@@ -33,6 +33,7 @@ module Main (main) where
 import qualified HieDbRetry
 import           Test.Tasty
 import           Test.Tasty.Ingredients.Rerun
+import           Test.Hls (defaultTestRunner)
 
 import           AsyncTests
 import           BootTests
@@ -44,6 +45,7 @@ import           CPPTests
 import           CradleTests
 import           DependentFileTest
 import           DiagnosticTests
+import           EpsPollutionTests
 import           ExceptionTests
 import           FindDefinitionAndHoverTests
 import           FindImplementationAndHoverTests
@@ -71,7 +73,7 @@ import           WatchedFileTests
 main :: IO ()
 main = do
   -- We mess with env vars so run single-threaded.
-  defaultMainWithRerun $ testGroup "ghcide"
+  defaultTestRunner $ testGroup "ghcide"
     [ OpenCloseTest.tests
     , InitializeResponseTests.tests
     , CompletionTests.tests
@@ -94,6 +96,7 @@ main = do
     , WatchedFileTests.tests
     , CradleTests.tests
     , DependentFileTest.tests
+    , EpsPollutionTests.tests
     , NonLspCommandLine.tests
     , IfaceTests.tests
     , BootTests.tests

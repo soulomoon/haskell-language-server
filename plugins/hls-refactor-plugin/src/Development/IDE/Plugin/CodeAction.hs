@@ -19,7 +19,6 @@ module Development.IDE.Plugin.CodeAction
 
 import           Control.Applicative                               ((<|>))
 import           Control.Arrow                                     (second,
-                                                                    (&&&),
                                                                     (>>>))
 import           Control.Concurrent.STM.Stats                      (atomically)
 import           Control.Monad.Extra
@@ -30,6 +29,7 @@ import           Data.Char
 import qualified Data.DList                                        as DL
 import           Data.Function
 import           Data.Functor
+import qualified Data.Generics                                     as SYB
 import qualified Data.HashMap.Strict                               as Map
 import qualified Data.HashSet                                      as Set
 import           Data.List.Extra
@@ -37,7 +37,6 @@ import           Data.List.NonEmpty                                (NonEmpty ((:
 import qualified Data.List.NonEmpty                                as NE
 import qualified Data.Map.Strict                                   as M
 import           Data.Maybe
-import           Data.Ord                                          (comparing)
 import qualified Data.Set                                          as S
 import qualified Data.Text                                         as T
 import qualified Data.Text.Encoding                                as T
@@ -49,6 +48,7 @@ import           Development.IDE.Core.Service
 import           Development.IDE.Core.Shake                        hiding (Log)
 import           Development.IDE.GHC.Compat                        hiding
                                                                    (ImplicitPrelude)
+import qualified Language.LSP.Protocol.Types                       as TE (TextEdit (..))
 #if !MIN_VERSION_ghc(9,11,0)
 import           Development.IDE.GHC.Compat.Util
 #endif
@@ -144,6 +144,7 @@ codeAction state _ (CodeActionParams _ _ (TextDocumentIdentifier uri) range _) =
       textContents = fmap Rope.toText contents
       actions = caRemoveRedundantImports parsedModule textContents allDiags range uri
                <> caRemoveInvalidExports parsedModule textContents allDiags range uri
+               <> caDeleteUnusedBindings parsedModule textContents allDiags range uri
     pure $ InL actions
 
 -------------------------------------------------------------------------------------------------
@@ -151,9 +152,8 @@ codeAction state _ (CodeActionParams _ _ (TextDocumentIdentifier uri) range _) =
 iePluginDescriptor :: Recorder (WithPriority E.Log) -> PluginId -> PluginDescriptor IdeState
 iePluginDescriptor recorder plId =
   let old =
-        mkGhcideCAsPlugin [
-            wrap suggestExportUnusedTopBinding
-          , wrap suggestModuleTypo
+        mkGhcideCAsPlugin
+          [ wrap suggestModuleTypo
           , wrap suggestFixConstructorImport
           , wrap suggestExtendImport
           , wrap suggestImportDisambiguation
@@ -185,7 +185,6 @@ bindingsPluginDescriptor recorder plId = mkExactprintPluginDescriptor recorder $
     , wrap suggestImplicitParameter
     , wrap suggestNewDefinition
     , wrap Development.IDE.Plugin.Plugins.AddArgument.plugin
-    , wrap suggestDeleteUnusedBinding
     ]
     plId
     "Provides various quick fixes for bindings"
@@ -661,7 +660,7 @@ suggestDeleteUnusedBinding
               in Just (mkSrcSpan startLoc' endLoc', False)
       findRelatedSigSpan1 _ _ = Nothing
 
-      -- for where clause
+      -- for where and let expression bindings
       findRelatedSpanForMatch
         :: PositionIndexedString
         -> String
@@ -670,7 +669,7 @@ suggestDeleteUnusedBinding
       findRelatedSpanForMatch
         indexedContent
         name
-        (L _ Match{m_grhss=GRHSs{grhssLocalBinds}}) = do
+        (L _ Match{m_grhss=GRHSs{grhssLocalBinds, grhssGRHSs}}) = do
         let emptyBag bag =
 #if MIN_VERSION_ghc(9,11,0)
                 null bag
@@ -681,9 +680,22 @@ suggestDeleteUnusedBinding
                   if emptyBag bag
                   then []
                   else concatMap (findRelatedSpanForHsBind indexedContent name lsigs) bag
-        case grhssLocalBinds of
-          (HsValBinds _ (ValBinds _ bag lsigs)) -> go bag lsigs
-          _                                     -> []
+
+            findLetBinds :: SYB.GenericQ (DL.DList (HsLocalBinds GhcPs))
+            findLetBinds = SYB.everything mappend (mempty `SYB.mkQ` letBinds)
+              where
+                letBinds :: HsExpr GhcPs -> DL.DList (HsLocalBinds GhcPs)
+                letBinds = \case
+#if !MIN_VERSION_ghc(9,9,0)
+                    HsLet _ _ lb _ _ -> pure lb
+#else
+                    HsLet _ lb _ -> pure lb
+#endif
+                    _            -> mempty
+
+        flip concatMap (grhssLocalBinds : DL.toList (findLetBinds grhssGRHSs)) $ \case
+                (HsValBinds _ (ValBinds _ bag lsigs)) -> go bag lsigs
+                _                                     -> []
 
       findRelatedSpanForHsBind
         :: PositionIndexedString
@@ -710,99 +722,49 @@ suggestDeleteUnusedBinding
       isSameName :: IdP GhcPs -> String -> Bool
       isSameName x name = T.unpack (printOutputable x) == name
 
-data ExportsAs = ExportName | ExportPattern | ExportFamily | ExportAll
-  deriving (Eq)
+caDeleteUnusedBindings :: Maybe ParsedModule -> Maybe T.Text -> [Diagnostic] -> Range -> Uri -> [Command |? CodeAction]
+caDeleteUnusedBindings m contents allDiags contextRange uri
+  | Just pm <- m,
+    r <- join $ map (\d -> repeat d `zip` suggestDeleteUnusedBinding pm contents d) allDiags,
+    -- `allEdits` contains the representative edits to make.
+    -- Representative means the edit with a range that subsumes the others,
+    -- because GHC emits diagnostics for the top level binding *and* the where clause.
+    allEdits <-
+      -- take the representative and drop the others
+      concatMap headToList $
+      -- deduplicate by creating groups of ranges (same group if any subsumes the other)
+      groupBy subsumesEither
+      -- Sort to put related ranges next to each other
+      (sortOn TE._range [ e | (_, (_, edits)) <- r, e <- edits]),
+    caRemoveAll <- removeAll allEdits,
+    ctxEdits <- [ x | x@(d, _) <- r, d `diagInRange` contextRange],
+    not $ null ctxEdits,
+    caRemoveCtx <- map (\(d, (title, tedit)) -> removeSingle title tedit d) ctxEdits
+      = caRemoveCtx ++ [caRemoveAll]
+  | otherwise = []
+  where
+    removeSingle title tedit diagnostic = mkCA title (Just CodeActionKind_QuickFix) Nothing [diagnostic] WorkspaceEdit{..} where
+        _changes = Just $ M.singleton uri tedit
+        _documentChanges = Nothing
+        _changeAnnotations = Nothing
+    removeAll tedit = InR $ CodeAction{..} where
+        _changes = Just $ M.singleton uri tedit
+        _title = "Delete all unused bindings"
+        _kind = Just CodeActionKind_QuickFix
+        _diagnostics = Nothing
+        _documentChanges = Nothing
+        _edit = Just WorkspaceEdit{..}
+        _isPreferred = Just False
+        _command = Nothing
+        _disabled = Nothing
+        _data_ = Nothing
+        _changeAnnotations = Nothing
+    headToList []      = []
+    headToList (x : _) = [x]
+    subsumesEither (TE._range -> range1) (TE._range -> range2) = subRange range1 range2 || subRange range2 range1
 
 getLocatedRange :: HasSrcSpan a => a -> Maybe Range
 getLocatedRange = srcSpanToRange . getLoc
-
-suggestExportUnusedTopBinding :: Maybe T.Text -> ParsedModule -> Diagnostic -> Maybe (T.Text, TextEdit)
-suggestExportUnusedTopBinding srcOpt ParsedModule{pm_parsed_source = L _ HsModule{..}} Diagnostic{..}
--- Foo.hs:4:1: warning: [-Wunused-top-binds] Defined but not used: ‘f’
--- Foo.hs:5:1: warning: [-Wunused-top-binds] Defined but not used: type constructor or class ‘F’
--- Foo.hs:6:1: warning: [-Wunused-top-binds] Defined but not used: data constructor ‘Bar’
-  | Just source <- srcOpt
-  , Just [_, name] <-
-      matchRegexUnifySpaces
-        _message
-        ".*Defined but not used: (type constructor or class |data constructor )?‘([^ ]+)’"
-  , Just (exportType, _) <-
-      find (matchWithDiagnostic _range . snd)
-      . mapMaybe (\(L l b) -> if isTopLevel (locA l) then exportsAs b else Nothing)
-      $ hsmodDecls
-  , Just exports       <- fmap (fmap reLoc) . reLoc <$> hsmodExports
-  , Just exportsEndPos <- _end <$> getLocatedRange exports
-  , let name'          = printExport exportType name
-        sep            = exportSep source $ map getLocatedRange <$> exports
-        exportName     = case sep of
-          Nothing -> (if needsComma source exports then ", " else "") <> name'
-          Just  s -> s <> name'
-        exportsEndPos' = exportsEndPos { _character = pred $ _character exportsEndPos }
-        insertPos      = fromMaybe exportsEndPos' $ case (sep, unLoc exports) of
-          (Just _, exports'@(_:_)) -> fmap _end . getLocatedRange $ last exports'
-          _                        -> Nothing
-  = Just ("Export ‘" <> name <> "’", TextEdit (Range insertPos insertPos) exportName)
-  | otherwise = Nothing
-  where
-    exportSep :: T.Text -> Located [Maybe Range] -> Maybe T.Text
-    exportSep src (L (RealSrcSpan _ _) xs@(_ : tl@(_ : _))) =
-      case mapMaybe (\(e, s) -> (,) <$> e <*> s) $ zip (fmap _end <$> xs) (fmap _start <$> tl) of
-        []     -> Nothing
-        bounds -> Just smallestSep
-          where
-            smallestSep
-              = snd
-              $ minimumBy (comparing fst)
-              $ map (T.length &&& id)
-              $ nubOrd
-              $ map (\(prevEnd, nextStart) -> textInRange (Range prevEnd nextStart) src) bounds
-    exportSep _   _ = Nothing
-
-    -- We get the last export and the closing bracket and check for comma in that range.
-    needsComma :: T.Text -> Located [Located (IE GhcPs)] -> Bool
-    needsComma _ (L _ []) = False
-    needsComma source (L (RealSrcSpan l _) exports) =
-      let closeParen = _end $ realSrcSpanToRange l
-          lastExport = fmap _end . getLocatedRange $ last exports
-      in
-      case lastExport of
-        Just lastExport ->
-          not $ T.any (== ',') $ textInRange (Range lastExport closeParen) source
-        _ -> False
-    needsComma _ _ = False
-
-    opLetter :: T.Text
-    opLetter = ":!#$%&*+./<=>?@\\^|-~"
-
-    parenthesizeIfNeeds :: Bool -> T.Text -> T.Text
-    parenthesizeIfNeeds needsTypeKeyword x
-      | T.any (c ==) opLetter = (if needsTypeKeyword then "type " else "") <> "(" <> x <> ")"
-      | otherwise = x
-      where
-        c = T.head x
-
-    matchWithDiagnostic :: Range -> Located (IdP GhcPs) -> Bool
-    matchWithDiagnostic Range{_start=l,_end=r} x =
-      let loc = fmap _start . getLocatedRange $ x
-       in loc >= Just l && loc <= Just r
-
-    printExport :: ExportsAs -> T.Text -> T.Text
-    printExport ExportName x    = parenthesizeIfNeeds False x
-    printExport ExportPattern x = "pattern " <> parenthesizeIfNeeds False x
-    printExport ExportFamily x  = parenthesizeIfNeeds True x
-    printExport ExportAll x     = parenthesizeIfNeeds True x <> "(..)"
-
-    isTopLevel :: SrcSpan -> Bool
-    isTopLevel span = fmap (_character . _start) (srcSpanToRange span) == Just 0
-
-    exportsAs :: HsDecl GhcPs -> Maybe (ExportsAs, Located (IdP GhcPs))
-    exportsAs (ValD _ FunBind {fun_id})          = Just (ExportName, reLoc fun_id)
-    exportsAs (ValD _ (PatSynBind _ PSB {psb_id})) = Just (ExportPattern, reLoc psb_id)
-    exportsAs (TyClD _ SynDecl{tcdLName})      = Just (ExportName, reLoc tcdLName)
-    exportsAs (TyClD _ DataDecl{tcdLName})     = Just (ExportAll, reLoc tcdLName)
-    exportsAs (TyClD _ ClassDecl{tcdLName})    = Just (ExportAll, reLoc tcdLName)
-    exportsAs (TyClD _ FamDecl{tcdFam})        = Just (ExportFamily, reLoc $ fdLName tcdFam)
-    exportsAs _                                = Nothing
 
 suggestAddTypeAnnotationToSatisfyConstraints :: Maybe T.Text -> Diagnostic -> [(T.Text, [TextEdit])]
 suggestAddTypeAnnotationToSatisfyConstraints sourceOpt Diagnostic{_range=_range,..}

@@ -3,6 +3,8 @@
     "checkParents": "CheckOnSave",
     "checkProject": true,
     "formattingProvider": "ormolu",
+    "linkDocTo": "LinkToHackage",
+    "linkSourceTo": "LinkToHackage",
     "maxCompletions": 40,
     "plugin": {
         "alternateNumberFormat": {
@@ -51,6 +53,9 @@
             "inlayHintsOn": true
         },
         "explicit-fixity": {
+            "globalOn": true
+        },
+        "export": {
             "globalOn": true
         },
         "gadt": {
@@ -132,7 +137,7 @@
                 "typeVariableToken": "typeParameter",
                 "variableToken": "variable"
             },
-            "globalOn": false
+            "globalOn": true
         },
         "signatureHelp": {
             "globalOn": true
@@ -141,5 +146,5 @@
             "globalOn": true
         }
     },
-    "sessionLoading": "singleComponent"
+    "sessionLoading": "multipleComponents"
 }

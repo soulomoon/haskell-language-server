@@ -579,13 +579,14 @@ getBindingsRule recorder =
 getDocMapRule :: Recorder (WithPriority Log) -> Rules ()
 getDocMapRule recorder =
     define (cmapWithPrio LogShake recorder) $ \GetDocMap file -> do
-      -- Stale data for the scenario where a broken module has previously typechecked
-      -- but we never generated a DocMap for it
-      (tmrTypechecked -> tc, _) <- useWithStale_ TypeCheck file
-      (hscEnv -> hsc, _)        <- useWithStale_ GhcSessionDeps file
-      (HAR{refMap=rf}, _)       <- useWithStale_ GetHieAst file
-
-      dkMap <- liftIO $ mkDocMap hsc rf tc
+      (tmrTypechecked -> tc) <- use_ TypeCheck file
+      (hscEnv -> hsc)        <- use_ GhcSessionDeps file
+      HAR{refMap=rf}         <- use_ GetHieAst file
+      cfg <- getClientConfigAction
+      dkMap <- liftIO $ mkDocMap hsc rf tc $ LinkTargets
+                { linkSource = linkSourceTo cfg
+                , linkDoc = linkDocTo cfg
+                }
       return ([],Just dkMap)
 
 -- | Persistent rule to ensure that hover doesn't block on startup

@@ -45,14 +45,14 @@ Here is a list of the additional settings currently supported by `haskell-langua
 - Max completions (`haskell.maxCompletions`, default 40): maximum number of completions sent to the LSP client.
 - Check project (`haskell.checkProject`, default true): whether to typecheck the entire project on initial load. As it is activated by default could drive to bad performance in large projects.
 - Check parents (`haskell.checkParents`, default `CheckOnSave`): when to typecheck reverse dependencies of a file; one of `NeverCheck`, `CheckOnSave` (means dependent/parent modules will only be checked when you save), or `AlwaysCheck` (means re-typechecking them on every change).
-- Session loading preference (`haskell.sessionLoading`, default `singleComponent`): how to load sessions; one of `singleComponent` (means always loading only a single component when a new component is discovered) or `multipleComponents` (means always preferring loading multiple components in the cradle at once). `multipleComponents` might not be always possible, if the tool doesn't support multiple components loading. The cradle can decide how to handle these situations, and whether to honour the preference at all.
+- Session loading preference (`haskell.sessionLoading`, default `multipleComponents`): how to load sessions; one of `singleComponent` (means always loading only a single component when a new component is discovered) or `multipleComponents` (means always preferring loading multiple components in the cradle at once). `multipleComponents` might not be always possible, if the tool doesn't support multiple components loading. The cradle can decide how to handle these situations, and whether to honour the preference at all.
 
 #### Generic plugin configuration
 
 Plugins have a generic config to control their behaviour. The schema of such config is:
 
 - `haskell.plugin.${pluginName}.globalOn`: usually with default true. Whether the plugin is enabled at runtime or it is not. That is the option you might use if you want to disable completely a plugin.
-  - Actual plugin names are: `ghcide-code-actions-fill-holes`, `ghcide-completions`, `ghcide-hover-and-symbols`, `ghcide-type-lenses`, `ghcide-code-actions-type-signatures`, `ghcide-code-actions-bindings`, `ghcide-code-actions-imports-exports`, `eval`, `moduleName`, `pragmas`, `importLens`, `class`, `hlint`, `rename`, `splice`, `stan`, `signatureHelp`.
+  - Actual plugin names are: `ghcide-code-actions-fill-holes`, `ghcide-completions`, `ghcide-hover-and-symbols`, `ghcide-type-lenses`, `ghcide-code-actions-type-signatures`, `ghcide-code-actions-bindings`, `ghcide-code-actions-imports-exports`, `eval`, `moduleName`, `pragmas`, `importLens`, `class`, `hlint`, `rename`, `semanticTokens`, `splice`, `stan`, `signatureHelp`.
   - So to disable the import lens with an explicit list of module definitions you could set `haskell.plugin.importLens.globalOn: false`
 - `haskell.plugin.${pluginName}.${lspCapability}On`: usually with default true. Whether a concrete plugin capability is enabled.
   - Capabilities are the different ways a lsp server can interact with the editor. The current available capabilities of the server are: `callHierarchy`, `codeActions`, `codeLens`, `diagnostics`, `hover`, `symbols`, `completion`, `rename`.
@@ -491,15 +491,30 @@ dotspacemacs-configuration-layers
 
 ### [Kakoune](https://github.com/mawww/kakoune)
 
-1. Grab a copy of [kak-lsp](https://github.com/ul/kak-lsp), and follow the setup instructions.
-2. Point your `kak-lsp.toml` to `haskell-language-server-wrapper`.
+1. Grab a copy of [kak-lsp](https://github.com/kakoune-lsp/kakoune-lsp), and add the following to your `kakrc`:
 
-```toml
-[language.haskell]
-filetypes = ["haskell"]
-roots = ["Setup.hs", "stack.yaml", "*.cabal"]
-command = "haskell-language-server-wrapper"
-args = ["--lsp"]
+```kak
+evaluate-commands %sh{kak-lsp}
+lsp-enable
+```
+
+2. The LSP should start automatically when editing any Haskell file. To override the default settings, you may add the following to your `kakrc` at any point after the previous snippet:
+
+```kak
+remove-hooks global lsp-filetype-haskell
+hook -group lsp-filetype-haskell global BufSetOption filetype=haskell %{
+    set-option buffer lsp_servers %{
+        [haskell-language-server]
+        root_globs = ["hie.yaml", "cabal.project", "Setup.hs", "stack.yaml", "*.cabal"]
+        command = "haskell-language-server-wrapper"
+        args = ["--lsp"]
+        settings_section = "_"
+        [haskell-language-server.settings._]
+        # See https://haskell-language-server.readthedocs.io/en/latest/configuration.html
+        # example:
+        # haskell.formattingProvider = "ormolu"
+    }
+}
 ```
 
 ### [Helix](https://github.com/helix-editor/helix)
