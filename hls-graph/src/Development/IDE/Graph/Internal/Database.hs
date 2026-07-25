@@ -144,7 +144,8 @@ builderOneSpawn :: Key -> Database -> Stack -> Key -> IO (Async (Key, Result))
 builderOneSpawn parentKey db@Database {..} stack key = do
   startBarrier <- newEmptyTMVarIO
   t <- async $
-      mask_ $ join $ atomicallyNamed "builder" $ do
+    UE.uninterruptibleMask $ \restore -> do
+      join $ restore $ mask_ $ atomicallyNamed "builder" $ do
         a <- readTMVar startBarrier
         dbNotLocked db
         insertdatabaseRuntimeDep key parentKey db
@@ -157,7 +158,7 @@ builderOneSpawn parentKey db@Database {..} stack key = do
         case (viewToRun $ keyStatus <$> status) of
           (Dirty prev) -> do
             SMap.focus (updateStatus $ Running current prev) key databaseValues
-            return $ (refresh db stack key prev) `UE.onException` (atomicallyNamed "builderOne rollback" $ SMap.focus updateDirty key databaseValues)
+            return $ (restore (refresh db stack key prev)) `UE.onException` (atomicallyNamed "builderOne rollback" $ SMap.focus updateDirty key databaseValues)
           (Clean r) -> return $ return r
           (Running _step _s)
             | memberStack key stack -> throw $ StackException stack
