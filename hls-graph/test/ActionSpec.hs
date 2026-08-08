@@ -6,28 +6,35 @@ module ActionSpec where
 import           Control.Concurrent                      (MVar, newEmptyMVar,
                                                           readMVar)
 import qualified Control.Concurrent                      as C
-import           Control.Concurrent.Async                (async, poll, wait)
+import           Control.Concurrent.Async                (cancel, wait,
+                                                          withAsync)
 import           Control.Concurrent.STM
-import           Control.Monad                           (void)
 import           Control.Monad.IO.Class                  (MonadIO (..))
-import           Data.IORef                              (newIORef, readIORef)
-import           Data.Maybe                              (isJust, isNothing)
+import           Data.IORef                              (modifyIORef',
+                                                          newIORef, readIORef)
 import           Development.IDE.Graph                   (shakeOptions)
 import           Development.IDE.Graph.Database          (shakeNewDatabase,
                                                           shakeRunDatabase,
                                                           shakeRunDatabaseForKeys)
-import           Development.IDE.Graph.Internal.Database (build, cleanupAsync,
-                                                          incDatabase,
-                                                          registerAsyncs,
-                                                          runAsyncIfRegistered,
-                                                          waitForRegisteredAsync)
+import           Development.IDE.Graph.Internal.Database (build, incDatabase)
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Types
 import           Development.IDE.Graph.Rule
 import           Example
 import qualified StmContainers.Map                       as STM
+import           System.IO.Unsafe                        (unsafePerformIO)
+import           System.Timeout                          (timeout)
 import           Test.Hspec
 
+
+-- Park traversal after the preceding key has been handled. The test releases
+-- this key normally; cancellation never crosses this unsafe test-only barrier.
+{-# NOINLINE blockSecondKey #-}
+blockSecondKey :: MVar () -> MVar () -> Rule ()
+blockSecondKey reached release = unsafePerformIO $ do
+  C.putMVar reached ()
+  C.takeMVar release
+  pure Rule
 
 
 spec :: Spec
@@ -139,46 +146,35 @@ spec = do
     Just (Clean res) <- lookup (newKey theKey) <$> getDatabaseValues theDb
     resultDeps res `shouldBe` UnknownDeps
 
-  describe "Closing escaped rule computations" $ do
-    it "admits a child before its body runs and cleanup owns its cancellation" $ do
-      scope <- newIORef (Just [])
-      gate <- newEmptyMVar
-      started <- newEmptyMVar
-      a <- runAsyncIfRegistered gate $ do
-        C.putMVar started ()
-        C.threadDelay maxBound
-      registerAsyncs scope [void a] `shouldReturn` True
-      -- Confirm registration so the parked thread proceeds to its computation.
-      C.putMVar gate True
-      C.takeMVar started
-      -- The registered async runs and stays alive.
-      poll a >>= \res -> isJust res `shouldBe` False
-      cleanupAsync scope
-      -- Cleanup, rather than the test, cancelled the registered child.
-      poll a >>= \res -> isJust res `shouldBe` True
-    it "refuses a late child, which skips its body and finishes normally" $ do
-      scope <- newIORef (Just [])
-      cleanupAsync scope
-      readIORef scope >>= \m -> isNothing m `shouldBe` True
-      gate <- newEmptyMVar
-      bodyRan <- newEmptyMVar
-      late <- runAsyncIfRegistered gate $ C.putMVar bodyRan ()
-      registerAsyncs scope [void late] `shouldReturn` False
-      C.putMVar gate False
-      -- A refused async terminates without an injected exception or body work.
-      wait late `shouldReturn` Nothing
-      C.tryReadMVar bodyRan `shouldReturn` Nothing
-      poll late >>= \res -> isJust res `shouldBe` True
-    it "leaves an admitted parent waiting for external scope cancellation" $ do
-      scope <- newIORef (Just [])
-      refused <- async $ pure (Nothing :: Maybe ())
-      wait refused `shouldReturn` Nothing
-      parentGate <- newEmptyMVar
-      parent <- runAsyncIfRegistered parentGate $ waitForRegisteredAsync refused
-      registerAsyncs scope [void parent] `shouldReturn` True
-      C.putMVar parentGate True
-      C.yield
-      -- The parent neither returns nor cancels itself after child refusal.
-      poll parent >>= \res -> isJust res `shouldBe` False
-      cleanupAsync scope
-      poll parent >>= \res -> isJust res `shouldBe` True
+  describe "Closing escaped rule computations" $
+    it "does not execute a force selected before its AIO scope closes" $ do
+      ruleRuns <- newIORef (0 :: Int)
+      ShakeDatabase _ _ theDb@Database{..} <- shakeNewDatabase shakeOptions $
+        addRule $ \(Rule :: Rule ()) _old _mode -> do
+          liftIO $ modifyIORef' ruleRuns (+ 1)
+          pure $ RunResult ChangedRecomputeDiff "" () (pure ())
+
+      -- The first build publishes a lazy 'Running' force but cannot reach its
+      -- forcing phase while traversing this infinite list.
+      withAsync (build theDb emptyStack $ repeat (Rule @())) $ \firstBuild -> do
+        atomically $ do
+          details <- STM.lookup (newKey (Rule @())) databaseValues
+          case details of
+            Just KeyDetails{keyStatus = Running{}} -> pure ()
+            _                                      -> retry
+
+        -- A concurrent build selects that Running force, then parks while the
+        -- first build still owns an open AIO scope.
+        reachedSecondKey <- newEmptyMVar
+        releaseSecondKey <- newEmptyMVar
+        withAsync
+          (build theDb emptyStack
+            [Rule @(), blockSecondKey reachedSecondKey releaseSecondKey]) $ \secondBuild -> do
+              C.takeMVar reachedSecondKey
+              -- Close the force's original scope before the already-running
+              -- second build proceeds to force what it selected.
+              cancel firstBuild
+              C.putMVar releaseSecondKey ()
+              timeout 1000000 (() <$ wait secondBuild) `shouldReturn` Nothing
+
+      readIORef ruleRuns `shouldReturn` 0
