@@ -6,8 +6,9 @@ module ActionSpec where
 import           Control.Concurrent                      (MVar, newEmptyMVar,
                                                           readMVar)
 import qualified Control.Concurrent                      as C
-import           Control.Concurrent.Async                (async, poll)
+import           Control.Concurrent.Async                (async, poll, wait)
 import           Control.Concurrent.STM
+import           Control.Monad                           (void)
 import           Control.Monad.IO.Class                  (MonadIO (..))
 import           Data.IORef                              (newIORef, readIORef)
 import           Data.Maybe                              (isJust, isNothing)
@@ -18,7 +19,8 @@ import           Development.IDE.Graph.Database          (shakeNewDatabase,
 import           Development.IDE.Graph.Internal.Database (build, cleanupAsync,
                                                           incDatabase,
                                                           registerAsyncs,
-                                                          runAsyncIfRegistered)
+                                                          runAsyncIfRegistered,
+                                                          waitForRegisteredAsync)
 import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Types
 import           Development.IDE.Graph.Rule
@@ -138,21 +140,45 @@ spec = do
     resultDeps res `shouldBe` UnknownDeps
 
   describe "Closing escaped rule computations" $ do
-    it "tracks an async registered while the scope is open" $ do
+    it "admits a child before its body runs and cleanup owns its cancellation" $ do
       scope <- newIORef (Just [])
       gate <- newEmptyMVar
-      a <- runAsyncIfRegistered gate $ do C.threadDelay maxBound
-      registerAsyncs scope [a] `shouldReturn` True
+      started <- newEmptyMVar
+      a <- runAsyncIfRegistered gate $ do
+        C.putMVar started ()
+        C.threadDelay maxBound
+      registerAsyncs scope [void a] `shouldReturn` True
       -- Confirm registration so the parked thread proceeds to its computation.
       C.putMVar gate True
+      C.takeMVar started
       -- The registered async runs and stays alive.
       poll a >>= \res -> isJust res `shouldBe` False
-    it "refuses to register into a closed scope and cancels the late async" $ do
+      cleanupAsync scope
+      -- Cleanup, rather than the test, cancelled the registered child.
+      poll a >>= \res -> isJust res `shouldBe` True
+    it "refuses a late child, which skips its body and finishes normally" $ do
       scope <- newIORef (Just [])
       cleanupAsync scope
       readIORef scope >>= \m -> isNothing m `shouldBe` True
-      late <- async $ C.threadDelay maxBound
-      -- Registration fails rather than leaking the async past teardown.
-      registerAsyncs scope [late] `shouldReturn` False
-      -- The refused async was cancelled, not left running.
+      gate <- newEmptyMVar
+      bodyRan <- newEmptyMVar
+      late <- runAsyncIfRegistered gate $ C.putMVar bodyRan ()
+      registerAsyncs scope [void late] `shouldReturn` False
+      C.putMVar gate False
+      -- A refused async terminates without an injected exception or body work.
+      wait late `shouldReturn` Nothing
+      C.tryReadMVar bodyRan `shouldReturn` Nothing
       poll late >>= \res -> isJust res `shouldBe` True
+    it "leaves an admitted parent waiting for external scope cancellation" $ do
+      scope <- newIORef (Just [])
+      refused <- async $ pure (Nothing :: Maybe ())
+      wait refused `shouldReturn` Nothing
+      parentGate <- newEmptyMVar
+      parent <- runAsyncIfRegistered parentGate $ waitForRegisteredAsync refused
+      registerAsyncs scope [void parent] `shouldReturn` True
+      C.putMVar parentGate True
+      C.yield
+      -- The parent neither returns nor cancels itself after child refusal.
+      poll parent >>= \res -> isJust res `shouldBe` False
+      cleanupAsync scope
+      poll parent >>= \res -> isJust res `shouldBe` True

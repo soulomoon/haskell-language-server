@@ -10,7 +10,7 @@
 
 module Development.IDE.Graph.Internal.Database (compute, newDatabase, incDatabase, build, getDirtySet, getKeysAndVisitAge,
     -- * Exposed for testing. See Note [Closing escaped rule computations].
-    registerAsyncs, cleanupAsync, runAsyncIfRegistered) where
+    registerAsyncs, cleanupAsync, runAsyncIfRegistered, waitForRegisteredAsync) where
 
 import           Prelude                              hiding (unzip)
 
@@ -317,32 +317,35 @@ runAIO (AIO act) = do
 {- Note [Closing escaped rule computations]
 
 Rule computations run as asyncs inside a per-'build' AIO scope, which
-'cleanupAsync' drains when the scope ends. One kind of async escapes that drain.
-  - A memoized 'splitIO' thunk in a 'Running' status can be forced by a later
-    build.
-  - That force runs in the original scope that produced the thunk.
-  - If that scope has already ended, the async it spawns has no parent to cancel
-    it, so on a restart it escapes the step bump and leaks. See
-    https://github.com/haskell/haskell-language-server/issues/4985.
+'cleanupAsync' drains when the scope is cancelled. A force-runner may be spawned
+while that scope is open but still be parked before registration when cleanup
+closes the scope. Without an admission gate, that runner can execute a memoized
+'splitIO' force after cleanup has already drained the registry. Once the build
+step advances, 'viewDirty' prevents a new build from deliberately selecting the
+old 'Running' force; the race is with a runner that was already spawned.
 
-The fix closes the leak at registration rather than teardown, and conditions on it:
-  - A spawned thread runs its rule computation only after it successfully
-    registered. Otherwise it does nothing.
-  - A closed scope refuses registration and cancels the parked thread, so
-    nothing escapes teardown.
+The admission protocol gives every thread exactly one owner:
+  - A registered thread may execute its force or rule body, and is cancelled by
+    'cleanupAsync'.
+  - A refused thread observes the closed admission, skips its body, and finishes
+    normally. It is never registered, so cleanup does not cancel it.
+  - A registered parent that observes a refused child waits at an interruptible
+    point for cleanup to cancel it. It does not cancel itself or the child.
+
+This prevents either a force or rule body from escaping teardown. See
+https://github.com/haskell/haskell-language-server/issues/4985.
 -}
 
--- | Register threads into a scope, or, if the scope has already closed, cancel
--- them and report failure.
+-- | Register threads into a scope and report whether they were admitted.
+-- Refused threads are not owned by the scope; their admission gates must be
+-- released with 'False' so they can finish without executing their bodies.
 --
 -- See Note [Closing escaped rule computations].
 registerAsyncs :: IORef (Maybe [Async ()]) -> [Async ()] -> IO Bool
-registerAsyncs st as = do
-    registered <- atomicModifyIORef' st $ \case
+registerAsyncs st as =
+    atomicModifyIORef' st $ \case
         Nothing -> (Nothing, False)
         Just xs -> (Just (as ++ xs), True)
-    unless registered $ mapM_ uninterruptibleCancel as
-    pure registered
 
 -- | Like 'async' but with built-in cancellation.
 -- Returns an IO action to wait on the result.
@@ -353,23 +356,37 @@ asyncWithCleanUp act = do
   st <- AIO ask
   io <- unliftAIO act
   -- mask so the spawn and registration can't be split by interrupt
-  (registered, a) <- liftIO $ uninterruptibleMask_ $ do
+  a <- liftIO $ uninterruptibleMask_ $ do
     -- Use a signal to indicate whether the thread is being spawned into a
     -- open/closed scope.
     gate <- newEmptyMVar
     a <- runAsyncIfRegistered gate io
     registered <- registerAsyncs st [void a]
     putMVar gate registered
-    return (registered, a)
-  -- A closed scope means the async was refused and cancelled, abort.
-  return $ if registered then wait a else throwIO AsyncCancelled
+    return a
+  return $ waitForRegisteredAsync a
 
-runAsyncIfRegistered :: MVar Bool -> IO a -> IO (Async a)
+-- | Spawn a parked thread. An admitted thread runs the body and returns its
+-- result in 'Just'; a refused thread skips the body and finishes with 'Nothing'.
+runAsyncIfRegistered :: MVar Bool -> IO a -> IO (Async (Maybe a))
 runAsyncIfRegistered gate io =
   asyncWithUnmask $ \unmask -> unmask $ do
     registered <- readMVar gate
     -- Only if the thread was successfully registered do we run the computation.
-    if registered then io else throwIO AsyncCancelled
+    if registered then Just <$> io else pure Nothing
+
+-- | Wait for a child's admission result. A refused child has finished without
+-- doing work, while its already-admitted parent remains owned by cleanup and
+-- must wait for that external cancellation rather than cancelling itself.
+waitForRegisteredAsync :: Async (Maybe a) -> IO a
+waitForRegisteredAsync a = wait a >>= maybe waitForScopeCancellation pure
+
+-- This loop is deliberately interruptible. In the rejected-child path the
+-- current thread is already registered, so cleanup is its sole canceller.
+waitForScopeCancellation :: IO a
+waitForScopeCancellation = forever $ do
+    allowInterrupt
+    sleep 3600
 
 unliftAIO :: AIO a -> AIO (IO a)
 unliftAIO act = do
@@ -402,7 +419,7 @@ data Wait
     = Wait {justWait :: !(IO ())}
     | Spawn {justWait :: !(IO ())}
 
-waitOrSpawn :: MVar Bool -> Wait -> IO (Either (IO ()) (Async ()))
+waitOrSpawn :: MVar Bool -> Wait -> IO (Either (IO ()) (Async (Maybe ())))
 waitOrSpawn _mv (Wait io) = pure $ Left io
 waitOrSpawn mv (Spawn io) = Right <$> runAsyncIfRegistered mv io
 
@@ -416,14 +433,15 @@ waitConcurrently_ many = do
         gate <- newEmptyMVar
         waits <- liftIO $ traverse (waitOrSpawn gate) many
         let (syncs, asyncs) = partitionEithers waits
-        registered <- liftIO $ registerAsyncs ref asyncs
+        registered <- liftIO $ registerAsyncs ref (map void asyncs)
         putMVar gate registered
         return (asyncs, syncs, registered)
-    -- A closed scope means our threads were cancelled, so abort.
+    -- Refused children finish without running their forces. This parent was
+    -- already admitted, so cleanup remains its sole canceller.
     if not registered
-      then liftIO $ throwIO AsyncCancelled
+      then liftIO $ traverse_ wait asyncs >> waitForScopeCancellation
       else do
         -- work on the sync computations
         liftIO $ sequence_ syncs
         -- wait for the async computations before returning
-        liftIO $ traverse_ wait asyncs
+        liftIO $ traverse_ waitForRegisteredAsync asyncs
