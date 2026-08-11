@@ -176,9 +176,9 @@ refresh :: Database -> Stack -> Key -> Maybe Result -> AIO (IO Result)
 -- refresh _ st k _ | traceShow ("refresh", st, k) False = undefined
 refresh db stack key result = case (addStack key stack, result) of
     (Left e, _) -> throw e
-    (Right stack, Just me@Result{resultDeps = ResultDeps deps}) -> asyncWithCleanUp $ refreshDeps mempty db stack key me (reverse deps)
+    (Right stack, Just me@Result{resultDeps = ResultDeps deps}) -> fmap return $ refreshDeps mempty db stack key me (reverse deps)
     (Right stack, _) ->
-        asyncWithCleanUp $ liftIO $ compute db stack key RunDependenciesChanged result
+        fmap return $ liftIO $ compute db stack key RunDependenciesChanged result
 
 -- | Compute a key.
 compute :: Database -> Stack -> Key -> RunMode -> Maybe Result -> IO Result
@@ -345,25 +345,6 @@ registerAsyncs st as =
         Nothing -> (Nothing, False)
         Just xs -> (Just (as ++ xs), True)
 
--- | Like 'async' but with built-in cancellation.
--- Returns an IO action to wait on the result.
---
--- See Note [Closing escaped rule computations].
-asyncWithCleanUp :: AIO a -> AIO (IO a)
-asyncWithCleanUp act = do
-  st <- AIO ask
-  io <- unliftAIO act
-  -- mask so the spawn and registration can't be split by interrupt
-  a <- liftIO $ uninterruptibleMask_ $ do
-    -- Use a signal to indicate whether the thread is being spawned into a
-    -- open/closed scope.
-    gate <- newEmptyMVar
-    a <- runAsyncIfRegistered gate io
-    registered <- registerAsyncs st [void a]
-    putMVar gate registered
-    return a
-  return $ waitForRegisteredAsync a
-
 -- | Spawn a parked thread. An admitted thread runs the body and returns its
 -- result in 'Just'; a refused thread skips the body and finishes with 'Nothing'.
 runAsyncIfRegistered :: MVar Bool -> IO a -> IO (Async (Maybe a))
@@ -385,11 +366,6 @@ waitForScopeCancellation :: IO a
 waitForScopeCancellation = forever $ do
     allowInterrupt
     sleep 3600
-
-unliftAIO :: AIO a -> AIO (IO a)
-unliftAIO act = do
-    st <- AIO ask
-    return $ runReaderT (unAIO act) st
 
 newtype RunInIO = RunInIO (forall a. AIO a -> IO a)
 
