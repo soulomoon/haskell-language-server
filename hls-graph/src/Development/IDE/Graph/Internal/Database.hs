@@ -358,6 +358,7 @@ runAsyncIfRegistered gate io =
 -- doing work, so its parent terminates itself instead of waiting indefinitely
 -- for external scope cancellation.
 waitForRegisteredAsync :: Async (Maybe a) -> IO a
+-- Raising here lets 'runAIO' perform the parent's ordinary exception cleanup.
 waitForRegisteredAsync a = wait a >>= maybe (throwIO AsyncCancelled) pure
 
 newtype RunInIO = RunInIO (forall a. AIO a -> IO a)
