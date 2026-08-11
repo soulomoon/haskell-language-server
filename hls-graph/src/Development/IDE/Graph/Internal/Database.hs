@@ -327,8 +327,8 @@ The admission protocol gives every thread exactly one owner:
     'cleanupAsync'.
   - A refused thread observes the closed admission, skips its body, and finishes
     normally. It is never registered, so cleanup does not cancel it.
-  - A registered parent that observes a refused child waits at an interruptible
-    point for cleanup to cancel it. It does not cancel itself or the child.
+  - A registered parent that observes a refused child raises 'AsyncCancelled'
+    to terminate itself. Its own scope cleanup cancels any admitted siblings.
 
 This prevents either a force or rule body from escaping teardown. See
 https://github.com/haskell/haskell-language-server/issues/4985.
@@ -355,17 +355,11 @@ runAsyncIfRegistered gate io =
     if registered then Just <$> io else pure Nothing
 
 -- | Wait for a child's admission result. A refused child has finished without
--- doing work, while its already-admitted parent remains owned by cleanup and
--- must wait for that external cancellation rather than cancelling itself.
+-- doing work, so its parent terminates itself instead of waiting indefinitely
+-- for external scope cancellation.
 waitForRegisteredAsync :: Async (Maybe a) -> IO a
-waitForRegisteredAsync a = wait a >>= maybe waitForScopeCancellation pure
-
--- This loop is deliberately interruptible. In the rejected-child path the
--- current thread is already registered, so cleanup is its sole canceller.
-waitForScopeCancellation :: IO a
-waitForScopeCancellation = forever $ do
-    allowInterrupt
-    sleep 3600
+-- Raising here lets 'runAIO' perform the parent's ordinary exception cleanup.
+waitForRegisteredAsync a = wait a >>= maybe (throwIO AsyncCancelled) pure
 
 newtype RunInIO = RunInIO (forall a. AIO a -> IO a)
 
@@ -410,10 +404,10 @@ waitConcurrently_ many = do
         registered <- liftIO $ registerAsyncs ref (map void asyncs)
         putMVar gate registered
         return (asyncs, syncs, registered)
-    -- Refused children finish without running their forces. This parent was
-    -- already admitted, so cleanup remains its sole canceller.
+    -- Refused children finish without running their forces. Terminate this
+    -- parent immediately rather than waiting for external scope cancellation.
     if not registered
-      then liftIO $ traverse_ wait asyncs >> waitForScopeCancellation
+      then liftIO $ throwIO AsyncCancelled
       else do
         -- work on the sync computations
         liftIO $ sequence_ syncs

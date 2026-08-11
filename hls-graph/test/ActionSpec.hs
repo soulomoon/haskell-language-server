@@ -1,17 +1,26 @@
+{-# LANGUAGE DeriveAnyClass    #-}
+{-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE TypeFamilies      #-}
 
 module ActionSpec where
 
 import           Control.Concurrent                      (MVar, newEmptyMVar,
                                                           readMVar)
 import qualified Control.Concurrent                      as C
-import           Control.Concurrent.Async                (cancel, withAsync)
+import           Control.Concurrent.Async                (AsyncCancelled,
+                                                          cancel, waitCatch,
+                                                          withAsync)
 import           Control.Concurrent.STM
-import           Control.Exception                       (finally)
+import           Control.Exception                       (finally,
+                                                          fromException)
+import           Control.Monad                           (void)
 import           Control.Monad.IO.Class                  (MonadIO (..))
 import           Data.Maybe                              (isJust, isNothing)
-import           Development.IDE.Graph                   (shakeOptions)
+import           Development.IDE.Graph                   (RuleResult,
+                                                          shakeOptions)
+import           Development.IDE.Graph.Classes           (Hashable, NFData)
 import           Development.IDE.Graph.Database          (shakeNewDatabase,
                                                           shakeRunDatabase,
                                                           shakeRunDatabaseForKeys)
@@ -20,6 +29,7 @@ import           Development.IDE.Graph.Internal.Key
 import           Development.IDE.Graph.Internal.Types
 import           Development.IDE.Graph.Rule
 import           Example
+import           GHC.Generics                            (Generic)
 import qualified StmContainers.Map                       as STM
 import           System.IO.Unsafe                        (unsafePerformIO)
 import           System.Timeout                          (timeout)
@@ -29,11 +39,23 @@ import           Test.Hspec
 -- Park traversal after the preceding key has been handled. The test releases
 -- this key normally; cancellation never crosses this unsafe test-only barrier.
 {-# NOINLINE blockSecondKey #-}
-blockSecondKey :: MVar () -> MVar () -> Rule ()
-blockSecondKey reached release = unsafePerformIO $ do
+blockSecondKey :: MVar () -> MVar () -> a -> a
+blockSecondKey reached release value = unsafePerformIO $ do
   C.putMVar reached ()
   C.takeMVar release
-  pure Rule
+  pure value
+
+data ScopeRule = ScopeParent | ScopeLeft | ScopeRight
+  deriving (Eq, Show, Generic, Hashable, NFData)
+
+type instance RuleResult ScopeRule = ()
+
+scopeRules :: Rules ()
+scopeRules = addRule $ \key _old _mode -> do
+  case key of
+    ScopeParent -> void $ apply [ScopeLeft, ScopeRight]
+    _           -> pure ()
+  pure $ RunResult ChangedRecomputeDiff "" () (pure ())
 
 
 spec :: Spec
@@ -145,7 +167,7 @@ spec = do
     Just (Clean res) <- lookup (newKey theKey) <$> getDatabaseValues theDb
     resultDeps res `shouldBe` UnknownDeps
 
-  describe "Closing escaped rule computations" $
+  describe "Closing escaped rule computations" $ do
     it "does not leave a late async alive outside its closed AIO scope" $ do
       bodyStarted <- newEmptyMVar
       releaseBody <- newEmptyMVar
@@ -172,7 +194,7 @@ spec = do
         releaseSecondKey <- newEmptyMVar
         withAsync
           (build theDb emptyStack
-            [Rule @(), blockSecondKey reachedSecondKey releaseSecondKey]) $ \secondBuild -> do
+            [Rule @(), blockSecondKey reachedSecondKey releaseSecondKey (Rule @())]) $ \secondBuild -> do
               C.takeMVar reachedSecondKey
               -- Close the force's original scope before the already-running
               -- second build proceeds to force what it selected.
@@ -192,3 +214,39 @@ spec = do
                   C.takeMVar bodyFinished
                 _ -> pure ()
               outOfScopeAlive `shouldBe` False
+
+    it "self-terminates when nested work observes its AIO scope is closed" $ do
+      ShakeDatabase _ _ theDb@Database{..} <-
+        shakeNewDatabase shakeOptions scopeRules
+      -- Give the parent two recorded dependencies so refreshing it takes the
+      -- multi-spawn admission path.
+      void $ build theDb emptyStack [ScopeParent]
+      incDatabase theDb Nothing
+
+      -- Publish a lazy refresh tied to this first build's AIO scope.
+      withAsync (build theDb emptyStack $ repeat ScopeParent) $ \firstBuild -> do
+        atomically $ do
+          details <- STM.lookup (newKey ScopeParent) databaseValues
+          case details of
+            Just KeyDetails{keyStatus = Running{}} -> pure ()
+            _                                      -> retry
+
+        reachedSecondKey <- newEmptyMVar
+        releaseSecondKey <- newEmptyMVar
+        withAsync
+          (build theDb emptyStack
+            [ ScopeParent
+            , blockSecondKey reachedSecondKey releaseSecondKey ScopeLeft
+            ]) $ \secondBuild -> do
+              C.takeMVar reachedSecondKey
+              cancel firstBuild
+              C.putMVar releaseSecondKey ()
+              secondResult <- timeout 1000000 $ waitCatch secondBuild
+              -- Cleanup only matters for the old waiting behavior; the fixed
+              -- build has already raised 'AsyncCancelled' in its own thread.
+              cancel secondBuild
+              let selfTerminated = case secondResult of
+                    Just (Left err) ->
+                      isJust (fromException err :: Maybe AsyncCancelled)
+                    _ -> False
+              selfTerminated `shouldBe` True
