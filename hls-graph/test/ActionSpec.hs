@@ -3,10 +3,14 @@
 
 module ActionSpec where
 
-import           Control.Concurrent                      (MVar, readMVar)
+import           Control.Concurrent                      (MVar, newEmptyMVar,
+                                                          readMVar)
 import qualified Control.Concurrent                      as C
+import           Control.Concurrent.Async                (cancel, withAsync)
 import           Control.Concurrent.STM
+import           Control.Exception                       (finally)
 import           Control.Monad.IO.Class                  (MonadIO (..))
+import           Data.Maybe                              (isJust, isNothing)
 import           Development.IDE.Graph                   (shakeOptions)
 import           Development.IDE.Graph.Database          (shakeNewDatabase,
                                                           shakeRunDatabase,
@@ -17,8 +21,19 @@ import           Development.IDE.Graph.Internal.Types
 import           Development.IDE.Graph.Rule
 import           Example
 import qualified StmContainers.Map                       as STM
+import           System.IO.Unsafe                        (unsafePerformIO)
+import           System.Timeout                          (timeout)
 import           Test.Hspec
 
+
+-- Park traversal after the preceding key has been handled. The test releases
+-- this key normally; cancellation never crosses this unsafe test-only barrier.
+{-# NOINLINE blockSecondKey #-}
+blockSecondKey :: MVar () -> MVar () -> Rule ()
+blockSecondKey reached release = unsafePerformIO $ do
+  C.putMVar reached ()
+  C.takeMVar release
+  pure Rule
 
 
 spec :: Spec
@@ -129,3 +144,51 @@ spec = do
     res `shouldBe` [[True]]
     Just (Clean res) <- lookup (newKey theKey) <$> getDatabaseValues theDb
     resultDeps res `shouldBe` UnknownDeps
+
+  describe "Closing escaped rule computations" $
+    it "does not leave a late async alive outside its closed AIO scope" $ do
+      bodyStarted <- newEmptyMVar
+      releaseBody <- newEmptyMVar
+      bodyFinished <- newEmptyMVar
+      ShakeDatabase _ _ theDb@Database{..} <- shakeNewDatabase shakeOptions $
+        addRule $ \(Rule :: Rule ()) _old _mode -> do
+          liftIO $
+            (C.putMVar bodyStarted () >> C.takeMVar releaseBody)
+              `finally` C.putMVar bodyFinished ()
+          pure $ RunResult ChangedRecomputeDiff "" () (pure ())
+
+      -- The first build publishes a lazy 'Running' force but cannot reach its
+      -- forcing phase while traversing this infinite list.
+      withAsync (build theDb emptyStack $ repeat (Rule @())) $ \firstBuild -> do
+        atomically $ do
+          details <- STM.lookup (newKey (Rule @())) databaseValues
+          case details of
+            Just KeyDetails{keyStatus = Running{}} -> pure ()
+            _                                      -> retry
+
+        -- A concurrent build selects that Running force, then parks while the
+        -- first build still owns an open AIO scope.
+        reachedSecondKey <- newEmptyMVar
+        releaseSecondKey <- newEmptyMVar
+        withAsync
+          (build theDb emptyStack
+            [Rule @(), blockSecondKey reachedSecondKey releaseSecondKey]) $ \secondBuild -> do
+              C.takeMVar reachedSecondKey
+              -- Close the force's original scope before the already-running
+              -- second build proceeds to force what it selected.
+              cancel firstBuild
+              C.putMVar releaseSecondKey ()
+              started <- timeout 1000000 $ C.takeMVar bodyStarted
+              -- Cancelling the waiter must not reveal a child that survived
+              -- teardown in the already-closed first scope.
+              cancel secondBuild
+              finished <- C.tryReadMVar bodyFinished
+              let outOfScopeAlive = isJust started && isNothing finished
+              -- Let an upstream orphan finish before reporting RED, so the
+              -- regression test itself never leaks a thread.
+              case (started, finished) of
+                (Just (), Nothing) -> do
+                  C.putMVar releaseBody ()
+                  C.takeMVar bodyFinished
+                _ -> pure ()
+              outOfScopeAlive `shouldBe` False
